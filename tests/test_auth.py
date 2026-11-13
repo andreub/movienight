@@ -57,7 +57,7 @@ def make(tmp_path, **over):
 
 
 def start_login(client, issuer, next_path="/"):
-    r = client.get("/login", params={"next": next_path})
+    r = client.get("/login/oidc", params={"next": next_path})
     assert r.status_code == 303
     q = parse_qs(urlparse(r.headers["location"]).query)
     issuer.nonce = q["nonce"][0]
@@ -119,21 +119,25 @@ def test_login_refused(tmp_path, change):
 
 
 def test_cookie_tampering_and_expiry(tmp_path):
-    client, _ = make(tmp_path)
+    client, issuer = make(tmp_path)
     with client:
-        oidc = client.app.state.oidc
-        good = oidc.sign("user-1", "N")
-        assert oidc.check(good).sub == "user-1"
+        sessions = client.app.state.sessions
+        good = sessions.sign("oidc:user-1", "N")
+        assert sessions.check(good).sub == "oidc:user-1"
         payload, mac = good.split(".")
-        assert oidc.check(payload + "." + mac[:-2] + "AA") is None
-        assert oidc.check(oidc.sign("user-2")) is None          # no longer on the allow-list
-        assert oidc.check("") is None and oidc.check("a.b.c") is None
-        forged = auth.OIDC(ISSUER, CLIENT, "https://x", "user-1", b"\0" * 32, None).sign("user-1")
-        assert oidc.check(forged) is None
+        assert sessions.check(payload + "." + mac[:-2] + "AA") is None
+        assert sessions.check("") is None and sessions.check("a.b.c") is None
+        assert sessions.check(auth.Sessions(b"\0" * 32, True).sign("oidc:user-1")) is None
+        # signed by us but no longer on the allow-list, or of an unknown kind: no access
+        for sub in ("oidc:user-2", "plex:1", "user-1"):
+            client.cookies.set(auth.SESSION_COOKIE, sessions.sign(sub))
+            assert client.get("/api/status").status_code == 401
+        client.cookies.set(auth.SESSION_COOKIE, good)
+        assert client.get("/api/status").status_code == 200
         real = time.time
         try:
             time.time = lambda: real() + (auth.SESSION_DAYS + 1) * 86400
-            assert oidc.check(good) is None
+            assert sessions.check(good) is None
         finally:
             time.time = real
 
@@ -141,10 +145,24 @@ def test_cookie_tampering_and_expiry(tmp_path):
 def test_session_key_survives_a_restart(tmp_path):
     client, _ = make(tmp_path)
     with client:
-        cookie = client.app.state.oidc.sign("user-1")
+        cookie = client.app.state.sessions.sign("oidc:user-1")
     client2, _ = make(tmp_path)
     with client2:
-        assert client2.app.state.oidc.check(cookie) is not None
+        assert client2.app.state.sessions.check(cookie) is not None
+
+
+def test_login_page_lists_the_methods(tmp_path):
+    client, _ = make(tmp_path, login="plex", oidc_name="Pocket ID")
+    with client:
+        r = client.get("/login", params={"next": "/#/taste"})
+        assert r.status_code == 200
+        assert "Sign in with Plex" in r.text and "/login/plex?next=%2F%23%2Ftaste" in r.text
+        assert "Sign in with Pocket ID" in r.text and "/login/oidc?next=" in r.text
+    client, _ = make(tmp_path, login="plex", oidc_client_id="")       # OIDC half-configured: Plex only
+    with client:
+        r = client.get("/login")
+        assert "Sign in with Plex" in r.text and "/login/oidc" not in r.text
+        assert client.get("/login/oidc").headers["location"] == "/login"
 
 
 @pytest.mark.parametrize("bad", ["https://evil.test/", "//evil.test", "/\\evil.test", "evil", ""])
@@ -167,3 +185,10 @@ def test_no_issuer_means_no_login(tmp_path):
         assert client.get("/api/status").status_code == 200
         assert client.get("/api/me").json() == {"auth": False, "name": None}
         assert client.get("/login").status_code == 303
+        assert client.get("/login/plex").status_code == 303
+
+
+def test_login_none_overrides_the_issuer(tmp_path):
+    client, _ = make(tmp_path, login="none")
+    with client:
+        assert client.get("/api/status").status_code == 200
