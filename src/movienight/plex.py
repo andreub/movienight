@@ -29,11 +29,13 @@ def base_headers(client_id: str, token: str | None = None) -> dict:
 
 # --------------------------------------------------------------------------- PIN login
 
-def auth_url(client_id: str, code: str) -> str:
+def auth_url(client_id: str, code: str, forward_url: str | None = None) -> str:
+    """Where the user approves the PIN; with `forward_url` plex.tv sends them back there."""
     return (
         "https://app.plex.tv/auth#?"
         f"clientID={quote(client_id, safe='')}&code={quote(code, safe='')}"
         "&context%5Bdevice%5D%5Bproduct%5D=MovieNight"
+        + (f"&forwardUrl={quote(forward_url, safe='')}" if forward_url else "")
     )
 
 
@@ -52,15 +54,23 @@ async def check_pin(client: httpx.AsyncClient, client_id: str, pin_id: int) -> s
     return r.json().get("authToken") or None
 
 
-async def account_name(client: httpx.AsyncClient, client_id: str, token: str) -> str | None:
+async def account(client: httpx.AsyncClient, client_id: str, token: str) -> dict | None:
+    """The Plex account behind a token: {"id", "name", "email"}; None if it cannot be read."""
     try:
         r = await client.get(f"{PLEX_TV}/api/v2/user", headers=base_headers(client_id, token),
                              timeout=API_TIMEOUT)
         r.raise_for_status()
         d = r.json()
-        return d.get("username") or d.get("title") or d.get("email", "").split("@")[0] or None
-    except (httpx.HTTPError, ValueError):
+        email = d.get("email") or ""
+        return {"id": str(d.get("id") or ""), "email": email,
+                "name": d.get("username") or d.get("title") or email.split("@")[0] or ""}
+    except (httpx.HTTPError, ValueError, AttributeError):
         return None
+
+
+async def account_name(client: httpx.AsyncClient, client_id: str, token: str) -> str | None:
+    acc = await account(client, client_id, token)
+    return (acc or {}).get("name") or None
 
 
 # --------------------------------------------------------------------------- resources

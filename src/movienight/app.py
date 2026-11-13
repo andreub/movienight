@@ -68,15 +68,21 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         engine = library.Engine(lambda: db.connect(cfg.db_path))
         sync = SyncManager(cfg, http, engine)
         app.state.http, app.state.engine, app.state.sync = http, engine, sync
-        app.state.oidc = None
-        if cfg.oidc_issuer:
+        methods = cfg.login_methods
+        app.state.sessions = app.state.oidc = app.state.plex_login = None
+        if methods:
             with db.session(cfg.db_path) as c:
                 key = db.get_meta(c, "session_key")
                 if not key:
                     key = secrets.token_hex(32)
                     db.set_meta(c, "session_key", key)
-            app.state.oidc = auth.OIDC(cfg.oidc_issuer, cfg.oidc_client_id, cfg.public_url,
-                                       cfg.oidc_allowed_subs, bytes.fromhex(key), http)
+                cid = db.client_id(c)
+            app.state.sessions = auth.Sessions(bytes.fromhex(key), cfg.public_url.startswith("https://"))
+            if "oidc" in methods:
+                app.state.oidc = auth.OIDC(cfg.oidc_issuer, cfg.oidc_client_id, cfg.public_url,
+                                           cfg.oidc_allowed_subs, http)
+            if "plex" in methods:
+                app.state.plex_login = auth.PlexLogin(cfg.public_url, http, cid, plex)
         try:
             with db.session(cfg.db_path) as conn:
                 lb.import_dir(conn, cfg.letterboxd_dir)
@@ -115,26 +121,49 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         log.error("unhandled error: %s", safe_error(exc))
         return JSONResponse({"detail": "Internal server error"}, status_code=500)
 
-    # ---- login (only with MOVIENIGHT_OIDC_ISSUER; see auth.py)
-    def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
+    # ---- login (see auth.py): Plex account and/or OIDC; nothing here runs when login is off
+    def _page(title: str, body: str, status: int = 200, links: list[tuple[str, str]] | None = None) -> HTMLResponse:
+        buttons = "".join(
+            f"<p><a style='display:inline-block;min-width:240px;padding:14px 22px;border-radius:12px;"
+            f"background:#f5b942;color:#14122b;font-weight:700;text-decoration:none' href='{html.escape(href)}'>"
+            f"{html.escape(label)}</a></p>" for label, href in (links if links is not None else [("Sign in", "/login")]))
         return HTMLResponse(
             "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
-            f"<title>{html.escape(title)} · MovieNight</title>"
+            f"<title>{html.escape(title)} · MovieNight</title><link rel=icon href='/static/favicon.svg'>"
             "<body style='font:18px system-ui;background:#14122b;color:#f3efe6;display:grid;place-items:center;"
-            "min-height:90vh;text-align:center;padding:24px'><main>"
-            f"<h1>{html.escape(title)}</h1><p>{html.escape(body)}</p>"
-            "<p><a style='color:#f5b942' href='/login'>Sign in</a></p></main>", status_code=status)
+            "min-height:90vh;text-align:center;padding:24px;margin:0'><main>"
+            f"<h1>{html.escape(title)}</h1><p>{html.escape(body)}</p>{buttons}</main>",
+            status_code=status, headers={"Cache-Control": "no-store"})
+
+    def _oidc_ready(st) -> bool:
+        return st.oidc is not None and st.oidc.configured
+
+    def _plex_owner_id() -> str:
+        """The Plex account id that signed in as the owner (sessions of any other id are void)."""
+        with db.session(cfg.db_path) as c:
+            return db.get_meta(c, "plex_owner_id") or ""
+
+    def _session_ok(st, session: auth.Session | None) -> bool:
+        if session is None:
+            return False
+        kind, _, sub = session.sub.partition(":")
+        if kind == "oidc":
+            return _oidc_ready(st) and st.oidc.allows(sub)
+        if kind == "plex":
+            return st.plex_login is not None and auth.is_owner({"id": sub}, _plex_owner_id())
+        return False
 
     @app.middleware("http")
     async def _require_session(request: Request, call_next):
-        oidc = getattr(request.app.state, "oidc", None)
+        st = request.app.state
+        sessions = getattr(st, "sessions", None)
         path = request.url.path
-        if oidc is None or path in auth.PUBLIC_PATHS:
+        if sessions is None or path in auth.PUBLIC_PATHS:
             return await call_next(request)
-        if not oidc.configured:
+        if st.plex_login is None and not _oidc_ready(st):
             return JSONResponse({"detail": "Login is not configured yet (MOVIENIGHT_OIDC_CLIENT_ID)"}, status_code=503)
-        session = oidc.check(request.cookies.get(auth.SESSION_COOKIE))
-        if session is None:
+        session = sessions.check(request.cookies.get(auth.SESSION_COOKIE))
+        if not _session_ok(st, session):
             if path.startswith("/api/"):
                 return JSONResponse({"detail": "Not signed in"}, status_code=401)
             target = path + ("?" + request.url.query if request.url.query else "")
@@ -142,41 +171,106 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         request.state.session = session
         return await call_next(request)
 
+    def _signed_in(st, session: auth.Session, next_path: str) -> RedirectResponse:
+        res = RedirectResponse(next_path, status_code=303)
+        res.set_cookie(auth.SESSION_COOKIE, st.sessions.sign(session.sub, session.name),
+                       max_age=auth.SESSION_DAYS * 86400, **st.sessions.cookie_kwargs())
+        return res
+
     @app.get("/login", include_in_schema=False)
-    async def login(request: Request, next: str = "/"):
-        oidc = request.app.state.oidc
-        if oidc is None:
+    def login(request: Request, next: str = "/"):
+        st = request.app.state
+        if st.sessions is None:
             return RedirectResponse("/", status_code=303)
-        if not oidc.configured:
-            return _page("Login not configured", "Set MOVIENIGHT_OIDC_CLIENT_ID and restart.", 503)
+        q = "?next=" + quote(auth.safe_next(next), safe="")
+        links = []
+        if st.plex_login is not None:
+            links.append(("Sign in with Plex", "/login/plex" + q))
+        if _oidc_ready(st):
+            links.append((f"Sign in with {cfg.oidc_name}", "/login/oidc" + q))
+        if not links:
+            return _page("Login not configured", "Set MOVIENIGHT_OIDC_CLIENT_ID and restart.", 503, [])
+        return _page("MovieNight", "Sign in to pick tonight's film.", links=links)
+
+    @app.get("/login/oidc", include_in_schema=False)
+    async def login_oidc(request: Request, next: str = "/"):
+        st = request.app.state
+        if not _oidc_ready(st):
+            return RedirectResponse("/login", status_code=303)
         try:
-            return RedirectResponse(await oidc.login_url(next), status_code=303)
+            return RedirectResponse(await st.oidc.login_url(next), status_code=303)
         except Exception as e:  # noqa: BLE001
             log.error("login start failed: %s", safe_error(e))
             return _page("Sign-in unavailable", "The login provider could not be reached. Try again in a moment.", 502)
 
     @app.get("/login/callback", include_in_schema=False)
     async def login_callback(request: Request, state: str = "", code: str = ""):
-        oidc = request.app.state.oidc
-        if oidc is None or not oidc.configured:
+        st = request.app.state
+        if not _oidc_ready(st):
             return RedirectResponse("/", status_code=303)
         try:
-            cookie, next_path = await oidc.finish(state, code)
+            session, next_path = await st.oidc.finish(state, code)
         except auth.LoginError as e:
             return _page("Could not sign you in", str(e), 403)
         except Exception as e:  # noqa: BLE001
             log.error("login failed: %s", safe_error(e))
             return _page("Could not sign you in", "Something went wrong talking to the login provider.", 502)
-        res = RedirectResponse(next_path, status_code=303)
-        res.set_cookie(auth.SESSION_COOKIE, cookie, max_age=auth.SESSION_DAYS * 86400, **oidc.cookie_kwargs())
-        return res
+        return _signed_in(st, session, next_path)
+
+    @app.get("/login/plex", include_in_schema=False)
+    async def login_plex(request: Request, next: str = "/"):
+        st = request.app.state
+        if st.plex_login is None:
+            return RedirectResponse("/login", status_code=303)
+        try:
+            return RedirectResponse(await st.plex_login.login_url(next), status_code=303)
+        except Exception as e:  # noqa: BLE001
+            log.error("plex login start failed: %s", safe_error(e))
+            return _page("Sign-in unavailable", "plex.tv could not be reached. Try again in a moment.", 502)
+
+    @app.get("/login/plex/callback", include_in_schema=False)
+    async def login_plex_callback(request: Request, state: str = ""):
+        st = request.app.state
+        if st.plex_login is None:
+            return RedirectResponse("/", status_code=303)
+        try:
+            account, token, next_path = await st.plex_login.finish(state)
+            with db.session(cfg.db_path) as c:
+                stored = plex_token(c, cfg)
+                owner_id = db.get_meta(c, "plex_owner_id") or ""
+            if not owner_id and stored and not cfg.plex_owner:
+                # a library is already connected: the app belongs to that Plex account
+                known = await plex.account(st.http, st.plex_login.client_id, stored)
+                owner_id = (known or {}).get("id") or ""
+            if cfg.plex_owner:
+                allowed = auth.is_owner(account, cfg.plex_owner)
+            elif owner_id:
+                allowed = account["id"] == owner_id
+            else:
+                allowed = not stored          # nobody yet: the first sign-in becomes the owner
+            if not allowed:
+                raise auth.LoginError("This MovieNight belongs to another Plex account")
+            with db.session(cfg.db_path) as c:
+                db.set_meta(c, "plex_owner_id", account["id"])
+                if not stored:
+                    library.set_plex_token(c, token, account["name"] or None)
+            if not stored:
+                sync_mgr().start("plex")
+        except auth.LoginError as e:
+            return _page("Could not sign you in", str(e), 403)
+        except Exception as e:  # noqa: BLE001
+            log.error("plex login failed: %s", safe_error(e))
+            return _page("Could not sign you in", "Something went wrong talking to plex.tv.", 502)
+        return _signed_in(st, auth.Session("plex:" + account["id"], account["name"]), next_path)
 
     @app.get("/logout", include_in_schema=False)
     async def logout(request: Request):
-        oidc = request.app.state.oidc
+        st = request.app.state
         target = "/logged-out"
-        if oidc is not None and oidc.configured:
-            target = await oidc.logout_url("/logged-out")
+        sessions = getattr(st, "sessions", None)
+        session = sessions.check(request.cookies.get(auth.SESSION_COOKIE)) if sessions else None
+        if session and session.sub.startswith("oidc:") and _oidc_ready(st):
+            target = await st.oidc.logout_url("/logged-out")
         res = RedirectResponse(target, status_code=303)
         res.delete_cookie(auth.SESSION_COOKIE, path="/")
         return res
@@ -189,7 +283,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
     def me(request: Request):
         """{"auth": false} when login is off; otherwise the signed-in user's display name."""
         session = getattr(request.state, "session", None)
-        return {"auth": request.app.state.oidc is not None, "name": session.name if session else None}
+        return {"auth": request.app.state.sessions is not None, "name": (session.name or None) if session else None}
 
     # ---- health / status
     @app.get("/healthz")

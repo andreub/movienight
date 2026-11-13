@@ -15,10 +15,23 @@ class Config:
     plex_token: str = ""
     sync_hours: float = 6.0
     sync_on_start: bool = True
+    login: str = ""              # comma-separated: plex, oidc; "none" = no login at all
+    plex_owner: str = ""         # Plex account id, username or email allowed to sign in
+    oidc_name: str = "Single sign-on"
     oidc_issuer: str = ""
     oidc_client_id: str = ""
     oidc_allowed_subs: str = ""
     public_url: str = "http://localhost:8080"
+
+    @property
+    def login_methods(self) -> set[str]:
+        """An OIDC issuer turns OIDC on by itself; "none" turns every login off."""
+        asked = {m.strip() for m in self.login.split(",") if m.strip()}
+        if "none" in asked:
+            return set()
+        if self.oidc_issuer:
+            asked.add("oidc")
+        return {m for m in asked if m == "plex" or (m == "oidc" and self.oidc_issuer)}
 
     @property
     def db_path(self) -> Path:
@@ -42,6 +55,9 @@ class Config:
             tmdb_token=(env.get("MOVIENIGHT_TMDB_TOKEN") or "").strip(),
             plex_token=(env.get("MOVIENIGHT_PLEX_TOKEN") or "").strip(),
             sync_hours=hours,
+            login=(env.get("MOVIENIGHT_LOGIN") or "plex").strip().lower(),
+            plex_owner=(env.get("MOVIENIGHT_PLEX_OWNER") or "").strip(),
+            oidc_name=(env.get("MOVIENIGHT_OIDC_NAME") or "Single sign-on").strip()[:40],
             oidc_issuer=(env.get("MOVIENIGHT_OIDC_ISSUER") or "").strip(),
             oidc_client_id=(env.get("MOVIENIGHT_OIDC_CLIENT_ID") or "").strip(),
             oidc_allowed_subs=(env.get("MOVIENIGHT_OIDC_ALLOWED_SUBS") or "").strip(),
