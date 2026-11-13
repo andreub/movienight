@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import db, letterboxd as lb, library, plex, queries
+from . import chat, db, letterboxd as lb, library, plex, queries
 from .config import Config
 from .sync import SyncManager, plex_token, tmdb_counts
 from .util import now_iso, safe_error
@@ -323,6 +323,9 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                     pass
                 return Response(data, media_type=_sniff(data), headers=headers)
         raise HTTPException(404, "No image available")
+
+    # ---- optional AI chat (off without Anthropic credentials)
+    app.include_router(chat.router)
 
     # ---- frontend
     if STATIC_DIR.is_dir():
