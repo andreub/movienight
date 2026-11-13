@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:letterboxd="https://letterboxd.com" xmlns:tmdb="https://themoviedb.org">
+<channel><title>Letterboxd - testuser</title>
+<item><title>Epsilon Future, 2022 - ★★★★</title><letterboxd:watchedDate>2024-05-01</letterboxd:watchedDate>
+<letterboxd:rewatch>No</letterboxd:rewatch><letterboxd:filmTitle>Epsilon Future</letterboxd:filmTitle>
+<letterboxd:filmYear>2022</letterboxd:filmYear><letterboxd:memberRating>4.0</letterboxd:memberRating>
+<letterboxd:memberLike>Yes</letterboxd:memberLike><tmdb:movieId>505</tmdb:movieId></item>
+<item><title>Beta Romance, 2019 - ★★½</title><letterboxd:watchedDate>2024-05-02</letterboxd:watchedDate>
+<letterboxd:filmTitle>Beta Romance</letterboxd:filmTitle><letterboxd:filmYear>2019</letterboxd:filmYear>
+<letterboxd:memberRating>2.5</letterboxd:memberRating><letterboxd:memberLike>No</letterboxd:memberLike><tmdb:movieId>202</tmdb:movieId></item>
+<item><title>Brand New, 2023 - ★★★</title><letterboxd:watchedDate>2024-05-03</letterboxd:watchedDate>
+<letterboxd:filmTitle>Brand New</letterboxd:filmTitle><letterboxd:filmYear>2023</letterboxd:filmYear>
+<letterboxd:memberRating>3.0</letterboxd:memberRating><letterboxd:memberLike>No</letterboxd:memberLike><tmdb:movieId>909</tmdb:movieId></item>
+<item><title>A list</title><link>https://letterboxd.com/testuser/list/x/</link></item>
+</channel></rss>

@@ -1,0 +1,260 @@
+"""Background sync orchestration: Plex, Letterboxd, TMDB enrichment, profile warm-up."""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+
+import httpx
+
+from . import letterboxd as lb, library, plex
+from .config import Config
+from .db import client_id, connect, get_meta, set_meta
+from .tmdb import Tmdb, TmdbError
+from .util import norm_title, now_iso, safe_error
+
+log = logging.getLogger("movienight.sync")
+CHUNK = 32
+
+
+def plex_token(conn, cfg: Config) -> str:
+    return cfg.plex_token or get_meta(conn, "plex_token") or ""
+
+
+class SyncManager:
+    def __init__(self, cfg: Config, http: httpx.AsyncClient, engine: library.Engine):
+        self.cfg = cfg
+        self.http = http
+        self.engine = engine
+        self.tmdb = Tmdb(http, cfg.tmdb_token)
+        self.state = {"running": False, "stage": "idle", "done": 0, "total": 0, "error": None}
+        self._task: asyncio.Task | None = None
+        self._errors: list[str] = []
+
+    # ---- status / control
+    @property
+    def running(self) -> bool:
+        return self.state["running"]
+
+    def start(self, what: str = "all") -> bool:
+        if self.running:
+            return False
+        self.state.update(running=True, stage="idle", done=0, total=0, error=None)
+        self._task = asyncio.create_task(self._run(what))
+        return True
+
+    async def wait(self) -> None:
+        if self._task:
+            await self._task
+
+    def _progress(self, done: int, total: int) -> None:
+        self.state["done"], self.state["total"] = done, total
+
+    def _stage(self, name: str) -> None:
+        self.state.update(stage=name, done=0, total=0)
+
+    def _fail(self, stage: str, exc: BaseException) -> None:
+        msg = f"{stage}: {safe_error(exc)}"
+        log.warning("sync stage failed: %s", msg)
+        self._errors.append(msg)
+
+    async def _run(self, what: str) -> None:
+        self._errors = []
+        first = {"plex": ["plex"], "letterboxd": ["letterboxd"], "tmdb": [], "all": ["plex", "letterboxd"]}.get(what, ["plex", "letterboxd"])
+        try:
+            for name in first + ["tmdb", "profile"]:
+                self._stage(name)
+                try:
+                    await getattr(self, f"stage_{name}")()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001 - never crash the app
+                    self._fail(name, e)
+        finally:
+            self.state.update(running=False, stage="idle", done=0, total=0,
+                              error="; ".join(self._errors) or None)
+
+    async def scheduler(self) -> None:
+        """Initial sync, then one every `sync_hours`."""
+        if self.cfg.sync_on_start:
+            self.start("all")
+        interval = max(self.cfg.sync_hours, 0.05) * 3600
+        while True:
+            await asyncio.sleep(interval)
+            self.start("all")
+
+    # ---- stages
+    async def stage_plex(self) -> None:
+        conn = connect(self.cfg.db_path)
+        try:
+            token = plex_token(conn, self.cfg)
+            if not token:
+                return
+            cid = client_id(conn)
+            try:
+                servers = await plex.get_servers(self.http, cid, token)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 401:
+                    raise RuntimeError("Plex token was rejected; log in again") from None
+                raise
+            if not get_meta(conn, "plex_account"):
+                set_meta(conn, "plex_account", await plex.account_name(self.http, cid, token) or "")
+            bases = await asyncio.gather(*(plex.pick_connection(self.http, s, cid) for s in servers))
+            for s in servers:
+                conn.execute(
+                    "INSERT INTO plex_servers(id,name,owned) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET"
+                    " name=excluded.name, owned=excluded.owned", (s["id"], s["name"], int(s["owned"])))
+            conn.commit()
+            seen = {s["id"] for s in servers}
+            for r in conn.execute("SELECT id FROM plex_servers").fetchall():
+                if r["id"] not in seen:        # server no longer shared with us
+                    conn.execute("DELETE FROM plex_items WHERE server_id=?", (r["id"],))
+                    conn.execute("DELETE FROM plex_servers WHERE id=?", (r["id"],))
+            for s, base in zip(servers, bases):
+                conn.execute("UPDATE plex_servers SET reachable=?, base_url=?, access_token=? WHERE id=?",
+                             (int(bool(base)), base, s["access_token"], s["id"]))
+            conn.commit()
+            for s, base in zip(servers, bases):
+                enabled = conn.execute("SELECT enabled FROM plex_servers WHERE id=?", (s["id"],)).fetchone()["enabled"]
+                if not base or not enabled:
+                    continue
+                try:
+                    items = await plex.fetch_movies(self.http, base, cid, s["access_token"], self._progress)
+                except Exception as e:  # noqa: BLE001
+                    self._fail(f"plex ({s['name']})", e)
+                    continue
+                library.store_server_items(conn, s["id"], items)
+                conn.execute("UPDATE plex_servers SET last_sync=? WHERE id=?", (now_iso(), s["id"]))
+                conn.commit()
+            library.assign_movies(conn)
+            set_meta(conn, "plex_last_sync", now_iso())
+            conn.commit()
+        finally:
+            conn.close()
+        self.engine.invalidate()
+
+    async def stage_letterboxd(self) -> None:
+        conn = connect(self.cfg.db_path)
+        try:
+            lb.import_dir(conn, self.cfg.letterboxd_dir)
+            conn.commit()
+            user = lb.username(conn, self.cfg.letterboxd_user)
+            if user:
+                try:
+                    entries = lb.parse_rss(await lb.fetch_rss(self.http, user))
+                    lb.apply_rss(conn, entries)
+                except Exception as e:  # noqa: BLE001
+                    self._fail("letterboxd rss", e)
+            conn.commit()
+        finally:
+            conn.close()
+        self.engine.invalidate()
+
+    async def stage_tmdb(self) -> None:
+        if not self.tmdb.configured:
+            return
+        conn = connect(self.cfg.db_path)
+        try:
+            await self._resolve(conn)
+            await self._details(conn)
+            await self._recs(conn)
+        finally:
+            conn.close()
+        self.engine.invalidate()
+
+    async def stage_profile(self) -> None:
+        self.engine.invalidate()
+        await asyncio.to_thread(self.engine.get)
+
+    # ---- TMDB work, resumable: only what is missing
+    async def _batches(self, items: list, fn, on_done) -> None:
+        total, done, bad_chunks = len(items), 0, 0
+        self.state["total"] = total
+        base = self.state["done"]
+        for i in range(0, total, CHUNK):
+            chunk = items[i:i + CHUNK]
+            results = await asyncio.gather(*(fn(x) for x in chunk), return_exceptions=True)
+            fails = 0
+            for x, res in zip(chunk, results):
+                if isinstance(res, TmdbError):
+                    raise res
+                if isinstance(res, asyncio.CancelledError):
+                    raise res
+                if isinstance(res, BaseException):
+                    fails += 1
+                    last = res
+                else:
+                    on_done(x, res)
+            bad_chunks = bad_chunks + 1 if fails == len(chunk) else 0
+            done += len(chunk)
+            self.state["done"] = base + done
+            if bad_chunks >= 3:
+                raise last  # type: ignore[possibly-undefined]
+
+    async def _resolve(self, conn) -> None:
+        rows = conn.execute(
+            "SELECT id, name, year, norm_title FROM lb_films WHERE tmdb_id IS NULL AND resolve_state=0"
+        ).fetchall()
+        if not rows:
+            return
+        plex_ids = {}
+        for r in conn.execute("SELECT title, year, tmdb_id FROM plex_items WHERE tmdb_id IS NOT NULL"):
+            plex_ids.setdefault((norm_title(r["title"]), r["year"]), r["tmdb_id"])
+        todo = []
+        for r in rows:
+            hit = plex_ids.get((r["norm_title"], r["year"]))
+            if hit:
+                conn.execute("UPDATE lb_films SET tmdb_id=?, resolve_state=1 WHERE id=?", (hit, r["id"]))
+            else:
+                todo.append(r)
+        conn.commit()
+
+        def done(row, tid):
+            conn.execute("UPDATE lb_films SET tmdb_id=?, resolve_state=? WHERE id=?",
+                         (tid, 1 if tid else 2, row["id"]))
+            conn.commit()
+
+        await self._batches(todo, lambda r: self.tmdb.search(r["name"], r["year"]), done)
+
+    async def _details(self, conn) -> None:
+        ids = [r[0] for r in conn.execute(
+            "SELECT tmdb_id FROM lb_films WHERE tmdb_id IS NOT NULL AND (watched=1 OR liked=1)"
+            " UNION SELECT tmdb_id FROM movies WHERE tmdb_id IS NOT NULL"
+        ) if not conn.execute("SELECT 1 FROM tmdb_details WHERE tmdb_id=?", (r[0],)).fetchone()]
+        if not ids:
+            return
+
+        def done(tid, det):
+            conn.execute("INSERT OR REPLACE INTO tmdb_details(tmdb_id,json,fetched_at) VALUES(?,?,?)",
+                         (tid, json.dumps(det or {}), now_iso()))
+            conn.commit()
+
+        await self._batches(ids, self.tmdb.details, done)
+        self.engine.invalidate()
+
+    async def _recs(self, conn) -> None:
+        ids = [r[0] for r in conn.execute(
+            "SELECT tmdb_id FROM lb_films WHERE tmdb_id IS NOT NULL AND (rating>=4 OR liked=1)"
+        ) if not conn.execute("SELECT 1 FROM tmdb_recs WHERE tmdb_id=?", (r[0],)).fetchone()]
+        if not ids:
+            return
+
+        def done(tid, recs):
+            conn.execute("INSERT OR REPLACE INTO tmdb_recs(tmdb_id,json,fetched_at) VALUES(?,?,?)",
+                         (tid, json.dumps(recs), now_iso()))
+            conn.commit()
+
+        await self._batches(ids, self.tmdb.recommendations, done)
+
+
+def tmdb_counts(conn, configured: bool) -> dict:
+    enriched = conn.execute("SELECT COUNT(*) FROM tmdb_details WHERE json != '{}'").fetchone()[0]
+    if not configured:
+        return {"configured": False, "enriched": enriched, "pending": 0}
+    unresolved = conn.execute("SELECT COUNT(*) FROM lb_films WHERE tmdb_id IS NULL AND resolve_state=0").fetchone()[0]
+    missing = conn.execute(
+        "SELECT COUNT(*) FROM (SELECT tmdb_id FROM lb_films WHERE tmdb_id IS NOT NULL AND (watched=1 OR liked=1)"
+        " UNION SELECT tmdb_id FROM movies WHERE tmdb_id IS NOT NULL) WHERE tmdb_id NOT IN"
+        " (SELECT tmdb_id FROM tmdb_details)"
+    ).fetchone()[0]
+    return {"configured": True, "enriched": enriched, "pending": unresolved + missing}

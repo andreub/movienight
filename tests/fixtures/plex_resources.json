@@ -1,0 +1,47 @@
+[
+ {
+  "name": "Home",
+  "clientIdentifier": "mach1",
+  "provides": "server",
+  "owned": true,
+  "accessToken": "SERVER-SECRET-1",
+  "connections": [
+   {
+    "uri": "https://relay.example/x",
+    "local": false,
+    "relay": true
+   },
+   {
+    "uri": "http://192.168.1.2:32400",
+    "local": true,
+    "relay": false
+   },
+   {
+    "uri": "https://remote.example:32400",
+    "local": false,
+    "relay": false
+   }
+  ]
+ },
+ {
+  "name": "Friend",
+  "clientIdentifier": "mach2",
+  "provides": "server,client",
+  "owned": false,
+  "accessToken": "SERVER-SECRET-2",
+  "connections": [
+   {
+    "uri": "https://friend.example:32400",
+    "local": false,
+    "relay": false
+   }
+  ]
+ },
+ {
+  "name": "Phone",
+  "clientIdentifier": "cli1",
+  "provides": "client",
+  "owned": true,
+  "connections": []
+ }
+]
