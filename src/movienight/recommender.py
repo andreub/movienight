@@ -620,12 +620,17 @@ def spearman(xs: list[float], ys: list[float]) -> float | None:
 
 
 def top_quintile(preds: list[float], ratings: list[float]) -> tuple[float | None, float | None]:
-    """(hit rate of the top 20% predicted, base rate). A hit is a rating >= the user's own
-    70th-percentile rating."""
+    """(hit rate of the top 20% predicted, base rate). A hit is one of the user's favourites:
+    a rating >= the lowest rating value that at most 40% of their films reach. Ratings come
+    in half stars, so a plain 70th percentile can land on a value most films share."""
     n = len(preds)
     if n < MIN_METRIC_FILMS:
         return None, None
-    thr = sorted(ratings)[min(n - 1, int(0.7 * n))]
+    thr = max(ratings)
+    for value in sorted(set(ratings), reverse=True):
+        if sum(1 for r in ratings if r >= value) / n > 0.4:
+            break
+        thr = value
     base = sum(1 for r in ratings if r >= thr) / n
     k = max(1, round(0.2 * n))
     top = sorted(range(n), key=lambda i: -preds[i])[:k]
