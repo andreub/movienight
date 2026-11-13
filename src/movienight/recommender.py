@@ -13,6 +13,12 @@ Model in short
 * A candidate's score is a weighted sum of: feature affinities (idf-weighted so that "Drama"
   does not swamp rarer features), a collaborative signal (TMDB recommendations of loved
   films), a quality prior (Bayesian average), a watchlist boost and a small freshness boost.
+* Thumbs (a vote per film, see `Cand.vote`) are weaker evidence than a Letterboxd rating: a voted
+  film that has no real rating enters the profile as a synthetic history entry with a fixed
+  signal of +/-`VOTE_SIGNAL`, and gets a direct boost / strong penalty. Once the film has a
+  rating, the vote is ignored by the model.
+* `backtest()` validates and tunes the component weights with a leave-one-out evaluation over
+  the rated films (see its docstring).
 * Raw scores are mapped to a 0-100 `match` by blending a logistic and the percentile rank.
 """
 from __future__ import annotations
@@ -35,6 +41,11 @@ W_COLLAB = 0.32
 W_QUALITY = 0.12
 W_WATCHLIST = 0.30
 W_FRESH = 0.06
+# effective default weight of every component that can be backtested and tuned
+DEFAULT_WEIGHTS = {**{t: WEIGHT[t] * GAIN[t] for t in FEATURE_TYPES}, "similar": W_COLLAB, "acclaimed": W_QUALITY}
+VOTE_SIGNAL = 0.6        # |signal| of a thumb for the profile (a 5-star film is ~0.8, a liked unrated one 0.65)
+VOTE_UP_BOOST = 0.25     # direct raw-score boost of a thumbs-up film
+VOTE_DOWN_PENALTY = 0.7  # direct raw-score penalty of a thumbs-down film
 FRESH_DAYS = 45
 CAST_TOP = 8
 LOVED = 0.25            # signal above which a film counts as "loved" for collaborative reasoning
@@ -56,6 +67,8 @@ class Hist:
     recs: list = field(default_factory=list)
     poster: str | None = None
     runtime: int | None = None
+    vote: int = 0                       # thumb (+1/-1); only meaningful on synthetic entries
+    synthetic: bool = False             # built from a thumb, not from Letterboxd
 
 
 @dataclass
@@ -75,6 +88,8 @@ class Cand:
     my_rating: float | None = None
     liked: bool = False
     on_watchlist: bool = False
+    vote: int | None = None             # thumb: 1, -1 or None
+    dkey: str = ""                      # stable library key (movies.dkey)
     # computed
     feats: dict = field(default_factory=dict)
     raw: float = 0.0
@@ -106,6 +121,7 @@ class Profile:
     signals: list = field(default_factory=list)        # (Hist, signal, weight)
     stats: dict = field(default_factory=lambda: {t: {} for t in FEATURE_TYPES})
     rank: dict = field(default_factory=dict)            # type -> feature -> rank by affinity (0 = best)
+    vote_hists: list = field(default_factory=list)      # synthetic entries built from thumbs
 
 
 # --------------------------------------------------------------------------- features
@@ -128,7 +144,9 @@ def features(meta: dict | None) -> dict:
 
 def film_signal(h: Hist, mean: float, now: datetime) -> tuple[float, float]:
     """Return (signal in [-1, 1], recency weight in [0.7, 1])."""
-    if h.rating is not None:
+    if h.synthetic:
+        s = VOTE_SIGNAL * (1 if h.vote > 0 else -1)
+    elif h.rating is not None:
         s = max(-1.0, min(1.0, (h.rating - mean) / 2.0))
         if h.liked:
             s = min(1.0, s + 0.4)
@@ -146,15 +164,18 @@ def film_signal(h: Hist, mean: float, now: datetime) -> tuple[float, float]:
 def build_profile(history: list[Hist], now: datetime | None = None) -> Profile:
     now = now or datetime.now(timezone.utc)
     p = Profile()
-    watched = [h for h in history if h.watched]
+    watched = [h for h in history if h.watched and not h.synthetic]
     rated = [h.rating for h in watched if h.rating is not None]
     p.n_watched, p.n_rated = len(watched), len(rated)
     p.n_liked = sum(1 for h in watched if h.liked)
     if rated:
         p.mean_rating = sum(rated) / len(rated)
-    for h in watched:
+    for h in [h for h in history if h.watched]:
         s, w = film_signal(h, p.mean_rating, now)
-        p.signals.append((h, s, w))
+        if h.synthetic:
+            p.vote_hists.append(h)
+        else:
+            p.signals.append((h, s, w))
         for t, names in features(h.meta).items():
             for name in dict.fromkeys(names):
                 st = p.stats[t].setdefault(name, FeatStat())
@@ -207,12 +228,14 @@ def quality(meta: dict) -> float:
     return max(-1.0, min(1.0, (avg - 6.3) / 1.5))
 
 
-def _feature_value(t: str, names: list[str], prof: Profile, idf: dict):
+def _feature_value(t: str, names: list[str], table, idf: dict):
     """Aggregate the candidate's feature affinities of one type.
 
-    Returns (value, detail) where detail names the most influential positive features.
+    `table` is anything with `.get(name) -> FeatStat | None` (the profile's table, or a
+    leave-one-out view of it). Returns (value, detail) where detail names the most influential
+    positive features.
     """
-    table, weights = prof.stats[t], idf.get(t, {})
+    weights = idf.get(t, {})
     scored = []
     for name in dict.fromkeys(names):
         st = table.get(name)
@@ -250,27 +273,56 @@ def collab_index(history: list[Hist], prof: Profile) -> dict:
     return idx
 
 
+def vote_hists(history: list[Hist], cands: list[Cand]) -> list[Hist]:
+    """Synthetic history entries for thumbed candidates that have no real Letterboxd rating.
+
+    A film with a rating (on the candidate or in the history) is skipped: the rating wins.
+    """
+    rated = {h.tmdb_id for h in history if h.rating is not None and h.tmdb_id}
+    out = []
+    for c in cands:
+        if not c.vote or c.my_rating is not None or (c.tmdb_id and c.tmdb_id in rated):
+            continue
+        out.append(Hist(key=-c.id, title=c.title, year=c.year, tmdb_id=c.tmdb_id, watched=True,
+                        meta=c.meta, vote=1 if c.vote > 0 else -1, synthetic=True))
+    return out
+
+
+def component_values(feats: dict, meta: dict, tmdb_id: int | None, table_of, idf: dict, loved_by: list):
+    """Unweighted value (and detail for reasons) of every tunable component of one film.
+
+    `table_of(t)` returns the affinity table of feature type `t`; `loved_by` is the list of
+    (signal, Hist) of loved films recommending this one.
+    """
+    out: dict[str, tuple[float, object]] = {}
+    for t in FEATURE_TYPES:
+        out[t] = _feature_value(t, feats.get(t, []), table_of(t), idf)
+    if loved_by:
+        loved_by = sorted(loved_by, key=lambda x: -x[0])
+        out["similar"] = (1 - math.exp(-sum(s for s, _ in loved_by)), loved_by[0][1])
+    else:
+        out["similar"] = (0.0, None)
+    out["acclaimed"] = (quality(meta), None)
+    return out
+
+
 def score_candidates(history: list[Hist], cands: list[Cand], prof: Profile | None = None,
-                     now: datetime | None = None) -> Profile:
-    """Fill `raw`, `comps` and `match` on every candidate. Returns the profile used."""
+                     now: datetime | None = None, weights: dict | None = None) -> Profile:
+    """Fill `raw`, `comps` and `match` on every candidate. Returns the profile used.
+
+    `weights` overrides `DEFAULT_WEIGHTS` (missing keys fall back to the defaults).
+    """
     now = now or datetime.now(timezone.utc)
-    prof = prof or build_profile(history, now)
+    w = {**DEFAULT_WEIGHTS, **(weights or {})}
+    prof = prof or build_profile(history + vote_hists(history, cands), now)
     for c in cands:
         c.feats = features(c.meta)
     idf = build_idf(history, cands)
     cidx = collab_index(history, prof)
     for c in cands:
-        comps: dict[str, tuple[float, object]] = {}
-        for t in FEATURE_TYPES:
-            value, detail = _feature_value(t, c.feats.get(t, []), prof, idf)
-            comps[t] = (WEIGHT[t] * GAIN[t] * value, detail)
-        loved_by = sorted(cidx.get(c.tmdb_id, []), key=lambda x: -x[0]) if c.tmdb_id else []
-        if loved_by:
-            total = sum(s for s, _ in loved_by)
-            comps["similar"] = (W_COLLAB * (1 - math.exp(-total)), loved_by[0][1])
-        else:
-            comps["similar"] = (0.0, None)
-        comps["acclaimed"] = (W_QUALITY * quality(c.meta), None)
+        vals = component_values(c.feats, c.meta, c.tmdb_id, lambda t: prof.stats[t], idf,
+                                cidx.get(c.tmdb_id, []) if c.tmdb_id else [])
+        comps = {k: (w[k] * v, d) for k, (v, d) in vals.items()}
         comps["watchlist"] = (W_WATCHLIST if c.on_watchlist else 0.0, None)
         fresh = 0.0
         if c.added_at:
@@ -278,6 +330,10 @@ def score_candidates(history: list[Hist], cands: list[Cand], prof: Profile | Non
             if 0 <= days < FRESH_DAYS:
                 fresh = W_FRESH * (1 - days / FRESH_DAYS)
         comps["fresh"] = (fresh, None)
+        vote = 0.0
+        if c.vote and c.my_rating is None:
+            vote = VOTE_UP_BOOST if c.vote > 0 else -VOTE_DOWN_PENALTY
+        comps["vote"] = (vote, None)
         c.comps = comps
         c.raw = sum(v for v, _ in comps.values())
     calibrate(cands)
@@ -393,6 +449,11 @@ def reasons_for(c: Cand, prof: Profile, limit: int = 4) -> list[dict]:
     if v > 0.01:
         add(v, "fresh", "Recently added to Plex")
 
+    if c.vote is None:
+        liked_vote = _similar_vote(c, prof)
+        if liked_vote:
+            add(0.04, "similar", f"Similar to {liked_vote.title}, which you gave a \U0001F44D")
+
     items.sort(key=lambda x: -x[0])
     out = [r for _, r in items[:limit]]
     if not out:
@@ -402,6 +463,19 @@ def reasons_for(c: Cand, prof: Profile, limit: int = 4) -> list[dict]:
         else:
             out = [{"kind": "fresh", "text": "From your Plex library"}]
     return out
+
+
+def _similar_vote(c: Cand, prof: Profile) -> Hist | None:
+    """A thumbs-up film that shares a director, two cast members or three keywords with `c`."""
+    cf = c.feats or features(c.meta)
+    for h in prof.vote_hists:
+        if h.vote <= 0 or (c.tmdb_id and h.tmdb_id == c.tmdb_id):
+            continue
+        hf = features(h.meta)
+        if (set(hf["director"]) & set(cf["director"]) or len(set(hf["cast"]) & set(cf["cast"])) >= 2
+                or len(set(hf["keyword"]) & set(cf["keyword"])) >= 3):
+            return h
+    return None
 
 
 def _short_count(n: int) -> str:
@@ -439,3 +513,205 @@ def because(c: Cand, history: list[Hist], prof: Profile, limit: int = 6) -> list
             }))
     out.sort(key=lambda x: -x[0])
     return [o for _, o in out[:limit]]
+
+
+# --------------------------------------------------------------------------- backtest and tuning
+
+TUNABLE = tuple(DEFAULT_WEIGHTS)
+MULTIPLIERS = (0.5, 0.7, 1.0, 1.4, 2.0)      # search grid, bounded to 0.5x-2x of each default
+MIN_BACKTEST_FILMS = 60                       # below this, defaults are always kept
+MIN_METRIC_FILMS = 8                          # below this, metrics are not reported
+CV_FOLDS = 5
+MIN_CV_GAIN = 0.02                            # mean held-out Spearman gain needed to adopt tuned weights
+MIN_FOLDS_IMPROVED = 3                        # ...and at least this many folds must improve
+SWEEPS = 3
+
+
+class _LeaveOut:
+    """Read-only view of a feature table in which one film's contribution is subtracted."""
+
+    def __init__(self, base: dict, adjusted: dict):
+        self.base, self.adjusted = base, adjusted      # adjusted: name -> FeatStat | None
+
+    def get(self, name):
+        if name in self.adjusted:
+            return self.adjusted[name]
+        return self.base.get(name)
+
+
+def _without(st: FeatStat | None, t: str, s: float, w: float, h: Hist) -> FeatStat | None:
+    """`st` minus the contribution of one film (`best` is kept only as display data)."""
+    if st is None or st.n <= 1:
+        return None
+    out = FeatStat(w=st.w - w, ssum=st.ssum - w * s, n=st.n - 1, rn=st.rn - (h.rating is not None),
+                   rsum=st.rsum - (h.rating or 0.0), best=st.best)
+    out.aff = out.ssum / (out.w + SHRINK[t])
+    return out
+
+
+def backtestable(h: Hist) -> bool:
+    m = h.meta or {}
+    return bool(h.watched and h.rating is not None and
+                (m.get("genres") or m.get("directors") or m.get("cast") or m.get("keywords")))
+
+
+def loo_rows(history: list[Hist], cands: list[Cand] | None = None, now: datetime | None = None) -> list[tuple]:
+    """Leave-one-out component values for every backtestable film.
+
+    Returns [(Hist, {component: unweighted value})]. For each rated film the profile is the one
+    built from the whole history minus that film's own contribution: its (signal, weight) is
+    subtracted from the accumulated per-feature statistics (a feature seen only in this film
+    disappears), and the film is excluded from the loved-films collaborative evidence. Watchlist,
+    freshness and thumbs are not components of these rows. Two small leaks remain by design: the
+    user's mean rating (which centres every signal) still includes this film's rating, and the
+    idf table counts the film itself in its feature frequencies; both are 1/N effects.
+    """
+    now = now or datetime.now(timezone.utc)
+    cands = cands or []
+    for c in cands:
+        c.feats = features(c.meta)
+    prof = build_profile(history, now)
+    idf = build_idf(history, cands)
+    cidx = collab_index(history, prof)
+    out = []
+    for h, s, w in prof.signals:
+        if not backtestable(h):
+            continue
+        adjusted = {t: {} for t in FEATURE_TYPES}
+        feats = features(h.meta)
+        for t, names in feats.items():
+            for name in dict.fromkeys(names):
+                adjusted[t][name] = _without(prof.stats[t].get(name), t, s, w, h)
+        views = {t: _LeaveOut(prof.stats[t], adjusted[t]) for t in FEATURE_TYPES}
+        loved_by = [(x, y) for x, y in (cidx.get(h.tmdb_id, []) if h.tmdb_id else []) if y.key != h.key]
+        vals = component_values(feats, h.meta, h.tmdb_id, lambda t: views[t], idf, loved_by)
+        out.append((h, {k: v for k, (v, _) in vals.items()}))
+    out.sort(key=lambda x: x[0].key)
+    return out
+
+
+def _ranks(xs: list[float]) -> list[float]:
+    order = sorted(range(len(xs)), key=lambda i: xs[i])
+    ranks = [0.0] * len(xs)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and xs[order[j + 1]] == xs[order[i]]:
+            j += 1
+        for k in range(i, j + 1):
+            ranks[order[k]] = (i + j) / 2.0 + 1
+        i = j + 1
+    return ranks
+
+
+def spearman(xs: list[float], ys: list[float]) -> float | None:
+    """Spearman rank correlation (average ranks for ties); None when undefined."""
+    n = len(xs)
+    if n < 2:
+        return None
+    rx, ry = _ranks(xs), _ranks(ys)
+    mx, my = sum(rx) / n, sum(ry) / n
+    sxy = sum((a - mx) * (b - my) for a, b in zip(rx, ry))
+    sxx = sum((a - mx) ** 2 for a in rx)
+    syy = sum((b - my) ** 2 for b in ry)
+    if sxx <= 0 or syy <= 0:
+        return None
+    return sxy / math.sqrt(sxx * syy)
+
+
+def top_quintile(preds: list[float], ratings: list[float]) -> tuple[float | None, float | None]:
+    """(hit rate of the top 20% predicted, base rate). A hit is a rating >= the user's own
+    70th-percentile rating."""
+    n = len(preds)
+    if n < MIN_METRIC_FILMS:
+        return None, None
+    thr = sorted(ratings)[min(n - 1, int(0.7 * n))]
+    base = sum(1 for r in ratings if r >= thr) / n
+    k = max(1, round(0.2 * n))
+    top = sorted(range(n), key=lambda i: -preds[i])[:k]
+    return sum(1 for i in top if ratings[i] >= thr) / k, base
+
+
+def _raw(vals: list[dict], weights: dict) -> list[float]:
+    return [sum(weights[k] * v[k] for k in TUNABLE) for v in vals]
+
+
+def _fit(vals: list[dict], ratings: list[float]) -> dict:
+    """Coordinate ascent over per-component multipliers (grid, 0.5x-2x), maximising Spearman."""
+    mult = {k: 1.0 for k in TUNABLE}
+
+    def score(m):
+        r = spearman(_raw(vals, {k: DEFAULT_WEIGHTS[k] * m[k] for k in TUNABLE}), ratings)
+        return -2.0 if r is None else r
+
+    best = score(mult)
+    for _ in range(SWEEPS):
+        improved = False
+        for k in TUNABLE:
+            keep = mult[k]
+            for g in MULTIPLIERS:
+                if g == keep:
+                    continue
+                mult[k] = g
+                sc = score(mult)
+                if sc > best + 1e-9:
+                    best, keep, improved = sc, g, True
+            mult[k] = keep
+        if not improved:
+            break
+    return {k: DEFAULT_WEIGHTS[k] * mult[k] for k in TUNABLE}
+
+
+def tune(rows: list[tuple]) -> dict:
+    """Cross-validated tuning of the component weights.
+
+    Folds are assigned deterministically (film order, i % 5). For each fold the weights are fitted
+    on the other folds and compared with the defaults on the held-out fold. The tuned weights
+    (fitted on all films) are adopted only with at least `MIN_BACKTEST_FILMS` films, a mean
+    held-out Spearman gain >= `MIN_CV_GAIN` and an improvement in >= `MIN_FOLDS_IMPROVED` folds.
+    """
+    vals = [v for _, v in rows]
+    ratings = [h.rating for h, _ in rows]
+    n = len(rows)
+    result = {"adopted": False, "weights": dict(DEFAULT_WEIGHTS), "cv_gain": None}
+    if n < MIN_BACKTEST_FILMS:
+        return result
+    gains = []
+    for f in range(CV_FOLDS):
+        tr = [i for i in range(n) if i % CV_FOLDS != f]
+        te = [i for i in range(n) if i % CV_FOLDS == f]
+        w = _fit([vals[i] for i in tr], [ratings[i] for i in tr])
+        tv, tr_ = [vals[i] for i in te], [ratings[i] for i in te]
+        a, b = spearman(_raw(tv, w), tr_), spearman(_raw(tv, DEFAULT_WEIGHTS), tr_)
+        if a is not None and b is not None:
+            gains.append(a - b)
+    if not gains:
+        return result
+    result["cv_gain"] = sum(gains) / len(gains)
+    if result["cv_gain"] >= MIN_CV_GAIN and sum(1 for g in gains if g > 0) >= MIN_FOLDS_IMPROVED:
+        result["adopted"] = True
+        result["weights"] = _fit(vals, ratings)
+    return result
+
+
+def backtest(history: list[Hist], cands: list[Cand] | None = None, now: datetime | None = None,
+             do_tune: bool = True) -> dict:
+    """Leave-one-out backtest (and tuning) of the scorer over the user's rated films.
+
+    Returns {"films", "spearman", "top_quintile_hit_rate", "base_rate", "weights",
+    "default_weights", "tuned", "default_spearman", "cv_gain"}; metrics are for the adopted
+    weights and are None when there are fewer than `MIN_METRIC_FILMS` backtestable films.
+    """
+    rows = loo_rows(history, cands, now)
+    tuned = tune(rows) if do_tune else {"adopted": False, "weights": dict(DEFAULT_WEIGHTS), "cv_gain": None}
+    weights = tuned["weights"]
+    ratings = [h.rating for h, _ in rows]
+    preds = _raw([v for _, v in rows], weights)
+    hit, base = top_quintile(preds, ratings)
+    r = spearman(preds, ratings) if len(rows) >= MIN_METRIC_FILMS else None
+    d = spearman(_raw([v for _, v in rows], DEFAULT_WEIGHTS), ratings) if len(rows) >= MIN_METRIC_FILMS else None
+    rd = lambda x: None if x is None else round(x, 4)  # noqa: E731
+    return {"films": len(rows), "spearman": rd(r), "top_quintile_hit_rate": rd(hit), "base_rate": rd(base),
+            "weights": {k: round(v, 4) for k, v in weights.items()},
+            "default_weights": {k: round(v, 4) for k, v in DEFAULT_WEIGHTS.items()},
+            "tuned": tuned["adopted"], "default_spearman": rd(d), "cv_gain": rd(tuned["cv_gain"])}

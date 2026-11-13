@@ -2,15 +2,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from . import plex, recommender as rec, tmdb
-from .db import set_meta
+from .db import get_meta, set_meta
 from .util import norm_title, now_iso, parse_iso
 
+log = logging.getLogger("movienight.library")
 FOREVER = "9999-12-31T00:00:00Z"
 
 
@@ -108,14 +110,19 @@ def _merge_meta(items: list[dict], det: dict | None) -> dict:
     }
 
 
-def load_state(conn: sqlite3.Connection) -> State:
-    now = datetime.now(timezone.utc)
+def feedback_key(tmdb_id: int | None, dkey: str) -> str:
+    """Key of a film in the votes/predictions/outcomes tables: stable across library re-syncs."""
+    return f"tmdb:{tmdb_id}" if tmdb_id else dkey
+
+
+def load_inputs(conn: sqlite3.Connection) -> tuple[list, list]:
+    """Candidates (Plex library) and Letterboxd history, with user state but not yet scored."""
     details = {r["tmdb_id"]: json.loads(r["json"]) for r in conn.execute("SELECT tmdb_id, json FROM tmdb_details")}
     recs = {r["tmdb_id"]: json.loads(r["json"]) for r in conn.execute("SELECT tmdb_id, json FROM tmdb_recs")}
 
     # ---- candidates
     rows = conn.execute(
-        "SELECT m.id, m.tmdb_id, i.server_id, i.rating_key, i.json, s.name sname, s.owned"
+        "SELECT m.id, m.dkey, m.tmdb_id, i.server_id, i.rating_key, i.json, s.name sname, s.owned"
         " FROM movies m JOIN plex_items i ON i.movie_id=m.id JOIN plex_servers s ON s.id=i.server_id"
         " WHERE s.enabled=1 ORDER BY m.id, s.owned DESC, s.name"
     ).fetchall()
@@ -130,7 +137,7 @@ def load_state(conn: sqlite3.Connection) -> State:
         meta = _merge_meta(items, details.get(tmdb_id) if tmdb_id else None)
         added = [parse_iso(it.get("added_at")) for it in items if it.get("added_at")]
         c = rec.Cand(
-            id=mid, title=meta["title"], year=meta["year"], tmdb_id=tmdb_id, meta=meta,
+            id=mid, title=meta["title"], year=meta["year"], tmdb_id=tmdb_id, meta=meta, dkey=rs[0]["dkey"],
             added_at=max(added) if added else None,
             plex_watched=any(r["owned"] and it.get("view_count", 0) > 0 for r, it in zip(rs, items)),
             plex=[{"server": r["sname"], "server_id": r["server_id"], "resolution": it.get("resolution"),
@@ -183,9 +190,182 @@ def load_state(conn: sqlite3.Connection) -> State:
             c.liked = bool(row["liked"])
             c.on_watchlist = bool(row["watchlist"]) and not row["watched"]
 
-    profile = rec.score_candidates(history, cands, now=now)
-    st = State(cands=cands, by_id={c.id: c for c in cands}, history=history, profile=profile)
-    return st
+    votes = {r["key"]: r["vote"] for r in conn.execute("SELECT key, vote FROM votes")}
+    for c in cands:
+        c.vote = votes.get(feedback_key(c.tmdb_id, c.dkey))
+    return cands, history
+
+
+def load_state(conn: sqlite3.Connection) -> State:
+    now = datetime.now(timezone.utc)
+    cands, history = load_inputs(conn)
+    profile = rec.score_candidates(history, cands, now=now, weights=load_weights(conn))
+    store_predictions(conn, cands, profile)
+    return State(cands=cands, by_id={c.id: c for c in cands}, history=history, profile=profile)
+
+
+# --------------------------------------------------------------------------- feedback loop
+
+def load_weights(conn: sqlite3.Connection) -> dict | None:
+    """The adopted (tuned) component weights, or None for the defaults."""
+    try:
+        w = json.loads(get_meta(conn, "model_weights") or "null")
+    except ValueError:
+        return None
+    if isinstance(w, dict) and all(isinstance(w.get(k), (int, float)) for k in rec.TUNABLE):
+        return {k: float(w[k]) for k in rec.TUNABLE}
+    return None
+
+
+def empty_backtest() -> dict:
+    d = {k: round(v, 4) for k, v in rec.DEFAULT_WEIGHTS.items()}
+    return {"films": 0, "spearman": None, "top_quintile_hit_rate": None, "base_rate": None, "weights": dict(d),
+            "default_weights": d, "tuned": False, "computed_at": None}
+
+
+def load_backtest(conn: sqlite3.Connection) -> dict:
+    try:
+        bt = json.loads(get_meta(conn, "model_backtest") or "null")
+    except ValueError:
+        bt = None
+    return bt if isinstance(bt, dict) else empty_backtest()
+
+
+def refresh_model(conn: sqlite3.Connection) -> dict:
+    """Run the leave-one-out backtest and tuning, and persist the result (weights only if adopted).
+
+    CPU-bound (well under a few seconds for hundreds of films): call from a thread, never from a
+    request handler.
+    """
+    cands, history = load_inputs(conn)
+    bt = rec.backtest(history, cands)
+    bt["computed_at"] = now_iso()
+    if not bt["tuned"]:
+        bt["weights"] = dict(bt["default_weights"])
+    set_meta(conn, "model_weights", json.dumps(bt["weights"]) if bt["tuned"] else None)
+    set_meta(conn, "model_backtest", json.dumps(bt))
+    conn.commit()
+    return bt
+
+
+def model_summary(conn: sqlite3.Connection) -> dict:
+    bt = load_backtest(conn)
+    return {k: bt.get(k) for k in ("films", "spearman", "top_quintile_hit_rate", "base_rate", "tuned")}
+
+
+def store_predictions(conn: sqlite3.Connection, cands: list, profile: rec.Profile) -> None:
+    """Upsert the latest predicted match of every not-yet-watched library film.
+
+    Skipped while the user has no Letterboxd history: such predictions are not about taste and
+    must not later turn into outcomes when the first export is imported.
+    """
+    if not profile.n_watched:
+        return
+    now = now_iso()
+    rows = [(feedback_key(c.tmdb_id, c.dkey), c.tmdb_id, norm_title(c.title), c.year, c.title, c.match, now, now)
+            for c in cands if not c.watched]
+    try:
+        conn.executemany(
+            "INSERT INTO predictions(key,tmdb_id,norm_title,year,title,match,first_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET tmdb_id=excluded.tmdb_id,"
+            " norm_title=excluded.norm_title, year=excluded.year, title=excluded.title,"
+            " match=excluded.match, updated_at=excluded.updated_at", rows)
+        conn.commit()
+    except sqlite3.Error as e:      # never break recommendations over bookkeeping
+        log.warning("could not store predictions: %s", e)
+
+
+def record_outcomes(conn: sqlite3.Connection) -> int:
+    """Freeze outcomes for films that were predicted and have since been watched on Letterboxd.
+
+    A watched Letterboxd film matches a stored prediction by TMDB id, else by normalised
+    title + year. An outcome is created once per film, only if the film was first predicted
+    no later than its watch date (so films already watched when first predicted, e.g. the
+    first import, never count); later calls only refresh rating / liked / watched date, since
+    the rating may arrive after the watch. Returns the number of new outcomes.
+    """
+    preds = conn.execute("SELECT * FROM predictions").fetchall()
+    if not preds:
+        return 0
+    by_tmdb = {p["tmdb_id"]: p for p in preds if p["tmdb_id"]}
+    by_ny = {(p["norm_title"], p["year"]): p for p in preds}
+    have = {r["key"]: r for r in conn.execute("SELECT * FROM outcomes")}
+    created = 0
+    for row in conn.execute("SELECT * FROM lb_films WHERE watched=1").fetchall():
+        p = by_tmdb.get(row["tmdb_id"]) if row["tmdb_id"] else None
+        if p is None:
+            p = by_ny.get((row["norm_title"], row["year"]))
+        if p is None:
+            continue
+        old = have.get(p["key"])
+        if old is not None:
+            if (old["rating"], old["liked"], old["watched_date"]) != (row["rating"], row["liked"], row["watched_date"]):
+                conn.execute("UPDATE outcomes SET rating=?, liked=?, watched_date=? WHERE id=?",
+                             (row["rating"], row["liked"], row["watched_date"], old["id"]))
+            continue
+        if row["watched_date"] and row["watched_date"][:10] < p["first_at"][:10]:
+            continue
+        conn.execute(
+            "INSERT INTO outcomes(key,lb_id,tmdb_id,title,year,predicted,rating,liked,watched_date,recorded_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (p["key"], row["id"], p["tmdb_id"] or row["tmdb_id"], p["title"], p["year"], p["match"],
+             row["rating"], row["liked"], row["watched_date"], now_iso()))
+        created += 1
+    conn.commit()
+    return created
+
+
+HIT_MATCH = 70          # a prediction at or above this counts as "high"
+VERDICT_MARGIN = 0.5    # "clearly" above/below the user's mean rating = half a star
+
+
+def verdict(predicted: int, rating: float | None, user_mean: float | None) -> str:
+    """Was the app right about this film?
+
+    * pending: no rating yet (or no mean to compare with);
+    * hit: predicted >= 70 and rated at least 0.5 above the user's mean rating;
+    * miss: predicted >= 70 and rated at least 0.5 below it;
+    * ok: everything else (including low predictions, which were never a recommendation).
+    """
+    if rating is None or user_mean is None:
+        return "pending"
+    if predicted >= HIT_MATCH:
+        if rating >= user_mean + VERDICT_MARGIN:
+            return "hit"
+        if rating <= user_mean - VERDICT_MARGIN:
+            return "miss"
+    return "ok"
+
+
+def feedback_json(conn: sqlite3.Connection) -> dict:
+    mean_row = conn.execute("SELECT AVG(rating) FROM lb_films WHERE watched=1 AND rating IS NOT NULL").fetchone()[0]
+    user_mean = float(mean_row) if mean_row is not None else None
+    posters = {}
+    outcomes = []
+    for r in conn.execute("SELECT * FROM outcomes ORDER BY COALESCE(watched_date,'') DESC, id DESC"):
+        poster = None
+        if r["tmdb_id"]:
+            if r["tmdb_id"] not in posters:
+                d = conn.execute("SELECT json FROM tmdb_details WHERE tmdb_id=?", (r["tmdb_id"],)).fetchone()
+                posters[r["tmdb_id"]] = tmdb.poster_url((json.loads(d[0]) if d else {}).get("poster_path"))
+            poster = posters[r["tmdb_id"]]
+        outcomes.append({"title": r["title"], "year": r["year"], "poster_url": poster, "predicted": r["predicted"],
+                         "my_rating": r["rating"], "liked": bool(r["liked"]), "watched_date": r["watched_date"],
+                         "verdict": verdict(r["predicted"], r["rating"], user_mean)})
+    rated = [o["my_rating"] for o in outcomes if o["my_rating"] is not None]
+    votes = {r[0]: r[1] for r in conn.execute("SELECT vote, COUNT(*) FROM votes GROUP BY vote")}
+    return {
+        "outcomes": outcomes,
+        "summary": {
+            "count": len(outcomes), "rated": len(rated),
+            "hits": sum(1 for o in outcomes if o["verdict"] == "hit"),
+            "misses": sum(1 for o in outcomes if o["verdict"] == "miss"),
+            "mean_rating_of_picks": round(sum(rated) / len(rated), 2) if rated else None,
+            "user_mean_rating": round(user_mean, 2) if user_mean is not None else None,
+        },
+        "votes": {"up": votes.get(1, 0), "down": votes.get(-1, 0)},
+        "backtest": load_backtest(conn),
+    }
 
 
 class Engine:
@@ -250,6 +430,7 @@ def movie_json(c: rec.Cand, st: State, dismissed: dict, with_reasons: bool = Tru
         "watched": c.watched,
         "my_rating": c.my_rating,
         "liked": c.liked,
+        "my_vote": c.vote,
         "dismissed_until": dismissed.get(c.id),
         "added_at": c.added_at.strftime("%Y-%m-%dT%H:%M:%SZ") if c.added_at else None,
         "plex": [{k: p[k] for k in ("server", "server_id", "resolution", "url")} for p in c.plex],
@@ -263,7 +444,7 @@ def movie_detail_json(c: rec.Cand, st: State, dismissed: dict) -> dict:
     return d
 
 
-def profile_json(st: State) -> dict:
+def profile_json(st: State, model: dict | None = None) -> dict:
     p = st.profile
     watched = [h for h, _, _ in p.signals]
     hours = sum((h.runtime or 0) for h in watched) / 60.0
@@ -303,6 +484,8 @@ def profile_json(st: State) -> dict:
         "cast": table("cast", 2, 20),
         "decades": sorted(table("decade", 1, 20, key="decade"), key=lambda r: r["decade"]),
         "keywords": table("keyword", 2, 24, with_mean=False),
+        "model": model if model is not None else {k: v for k, v in empty_backtest().items()
+                                                  if k in ("films", "spearman", "top_quintile_hit_rate", "base_rate", "tuned")},
         "top_rated": [{"title": h.title, "year": h.year, "my_rating": h.rating, "liked": h.liked,
                        "poster_url": h.poster} for h, _, _ in top],
     }
