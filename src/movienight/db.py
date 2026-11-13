@@ -66,6 +66,40 @@ MIGRATIONS = [
         created_at TEXT
     );
     """,
+    # 2: feedback loop (thumbs, prediction tracking, outcomes). Keys are `tmdb:<id>` when the TMDB id
+    # is known, else the library's dedupe key (movies.dkey), so they survive library re-syncs.
+    """
+    CREATE TABLE IF NOT EXISTS votes (
+        key TEXT PRIMARY KEY,
+        vote INTEGER NOT NULL,          -- 1 or -1 (0 deletes the row)
+        updated_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS predictions (
+        key TEXT PRIMARY KEY,
+        tmdb_id INTEGER,
+        norm_title TEXT NOT NULL,
+        year INTEGER,
+        title TEXT NOT NULL,
+        match INTEGER NOT NULL,
+        first_at TEXT NOT NULL,         -- when the film was first predicted
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS predictions_tmdb ON predictions(tmdb_id);
+    CREATE INDEX IF NOT EXISTS predictions_ny ON predictions(norm_title, year);
+    CREATE TABLE IF NOT EXISTS outcomes (
+        id INTEGER PRIMARY KEY,
+        key TEXT NOT NULL UNIQUE,
+        lb_id INTEGER,
+        tmdb_id INTEGER,
+        title TEXT NOT NULL,
+        year INTEGER,
+        predicted INTEGER NOT NULL,
+        rating REAL,
+        liked INTEGER NOT NULL DEFAULT 0,
+        watched_date TEXT,
+        recorded_at TEXT NOT NULL
+    );
+    """,
 ]
 
 

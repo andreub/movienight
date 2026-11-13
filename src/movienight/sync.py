@@ -146,6 +146,7 @@ class SyncManager:
                 except Exception as e:  # noqa: BLE001
                     self._fail("letterboxd rss", e)
             conn.commit()
+            library.record_outcomes(conn)
         finally:
             conn.close()
         self.engine.invalidate()
@@ -163,8 +164,18 @@ class SyncManager:
         self.engine.invalidate()
 
     async def stage_profile(self) -> None:
+        await asyncio.to_thread(self._refresh_model)
         self.engine.invalidate()
         await asyncio.to_thread(self.engine.get)
+
+    def _refresh_model(self) -> None:
+        """Backtest + weight tuning, then freeze outcomes (runs in a worker thread)."""
+        conn = connect(self.cfg.db_path)
+        try:
+            library.record_outcomes(conn)
+            library.refresh_model(conn)
+        finally:
+            conn.close()
 
     # ---- TMDB work, resumable: only what is missing
     async def _batches(self, items: list, fn, on_done) -> None:

@@ -34,6 +34,10 @@ class DismissBody(BaseModel):
     days: int = Field(default=30, ge=0, le=3650)
 
 
+class VoteBody(BaseModel):
+    vote: Literal[1, -1, 0]
+
+
 class ServerBody(BaseModel):
     enabled: bool
 
@@ -190,6 +194,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         try:
             with db.session(cfg.db_path) as c:
                 counts = lb.import_zip(c, data)
+                library.record_outcomes(c)
         except lb.ExportError as e:
             raise HTTPException(400, str(e)) from None
         engine().invalidate()
@@ -285,9 +290,40 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             c.execute("DELETE FROM dismissals WHERE movie_id=?", (movie_id,))
         return {"ok": True}
 
+    @app.post("/api/movies/{movie_id}/feedback")
+    def feedback(movie_id: int, body: VoteBody):
+        with db.session(cfg.db_path) as c:
+            row = c.execute("SELECT tmdb_id, dkey FROM movies WHERE id=?", (movie_id,)).fetchone()
+            if row is None:
+                raise HTTPException(404, "Movie not found")
+            key = library.feedback_key(row["tmdb_id"], row["dkey"])
+            if body.vote == 0:
+                c.execute("DELETE FROM votes WHERE key=?", (key,))
+            else:
+                c.execute("INSERT INTO votes(key, vote, updated_at) VALUES(?,?,?) ON CONFLICT(key)"
+                          " DO UPDATE SET vote=excluded.vote, updated_at=excluded.updated_at",
+                          (key, body.vote, now_iso()))
+        engine().invalidate()
+        return {"ok": True}
+
+    @app.get("/api/feedback")
+    def feedback_overview():
+        c = conn()
+        try:
+            library.record_outcomes(c)
+            return library.feedback_json(c)
+        finally:
+            c.close()
+
     @app.get("/api/profile")
     def profile():
-        return library.profile_json(engine().get())
+        st = engine().get()
+        c = conn()
+        try:
+            model = library.model_summary(c)
+        finally:
+            c.close()
+        return library.profile_json(st, model)
 
     # ---- images
     @app.get("/api/image/{movie_id}/{kind}")
