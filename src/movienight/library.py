@@ -480,7 +480,7 @@ def profile_json(st: State, model: dict | None = None) -> dict:
         },
         "rating_histogram": [{"rating": r / 2, "count": hist_counts.get(r / 2, 0)} for r in range(1, 11)],
         "genres": table("genre", 1, 20),
-        "directors": table("director", 1, 20),
+        "directors": table("director", 2, 20),  # one film says little about a director
         "cast": table("cast", 2, 20),
         "decades": sorted(table("decade", 1, 20, key="decade"), key=lambda r: r["decade"]),
         "keywords": table("keyword", 2, 24, with_mean=False),
