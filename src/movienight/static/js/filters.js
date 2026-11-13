@@ -2,14 +2,17 @@
 import { getMoods } from './api.js';
 import { h, icon } from './dom.js';
 import { RUNTIMES, setFilters, hasQuickFilters } from './state.js';
+import { timeControl, rememberRuntime } from './timecontrol.js';
 
 let uid = 0;
 
-export function filterBar() {
+// `time: true` (Tonight) swaps the length segments for the clock-aware "Done by" control.
+export function filterBar({ time = false } = {}) {
+  const timeCtl = time ? timeControl() : null;
   const name = `rt-${++uid}`;
   const moods = h('div', { class: 'chips chips--scroll', role: 'group', 'aria-label': 'Mood' });
   const runtimeInputs = RUNTIMES.map(([value, label]) => {
-    const input = h('input', { type: 'radio', name, value: value ?? '', class: 'seg__input', onchange: () => setFilters({ rt: value }) });
+    const input = h('input', { type: 'radio', name, value: value ?? '', class: 'seg__input', onchange: () => { rememberRuntime(value); setFilters({ rt: value }); } });
     return [input, h('label', { class: 'seg__item' }, input, h('span', { text: label }))];
   });
   const watchlist = h('button', {
@@ -18,15 +21,16 @@ export function filterBar() {
   }, icon('watchlist'), h('span', { class: 'chip__label', text: 'Watchlist only' }));
   const reset = h('button', {
     type: 'button', class: 'linkbtn', hidden: true,
-    onclick: () => setFilters({ mood: null, rt: null, wl: false }),
+    onclick: () => { rememberRuntime(null); setFilters({ mood: null, rt: null, wl: false }); },
   }, 'Clear');
 
   const el = h('div', { class: 'filters' },
     moods,
     h('div', { class: 'filters__row' },
-      h('fieldset', { class: 'seg' }, h('legend', { class: 'sr-only', text: 'Length' }), runtimeInputs.map(([, l]) => l)),
+      timeCtl ? timeCtl.chip : h('fieldset', { class: 'seg' }, h('legend', { class: 'sr-only', text: 'Length' }), runtimeInputs.map(([, l]) => l)),
       watchlist,
-      reset));
+      reset),
+    timeCtl?.note);
 
   let state = null;
   let moodButtons = [];
@@ -43,6 +47,7 @@ export function filterBar() {
   function sync(f) {
     state = f;
     for (const b of moodButtons) b.setAttribute('aria-pressed', String(b.dataset.id === f.mood));
+    timeCtl?.sync(f);
     for (const [input] of runtimeInputs) input.checked = input.value === String(f.rt ?? '');
     watchlist.setAttribute('aria-pressed', String(f.wl));
     reset.hidden = !hasQuickFilters(f);

@@ -3,6 +3,15 @@
 
 const MOCK = new URLSearchParams(location.search).get('mock');
 let mock = null;
+let redirected = false;
+
+// A 401 from /api means the login session ended: go to /login once, and come back here afterwards.
+function sessionEnded(status) {
+  if (status !== 401 || MOCK || redirected) return false;
+  redirected = true;
+  location.assign(`/login?next=${encodeURIComponent(location.pathname + location.search + location.hash)}`);
+  return true;
+}
 
 export class ApiError extends Error {
   constructor(status, detail) {
@@ -49,7 +58,10 @@ async function request(method, path, { params, json, form } = {}) {
     throw new ApiError(0, 'Could not reach MovieNight. Check that the server is running and you are online.');
   }
   const data = await res.json().catch(() => null);
-  if (!res.ok) throw new ApiError(res.status, detailOf(data, res.status));
+  if (!res.ok) {
+    sessionEnded(res.status);
+    throw new ApiError(res.status, detailOf(data, res.status));
+  }
   return data;
 }
 
@@ -62,6 +74,10 @@ export const api = {
   dismiss: (id, days) => request('POST', `/api/movies/${id}/dismiss`, { json: { days } }),
   undismiss: (id) => request('DELETE', `/api/movies/${id}/dismiss`),
   profile: () => request('GET', '/api/profile'),
+  feedback: (id, vote) => request('POST', `/api/movies/${id}/feedback`, { json: { vote } }),
+  feedbackSummary: () => request('GET', '/api/feedback'),
+  me: () => request('GET', '/api/me'),
+  chatStatus: () => request('GET', '/api/chat/status'),
   plexPin: () => request('POST', '/api/plex/pin'),
   plexPinCheck: (id) => request('GET', `/api/plex/pin/${id}`),
   plexLogout: () => request('POST', '/api/plex/logout'),
@@ -79,4 +95,72 @@ let moodsPromise = null;
 export function getMoods() {
   moodsPromise ??= api.moods().catch((e) => { moodsPromise = null; throw e; });
   return moodsPromise;
+}
+
+// AI chat availability, fetched once. Any failure (old backend, network) counts as "off".
+let chatPromise = null;
+export function getChatStatus() {
+  chatPromise ??= api.chatStatus().then((s) => ({ enabled: Boolean(s?.enabled), model: s?.model || '' })).catch(() => ({ enabled: false, model: '' }));
+  return chatPromise;
+}
+
+function parseSse(raw) {
+  let event = 'message';
+  const data = [];
+  for (const line of raw.split('\n')) {
+    if (!line || line.startsWith(':')) continue;
+    const i = line.indexOf(':');
+    const field = i < 0 ? line : line.slice(0, i);
+    const value = i < 0 ? '' : line.slice(i + 1).replace(/^ /, '');
+    if (field === 'event') event = value;
+    else if (field === 'data') data.push(value);
+  }
+  if (!data.length) return null;
+  try { return { event, data: JSON.parse(data.join('\n')) }; } catch { return null; }
+}
+
+// POST /api/chat as a stream of { event, data }. fetch + ReadableStream because EventSource cannot POST.
+export async function* chatStream(messages, signal) {
+  if (MOCK) {
+    mock ??= await import('/static/mock.js');
+    yield* mock.chatStream(messages, signal);
+    return;
+  }
+  let res;
+  try {
+    res = await fetch('/api/chat', {
+      method: 'POST', signal,
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify({ messages }),
+    });
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    throw new ApiError(0, 'Could not reach MovieNight. Check that the server is running and you are online.');
+  }
+  if (!res.ok) {
+    sessionEnded(res.status);
+    const data = await res.json().catch(() => null);
+    throw new ApiError(res.status, detailOf(data, res.status));
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      buf += decoder.decode(value, { stream: !done });
+      buf = buf.replace(/\r\n/g, '\n');
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const ev = parseSse(buf.slice(0, i));
+        buf = buf.slice(i + 2);
+        if (ev) yield ev;
+      }
+      if (done) break;
+    }
+    const last = buf.trim() ? parseSse(buf) : null;
+    if (last) yield last;
+  } finally {
+    reader.cancel().catch(() => {});
+  }
 }
