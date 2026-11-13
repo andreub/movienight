@@ -341,11 +341,19 @@ def score_candidates(history: list[Hist], cands: list[Cand], prof: Profile | Non
 
 
 def calibrate(cands: list[Cand]) -> None:
-    """Map raw scores to 0-100: blend of a logistic around the median and the percentile rank."""
+    """Map raw scores to 0-100: blend of a logistic around the median and the percentile rank.
+
+    The watchlist is left out of that scale and applied afterwards as a lift of half the
+    distance to the top. Inside the raw score it pushed every watchlist film to the same
+    ceiling, so they could not be told apart; this way they stay ordered by taste and a
+    weak watchlist film does not outrank a great match."""
+    def taste(c: Cand) -> float:
+        return c.raw - (W_WATCHLIST if c.on_watchlist else 0.0)
+
     ref_src = [c for c in cands if not c.watched] or cands
     if not cands:
         return
-    ref = sorted(c.raw for c in ref_src)
+    ref = sorted(taste(c) for c in ref_src)
     n = len(ref)
     med = ref[n // 2]
     q1, q3 = ref[n // 4], ref[min(n - 1, (3 * n) // 4)]
@@ -357,13 +365,16 @@ def calibrate(cands: list[Cand]) -> None:
         if scale < 1e-9 or n == 1:
             z, p = 0.0, 0.5
         else:
-            z = max(-8.0, min(8.0, (c.raw - med) / scale))
-            lo, hi = bisect_left(ref, c.raw), bisect_right(ref, c.raw)
+            z = max(-8.0, min(8.0, (taste(c) - med) / scale))
+            lo, hi = bisect_left(ref, taste(c)), bisect_right(ref, taste(c))
             p = ((lo + hi - 1) / 2) / (n - 1)
             p = max(0.0, min(1.0, p))
         logistic = 1.0 / (1.0 + math.exp(-1.2 * z))
         m = 0.5 * logistic + 0.5 * p
-        c.match = max(1, min(99, round(100 * (0.06 + 0.9 * m))))
+        match = 100 * (0.06 + 0.9 * m)
+        if c.on_watchlist:
+            match += 0.5 * (99 - match)
+        c.match = max(1, min(99, round(match)))
 
 
 # --------------------------------------------------------------------------- reasons
