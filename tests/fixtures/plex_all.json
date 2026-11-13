@@ -1,0 +1,114 @@
+{
+ "MediaContainer": {
+  "size": 3,
+  "totalSize": 3,
+  "Metadata": [
+   {
+    "ratingKey": "1",
+    "title": "Alpha Heist",
+    "year": 2015,
+    "summary": "s",
+    "duration": 6000000,
+    "rating": 7.0,
+    "viewCount": 2,
+    "addedAt": 1700000000,
+    "Genre": [
+     {
+      "tag": "Crime"
+     },
+     {
+      "tag": "Thriller"
+     }
+    ],
+    "Director": [
+     {
+      "tag": "Dir One"
+     }
+    ],
+    "Role": [
+     {
+      "tag": "Actor A"
+     },
+     {
+      "tag": "Actor B"
+     }
+    ],
+    "Guid": [
+     {
+      "id": "tmdb://101"
+     },
+     {
+      "id": "imdb://tt1"
+     }
+    ],
+    "Media": [
+     {
+      "videoResolution": "1080"
+     }
+    ],
+    "thumb": "/library/metadata/1/thumb/1",
+    "art": "/library/metadata/1/art/1"
+   },
+   {
+    "ratingKey": "2",
+    "title": "Zeta Noir",
+    "year": 2018,
+    "summary": "s",
+    "duration": 6000000,
+    "rating": 7.0,
+    "viewCount": 0,
+    "addedAt": 1700000000,
+    "Genre": [
+     {
+      "tag": "Crime"
+     }
+    ],
+    "Director": [
+     {
+      "tag": "Dir One"
+     }
+    ],
+    "Role": [
+     {
+      "tag": "Actor A"
+     }
+    ],
+    "Guid": [
+     {
+      "id": "imdb://tt9"
+     }
+    ],
+    "Media": [
+     {
+      "videoResolution": "1080"
+     }
+    ],
+    "thumb": "/library/metadata/2/thumb/1",
+    "art": "/library/metadata/2/art/1"
+   },
+   {
+    "ratingKey": "3",
+    "title": "No Ids Movie",
+    "year": 2000,
+    "summary": "s",
+    "duration": 6000000,
+    "rating": 7.0,
+    "viewCount": 0,
+    "addedAt": 1700000000,
+    "Genre": [
+     {
+      "tag": "Drama"
+     }
+    ],
+    "Director": [],
+    "Role": [],
+    "Guid": [],
+    "Media": [
+     {
+      "videoResolution": "480"
+     }
+    ]
+   }
+  ]
+ }
+}

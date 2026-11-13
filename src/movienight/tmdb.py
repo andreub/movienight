@@ -1,0 +1,142 @@
+"""TMDB client: search/resolve, details, recommendations. Credentials never logged."""
+from __future__ import annotations
+
+import asyncio
+import logging
+
+import httpx
+
+from .util import norm_title
+
+log = logging.getLogger("movienight.tmdb")
+API = "https://api.themoviedb.org/3"
+IMG = "https://image.tmdb.org/t/p"
+TIMEOUT = httpx.Timeout(15.0, connect=5.0)
+
+
+def poster_url(path: str | None) -> str | None:
+    return f"{IMG}/w500{path}" if path else None
+
+
+def backdrop_url(path: str | None) -> str | None:
+    return f"{IMG}/w1280{path}" if path else None
+
+
+class TmdbError(RuntimeError):
+    pass
+
+
+class Tmdb:
+    def __init__(self, client: httpx.AsyncClient, token: str, concurrency: int = 8, sleep=asyncio.sleep):
+        self.client = client
+        self.token = token.strip()
+        self.sem = asyncio.Semaphore(concurrency)
+        self.sleep = sleep
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.token)
+
+    def _auth(self, params: dict | None) -> tuple[dict, dict]:
+        headers = {"Accept": "application/json"}
+        params = dict(params or {})
+        if self.token.startswith("eyJ"):
+            headers["Authorization"] = f"Bearer {self.token}"
+        else:
+            params["api_key"] = self.token
+        return headers, params
+
+    async def get(self, path: str, params: dict | None = None) -> dict | None:
+        """GET with bounded concurrency and retries. Returns None on 404."""
+        headers, params = self._auth(params)
+        async with self.sem:
+            for attempt in range(5):
+                try:
+                    r = await self.client.get(API + path, params=params, headers=headers, timeout=TIMEOUT)
+                except httpx.TransportError:
+                    if attempt >= 2:
+                        raise
+                    await self.sleep(1 + attempt)
+                    continue
+                if r.status_code == 429:
+                    try:
+                        wait = float(r.headers.get("Retry-After", "2"))
+                    except ValueError:
+                        wait = 2.0
+                    await self.sleep(min(max(wait, 0.5), 30.0))
+                    continue
+                if r.status_code >= 500 and attempt < 2:
+                    await self.sleep(1 + attempt)
+                    continue
+                if r.status_code == 404:
+                    return None
+                if r.status_code in (401, 403):
+                    raise TmdbError("TMDB credentials were rejected")
+                r.raise_for_status()
+                return r.json()
+        raise TmdbError("TMDB rate limit: giving up for now")
+
+    async def search(self, title: str, year: int | None) -> int | None:
+        """Resolve (title, year) to a TMDB id; tries year, year-1, year+1."""
+        want = norm_title(title)
+        if not want:
+            return None
+        years: list[int | None] = [year, year - 1, year + 1] if year else [None]
+        for y in years:
+            params = {"query": title, "include_adult": "false"}
+            if y:
+                params["year"] = y
+            data = await self.get("/search/movie", params)
+            hit = pick_search_result(data, want)
+            if hit:
+                return hit
+        return None
+
+    async def details(self, tmdb_id: int) -> dict | None:
+        raw = await self.get(f"/movie/{int(tmdb_id)}", {"append_to_response": "credits,keywords"})
+        return compact_details(raw) if raw else None
+
+    async def recommendations(self, tmdb_id: int) -> list[int]:
+        data = await self.get(f"/movie/{int(tmdb_id)}/recommendations")
+        return [r["id"] for r in (data or {}).get("results", []) if r.get("id")]
+
+
+def pick_search_result(data: dict | None, want_norm: str) -> int | None:
+    results = (data or {}).get("results") or []
+    for r in results:
+        if want_norm in (norm_title(r.get("title")), norm_title(r.get("original_title"))):
+            return r["id"]
+    if len(want_norm) >= 6:
+        for r in results:
+            t = norm_title(r.get("title"))
+            if t and (want_norm in t or t in want_norm) and min(len(t), len(want_norm)) >= 6:
+                return r["id"]
+    return None
+
+
+def compact_details(raw: dict) -> dict:
+    credits = raw.get("credits") or {}
+    crew = credits.get("crew") or []
+    cast = sorted(credits.get("cast") or [], key=lambda c: c.get("order", 999))
+    kws = (raw.get("keywords") or {}).get("keywords") or []
+    date = raw.get("release_date") or ""
+    return {
+        "id": raw.get("id"),
+        "title": raw.get("title") or "",
+        "original_title": raw.get("original_title") or raw.get("title") or "",
+        "year": int(date[:4]) if date[:4].isdigit() else None,
+        "runtime": raw.get("runtime") or None,
+        "tagline": raw.get("tagline") or "",
+        "overview": raw.get("overview") or "",
+        "genres": [g["name"] for g in raw.get("genres") or [] if g.get("name")],
+        "directors": [c["name"] for c in crew if c.get("job") == "Director" and c.get("name")],
+        "cast": [c["name"] for c in cast[:12] if c.get("name")],
+        "keywords": [k["name"] for k in kws if k.get("name")],
+        "language": raw.get("original_language") or None,
+        "countries": [c["iso_3166_1"] for c in raw.get("production_countries") or [] if c.get("iso_3166_1")],
+        "vote_average": raw.get("vote_average"),
+        "vote_count": raw.get("vote_count"),
+        "poster_path": raw.get("poster_path"),
+        "backdrop_path": raw.get("backdrop_path"),
+        "imdb_id": raw.get("imdb_id"),
+    }
