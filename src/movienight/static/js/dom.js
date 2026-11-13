@@ -54,6 +54,7 @@ const ICONS = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   thumbup: '<path d="M7 11v9H4v-9zM7 11l4-8c1.5 0 2.5 1 2.5 2.5V9H19a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.8 20H7"/>',
   thumbdown: '<g transform="rotate(180 12 12)"><path d="M7 11v9H4v-9zM7 11l4-8c1.5 0 2.5 1 2.5 2.5V9H19a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.8 20H7"/></g>',
+  eye: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   heart: '<path d="M12 20s-8-5-8-11a4.5 4.5 0 0 1 8-2.8A4.5 4.5 0 0 1 20 9c0 6-8 11-8 11z" fill="currentColor"/>',
 };
@@ -176,13 +177,17 @@ export function announce(text) {
   requestAnimationFrame(() => { el.textContent = text; });
 }
 
-export function toast(message, { action = null, timeout = 6000 } = {}) {
+// `extra(remove)` may return a node (e.g. quick buttons); the toast then wraps onto two rows.
+export function toast(message, { action = null, timeout = 6000, extra = null } = {}) {
   const host = document.querySelector('dialog[open] .toasts') || document.querySelector('body > .toasts');
   const remove = () => { el.classList.add('is-leaving'); setTimeout(() => el.remove(), 200); };
-  const el = h('div', { class: 'toast' },
-    h('span', { class: 'toast__text', text: message }),
-    action ? h('button', { class: 'toast__action', type: 'button', onclick: () => { remove(); action.run(); } }, action.label) : null,
-    h('button', { class: 'toast__close', type: 'button', 'aria-label': 'Dismiss message', onclick: remove }, icon('close')));
+  const text = h('span', { class: 'toast__text', text: message });
+  const actionBtn = action ? h('button', { class: 'toast__action', type: 'button', onclick: () => { remove(); action.run(); } }, action.label) : null;
+  const close = h('button', { class: 'toast__close', type: 'button', 'aria-label': 'Dismiss message', onclick: remove }, icon('close'));
+  const extras = extra ? extra(remove) : null;
+  const el = extras
+    ? h('div', { class: 'toast toast--rich' }, text, close, extras, actionBtn)
+    : h('div', { class: 'toast' }, text, actionBtn, close);
   host.append(el);
   setTimeout(remove, timeout);
 }

@@ -52,6 +52,20 @@ const FRESH = params.get('mock') === 'fresh';
 const NOFB = params.get('mock') === 'nofb'; // no accuracy check or outcomes yet
 const NOCHAT = params.get('mock') === 'nochat'; // AI chat switched off
 const votes = new Map();
+const seenSet = new Set(); // films marked "seen it" in this session
+
+// Extra well-known films, only for the "Seen these?" triage screen (not part of Browse or Tonight).
+const CLASSICS = ['The Matrix', 'Fargo', 'The Fellowship of the Ring', 'Pulp Fiction', 'Jurassic Park', 'Forrest Gump', 'Goodfellas', 'Alien', 'Back to the Future', 'The Shining',
+  'Gladiator', 'Se7en', 'Casablanca', 'Titanic', 'Toy Story', 'The Silence of the Lambs', 'Braveheart', 'Die Hard', 'Ghostbusters', 'The Princess Bride',
+  'Heat', 'Léon: The Professional', 'Psycho', 'Star Wars', 'Raiders of the Lost Ark', 'The Godfather', 'Blade Runner', 'Terminator 2', 'Amélie', 'The Truman Show'];
+const triage = Array.from({ length: 84 }, (_, i) => {
+  const base = CLASSICS[i % CLASSICS.length];
+  return {
+    id: 500 + i, title: i < CLASSICS.length ? base : `${base} ${['II', 'III', 'Returns', 'Redux'][i % 4]}`, year: 1975 + ((i * 7) % 48), runtime: 90 + (i % 5) * 12,
+    genres: ['Drama'], directors: [], cast: [], poster_url: null, backdrop_url: null, tmdb_votes: 90000 - i * 900, match: 60, reasons: [],
+    on_watchlist: false, watched: false, my_rating: null, liked: false, dismissed_until: null, plex: [],
+  };
+}).filter((m) => m.year <= new Date().getFullYear() - 3);
 
 function reasonsFor(m, i) {
   const r = [];
@@ -108,7 +122,7 @@ function syncInfo() {
 
 const isDismissed = (m) => dismissed.has(m.id) && dismissed.get(m.id) > Date.now();
 function view(m) {
-  return { ...m, my_vote: votes.get(m.id) || null, dismissed_until: isDismissed(m) ? new Date(dismissed.get(m.id)).toISOString() : null };
+  return { ...m, watched: seenSet.has(m.id), seen_here: seenSet.has(m.id), my_vote: votes.get(m.id) || null, dismissed_until: isDismissed(m) ? new Date(dismissed.get(m.id)).toISOString() : null };
 }
 
 function filter(p) {
@@ -116,6 +130,7 @@ function filter(p) {
   const q = (p.q || '').toLowerCase();
   const mood = MOODS.find((x) => x.id === p.mood);
   return movies.filter((m) => (p.include_dismissed || !isDismissed(m))
+    && (p.include_watched || !seenSet.has(m.id))
     && (!mood || mood.test(m))
     && (!p.max_runtime || (m.runtime && m.runtime <= p.max_runtime))
     && (!p.watchlist_only || m.on_watchlist)
@@ -144,7 +159,7 @@ function profile() {
   return {
     model: NOFB ? { films: 0, spearman: null, top_quintile_hit_rate: null, base_rate: null, tuned: false }
       : { films: 230, spearman: 0.31, top_quintile_hit_rate: 0.55, base_rate: 0.3, tuned: true },
-    stats: { watched: 289, rated: 240, mean_rating: 3.4, liked: 9, hours: 512, library_unwatched: 900, watchlist_on_plex: 14 },
+    stats: { watched: 289, rated: 240, mean_rating: 3.4, liked: 9, hours: 512, library_unwatched: 900, watchlist_on_plex: 14, seen_here: seenSet.size },
     rating_histogram: hist,
     genres: [['Crime', 34, 3.9, 0.62], ['Mystery', 28, 3.8, 0.48], ['Science Fiction', 41, 3.7, 0.4], ['Thriller', 39, 3.6, 0.3], ['Drama', 120, 3.5, 0.12], ['Animation', 12, 3.5, 0.08], ['Romance', 26, 3.3, -0.05], ['Comedy', 52, 3.1, -0.22], ['Action', 47, 3.0, -0.31], ['Family', 9, 2.7, -0.55]]
       .map(([name, count, mean_rating, affinity]) => ({ name, count, mean_rating, affinity })),
@@ -238,6 +253,15 @@ export async function handle(method, path, p, body) {
     case 'POST /api/movies/:id/feedback':
       if (body.vote) votes.set(id, body.vote); else votes.delete(id);
       return ok({ ok: true });
+    case 'POST /api/movies/:id/seen':
+      if (!movies.some((x) => x.id === id) && !triage.some((x) => x.id === id)) return err(404, 'Movie not found.');
+      if (body.seen) seenSet.add(id); else seenSet.delete(id);
+      return ok({ ok: true });
+    case 'GET /api/seen-candidates': {
+      const list = triage.filter((m) => !seenSet.has(m.id)).sort((a, b) => b.tmdb_votes - a.tmdb_votes);
+      const offset = Number(p.offset) || 0, limit = Number(p.limit) || 60;
+      return ok({ items: list.slice(offset, offset + limit).map(view), total: list.length });
+    }
     case 'GET /api/feedback':
       return FRESH ? err(409, 'Import your Letterboxd history first.') : ok(feedback());
     case 'GET /api/me':

@@ -2,6 +2,7 @@ import { api } from '../api.js';
 import { h, icon, poster, runtime, matchStub, errorBox, num } from '../dom.js';
 import { filterBar } from '../filters.js';
 import { voteButtons } from '../vote.js';
+import { seenToggle } from '../seen.js';
 import { go, apiFilters, setFilters, hasAnyFilters, SORTS, EMPTY_FILTERS } from '../state.js';
 
 export const title = 'Browse';
@@ -129,6 +130,7 @@ export function mount(root, route) {
           m.on_watchlist ? h('span', { class: 'card__flag', title: 'On your watchlist' }, icon('watchlist'), h('span', { class: 'sr-only', text: 'On your watchlist' })) : null),
         h('span', { class: 'card__title', text: m.title }),
         h('span', { class: 'card__meta', text: [m.year, runtime(m.runtime)].filter(Boolean).join(', ') })),
+      m.watched && !m.seen_here ? null : h('div', { class: 'card__seen' }, seenToggle(m)),
       voteButtons(m, { compact: true }));
   }
 
@@ -148,6 +150,11 @@ export function mount(root, route) {
     if (li) li.classList.toggle('is-hidden', e.detail.dismissed);
   }
   window.addEventListener('movienight:changed', onChanged);
+  // A card marked as seen dims (it stays so the mark can be undone); it leaves the list on the next reload.
+  function onSeen(e) {
+    grid.querySelector(`[data-id="${e.detail.id}"]`)?.classList.toggle('is-seen', e.detail.seen);
+  }
+  window.addEventListener('movienight:seen', onSeen);
 
   function update(r) {
     filters = r.filters;
@@ -167,6 +174,7 @@ export function mount(root, route) {
       io.disconnect();
       clearTimeout(debounce);
       window.removeEventListener('movienight:changed', onChanged);
+      window.removeEventListener('movienight:seen', onSeen);
     },
   };
 }

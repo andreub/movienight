@@ -100,6 +100,13 @@ MIGRATIONS = [
         recorded_at TEXT NOT NULL
     );
     """,
+    # 3: films the user marked "seen it" locally (never logged on Letterboxd). Same key scheme as votes.
+    """
+    CREATE TABLE IF NOT EXISTS seen (
+        key TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL
+    );
+    """,
 ]
 
 

@@ -19,6 +19,10 @@ export function mount(root) {
     fill(chatNote, icon(c.enabled ? 'check' : 'info'), h('span', { text: c.enabled ? `AI chat is on${c.model ? ` (${c.model})` : ''}.` : 'AI chat is off (no API key configured).' }));
     chatNote.hidden = false;
   });
+  const triage = h('section', { class: 'triage-link', hidden: true, 'aria-labelledby': 'triage-link-title' },
+    h('h2', { class: 'triage-link__title', id: 'triage-link-title', text: 'Films you have already seen' }),
+    h('p', { class: 'help', text: 'Your Letterboxd history only goes back so far. Quickly mark the classics you know and they stop being suggested.' }),
+    h('a', { class: 'btn btn--ghost', href: '#/seen' }, icon('eye'), 'Seen these?'));
   const me = h('p', { class: 'note', hidden: true });
   api.me().then((u) => {
     if (!u?.auth) return;
@@ -26,7 +30,7 @@ export function mount(root) {
     me.hidden = false;
   }).catch(() => {});
   root.append(h('div', { class: 'setup' }, intro, statusError,
-    h('ol', { class: 'steps' }, lb.el, plex.el, sync.el), chatNote, me));
+    h('ol', { class: 'steps' }, lb.el, plex.el, sync.el), triage, chatNote, me));
 
   let wasReady = null;
   const unsubscribe = subscribe((s, err) => {
@@ -34,6 +38,7 @@ export function mount(root) {
     if (!s) return;
     if (wasReady !== s.ready) renderIntro(s.ready, wasReady === false);
     wasReady = s.ready;
+    triage.hidden = !s.ready;
     lb.update(s);
     plex.update(s);
     sync.update(s);

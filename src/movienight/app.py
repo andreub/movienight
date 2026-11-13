@@ -41,6 +41,10 @@ class VoteBody(BaseModel):
     vote: Literal[1, -1, 0]
 
 
+class SeenBody(BaseModel):
+    seen: bool
+
+
 class ServerBody(BaseModel):
     enabled: bool
 
@@ -393,6 +397,26 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                           (key, body.vote, now_iso()))
         engine().invalidate()
         return {"ok": True}
+
+    @app.post("/api/movies/{movie_id}/seen")
+    def mark_seen(movie_id: int, body: SeenBody):
+        with db.session(cfg.db_path) as c:
+            row = c.execute("SELECT tmdb_id, dkey FROM movies WHERE id=?", (movie_id,)).fetchone()
+            if row is None:
+                raise HTTPException(404, "Movie not found")
+            key = library.feedback_key(row["tmdb_id"], row["dkey"])
+            if body.seen:
+                c.execute("INSERT OR IGNORE INTO seen(key, created_at) VALUES(?,?)", (key, now_iso()))
+            else:
+                c.execute("DELETE FROM seen WHERE key=?", (key,))
+        engine().invalidate()
+        return {"ok": True}
+
+    @app.get("/api/seen-candidates")
+    def seen_candidates(limit: int = Query(60, ge=1, le=200), offset: int = Query(0, ge=0)):
+        st, dismissed = engine().get(), dismissed_now()
+        items, total = library.seen_candidates(st, dismissed, limit, offset)
+        return {"items": [library.movie_json(c, st, dismissed, with_reasons=False) for c in items], "total": total}
 
     @app.get("/api/feedback")
     def feedback_overview():
