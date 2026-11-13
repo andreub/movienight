@@ -6,17 +6,14 @@ HOST=${HOST:-macmini}
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE_PATH='export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH'
 
-echo "==> Syncing project to $HOST:movienight/"
-rsync -az --delete \
-  --exclude '.git' \
-  --exclude '.venv' \
-  --exclude 'data' \
-  --exclude 'letterboxd' \
-  --exclude '.env' \
-  --exclude '__pycache__' \
-  --exclude '.pytest_cache' \
-  --exclude '.DS_Store' \
-  "$PROJECT_DIR"/ "$HOST:movienight/"
+# only what is committed: work in progress in the working tree never reaches the server
+REV=$(git -C "$PROJECT_DIR" rev-parse --short HEAD)
+STAGE=$(mktemp -d)
+trap 'rm -rf "$STAGE"' EXIT
+git -C "$PROJECT_DIR" archive HEAD | tar -x -C "$STAGE"
+
+echo "==> Syncing commit $REV to $HOST:movienight/"
+rsync -az --delete "$STAGE"/ "$HOST:movienight/"
 
 if [ -d "$PROJECT_DIR/letterboxd" ]; then
   echo "==> Syncing Letterboxd export to $HOST:etc/movienight/letterboxd/"
