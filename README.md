@@ -63,12 +63,26 @@ The script syncs the project and your local `letterboxd/` folder to the server, 
 image through the server's main compose file (which needs direnv variables), and waits up to
 two minutes for the container to report healthy.
 
+## Login (optional)
+
+Set `MOVIENIGHT_OIDC_ISSUER`, `MOVIENIGHT_OIDC_CLIENT_ID` and `MOVIENIGHT_PUBLIC_URL` to require a
+login through an OpenID Connect provider (Pocket ID, Authelia, Keycloak…). Create a **public client
+with PKCE** there, with the redirect `<MOVIENIGHT_PUBLIC_URL>/login/callback`.
+`MOVIENIGHT_OIDC_ALLOWED_SUBS` (comma-separated `sub` claims) limits who gets in. With an issuer but
+no client id the app answers 503: it never runs open by accident. Sessions last 30 days.
+
+## AI chat (optional)
+
+With `ANTHROPIC_API_KEY` set, an "Ask" tab lets you describe what you feel like watching; Claude
+answers with films from your Plex library. Only film metadata, your ratings and the chat text are
+sent to the Anthropic API. `MOVIENIGHT_AI_MODEL` changes the model.
+
 ## Privacy
 
 Your Letterboxd export and the Plex token are stored only in the local data volume
-(`./data`). Nothing is sent anywhere except the Letterboxd RSS feed, plex.tv and TMDB.
-There is no login, so keep the service on a private network (for example behind a VPN or
-reverse proxy with access control) and do not expose it to the public internet.
+(`./data`). Nothing is sent anywhere except the Letterboxd RSS feed, plex.tv, TMDB and, if you
+enable the chat, the Anthropic API. Without the optional login, keep the service on a private
+network (VPN or a reverse proxy with access control).
 
 ## Health
 

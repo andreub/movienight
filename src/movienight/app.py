@@ -2,21 +2,24 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import random
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import chat, db, letterboxd as lb, library, plex, queries
+from . import auth, chat, db, letterboxd as lb, library, plex, queries
 from .config import Config
 from .sync import SyncManager, plex_token, tmdb_counts
 from .util import now_iso, safe_error
@@ -61,6 +64,15 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         engine = library.Engine(lambda: db.connect(cfg.db_path))
         sync = SyncManager(cfg, http, engine)
         app.state.http, app.state.engine, app.state.sync = http, engine, sync
+        app.state.oidc = None
+        if cfg.oidc_issuer:
+            with db.session(cfg.db_path) as c:
+                key = db.get_meta(c, "session_key")
+                if not key:
+                    key = secrets.token_hex(32)
+                    db.set_meta(c, "session_key", key)
+            app.state.oidc = auth.OIDC(cfg.oidc_issuer, cfg.oidc_client_id, cfg.public_url,
+                                       cfg.oidc_allowed_subs, bytes.fromhex(key), http)
         try:
             with db.session(cfg.db_path) as conn:
                 lb.import_dir(conn, cfg.letterboxd_dir)
@@ -98,6 +110,82 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
     async def _unhandled(_: Request, exc: Exception):
         log.error("unhandled error: %s", safe_error(exc))
         return JSONResponse({"detail": "Internal server error"}, status_code=500)
+
+    # ---- login (only with MOVIENIGHT_OIDC_ISSUER; see auth.py)
+    def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
+        return HTMLResponse(
+            "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+            f"<title>{html.escape(title)} · MovieNight</title>"
+            "<body style='font:18px system-ui;background:#14122b;color:#f3efe6;display:grid;place-items:center;"
+            "min-height:90vh;text-align:center;padding:24px'><main>"
+            f"<h1>{html.escape(title)}</h1><p>{html.escape(body)}</p>"
+            "<p><a style='color:#f5b942' href='/login'>Sign in</a></p></main>", status_code=status)
+
+    @app.middleware("http")
+    async def _require_session(request: Request, call_next):
+        oidc = getattr(request.app.state, "oidc", None)
+        path = request.url.path
+        if oidc is None or path in auth.PUBLIC_PATHS:
+            return await call_next(request)
+        if not oidc.configured:
+            return JSONResponse({"detail": "Login is not configured yet (MOVIENIGHT_OIDC_CLIENT_ID)"}, status_code=503)
+        session = oidc.check(request.cookies.get(auth.SESSION_COOKIE))
+        if session is None:
+            if path.startswith("/api/"):
+                return JSONResponse({"detail": "Not signed in"}, status_code=401)
+            target = path + ("?" + request.url.query if request.url.query else "")
+            return RedirectResponse("/login?next=" + quote(target, safe=""), status_code=303)
+        request.state.session = session
+        return await call_next(request)
+
+    @app.get("/login", include_in_schema=False)
+    async def login(request: Request, next: str = "/"):
+        oidc = request.app.state.oidc
+        if oidc is None:
+            return RedirectResponse("/", status_code=303)
+        if not oidc.configured:
+            return _page("Login not configured", "Set MOVIENIGHT_OIDC_CLIENT_ID and restart.", 503)
+        try:
+            return RedirectResponse(await oidc.login_url(next), status_code=303)
+        except Exception as e:  # noqa: BLE001
+            log.error("login start failed: %s", safe_error(e))
+            return _page("Sign-in unavailable", "The login provider could not be reached. Try again in a moment.", 502)
+
+    @app.get("/login/callback", include_in_schema=False)
+    async def login_callback(request: Request, state: str = "", code: str = ""):
+        oidc = request.app.state.oidc
+        if oidc is None or not oidc.configured:
+            return RedirectResponse("/", status_code=303)
+        try:
+            cookie, next_path = await oidc.finish(state, code)
+        except auth.LoginError as e:
+            return _page("Could not sign you in", str(e), 403)
+        except Exception as e:  # noqa: BLE001
+            log.error("login failed: %s", safe_error(e))
+            return _page("Could not sign you in", "Something went wrong talking to the login provider.", 502)
+        res = RedirectResponse(next_path, status_code=303)
+        res.set_cookie(auth.SESSION_COOKIE, cookie, max_age=auth.SESSION_DAYS * 86400, **oidc.cookie_kwargs())
+        return res
+
+    @app.get("/logout", include_in_schema=False)
+    async def logout(request: Request):
+        oidc = request.app.state.oidc
+        target = "/logged-out"
+        if oidc is not None and oidc.configured:
+            target = await oidc.logout_url("/logged-out")
+        res = RedirectResponse(target, status_code=303)
+        res.delete_cookie(auth.SESSION_COOKIE, path="/")
+        return res
+
+    @app.get("/logged-out", include_in_schema=False)
+    def logged_out():
+        return _page("Signed out", "See you at the next movie night.")
+
+    @app.get("/api/me")
+    def me(request: Request):
+        """{"auth": false} when login is off; otherwise the signed-in user's display name."""
+        session = getattr(request.state, "session", None)
+        return {"auth": request.app.state.oidc is not None, "name": session.name if session else None}
 
     # ---- health / status
     @app.get("/healthz")

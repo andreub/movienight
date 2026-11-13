@@ -15,6 +15,10 @@ class Config:
     plex_token: str = ""
     sync_hours: float = 6.0
     sync_on_start: bool = True
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_allowed_subs: str = ""
+    public_url: str = "http://localhost:8080"
 
     @property
     def db_path(self) -> Path:
@@ -38,4 +42,8 @@ class Config:
             tmdb_token=(env.get("MOVIENIGHT_TMDB_TOKEN") or "").strip(),
             plex_token=(env.get("MOVIENIGHT_PLEX_TOKEN") or "").strip(),
             sync_hours=hours,
+            oidc_issuer=(env.get("MOVIENIGHT_OIDC_ISSUER") or "").strip(),
+            oidc_client_id=(env.get("MOVIENIGHT_OIDC_CLIENT_ID") or "").strip(),
+            oidc_allowed_subs=(env.get("MOVIENIGHT_OIDC_ALLOWED_SUBS") or "").strip(),
+            public_url=(env.get("MOVIENIGHT_PUBLIC_URL") or "http://localhost:8080").strip(),
         )
