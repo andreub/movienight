@@ -2,6 +2,7 @@
 import { api } from '../api.js';
 import { h, icon, poster, hueOf, runtime, stars, matchStub, reasonList, errorBox, toast, num } from '../dom.js';
 import { playControl } from '../play.js';
+import { voteButtons } from '../vote.js';
 
 const dialog = document.getElementById('detail');
 const body = dialog.querySelector('.sheet__body');
@@ -99,6 +100,7 @@ function render(m) {
       matchStub(m.match)),
     h('div', { class: 'detail__actions' },
       playControl(m),
+      voteButtons(m),
       m.letterboxd_url ? h('a', { class: 'btn btn--ghost', href: m.letterboxd_url, target: '_blank', rel: 'noopener' }, 'Letterboxd', icon('external', 'icon--end')) : null),
     m.tagline ? h('p', { class: 'detail__tagline', text: m.tagline }) : null,
     m.overview ? h('p', { class: 'detail__overview', text: m.overview }) : null,

@@ -1,13 +1,15 @@
 import { hydrateIcons } from './dom.js';
 import { onRoute, start, go, href, parse } from './state.js';
+import { getChatStatus } from './api.js';
 import { subscribe, refreshStatus, syncPercent } from './status.js';
 import { initDetail, openDetail, closeDetail } from './views/detail.js';
 import * as tonight from './views/tonight.js';
 import * as browse from './views/browse.js';
+import * as ask from './views/ask.js';
 import * as taste from './views/taste.js';
 import * as setup from './views/setup.js';
 
-const VIEWS = { tonight, browse, taste, setup };
+const VIEWS = { tonight, browse, ask, taste, setup };
 const main = document.getElementById('main');
 const tabs = [...document.querySelectorAll('.tab')];
 const pill = document.querySelector('.sync-pill');
@@ -17,6 +19,10 @@ let current = { name: null, instance: null };
 let status = null;
 
 hydrateIcons();
+
+// The Ask tab only exists when the server has an AI key configured.
+const askTab = tabs.find((t) => t.dataset.view === 'ask');
+getChatStatus().then((c) => { askTab.hidden = !c.enabled; });
 
 initDetail(() => {
   // Back closes the sheet when we opened it ourselves; otherwise just drop the param.

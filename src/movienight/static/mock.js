@@ -49,6 +49,9 @@ const MOODS = [
 const hasAny = (m, gs) => m.genres.some((g) => gs.includes(g));
 const params = new URLSearchParams(location.search);
 const FRESH = params.get('mock') === 'fresh';
+const NOFB = params.get('mock') === 'nofb'; // no accuracy check or outcomes yet
+const NOCHAT = params.get('mock') === 'nochat'; // AI chat switched off
+const votes = new Map();
 
 function reasonsFor(m, i) {
   const r = [];
@@ -105,7 +108,7 @@ function syncInfo() {
 
 const isDismissed = (m) => dismissed.has(m.id) && dismissed.get(m.id) > Date.now();
 function view(m) {
-  return { ...m, dismissed_until: isDismissed(m) ? new Date(dismissed.get(m.id)).toISOString() : null };
+  return { ...m, my_vote: votes.get(m.id) || null, dismissed_until: isDismissed(m) ? new Date(dismissed.get(m.id)).toISOString() : null };
 }
 
 function filter(p) {
@@ -139,6 +142,8 @@ function because(m) {
 function profile() {
   const hist = [1, 2, 3, 5, 9, 18, 30, 52, 44, 28].map((count, i) => ({ rating: (i + 1) / 2, count }));
   return {
+    model: NOFB ? { films: 0, spearman: null, top_quintile_hit_rate: null, base_rate: null, tuned: false }
+      : { films: 230, spearman: 0.31, top_quintile_hit_rate: 0.55, base_rate: 0.3, tuned: true },
     stats: { watched: 289, rated: 240, mean_rating: 3.4, liked: 9, hours: 512, library_unwatched: 900, watchlist_on_plex: 14 },
     rating_histogram: hist,
     genres: [['Crime', 34, 3.9, 0.62], ['Mystery', 28, 3.8, 0.48], ['Science Fiction', 41, 3.7, 0.4], ['Thriller', 39, 3.6, 0.3], ['Drama', 120, 3.5, 0.12], ['Animation', 12, 3.5, 0.08], ['Romance', 26, 3.3, -0.05], ['Comedy', 52, 3.1, -0.22], ['Action', 47, 3.0, -0.31], ['Family', 9, 2.7, -0.55]]
@@ -153,6 +158,26 @@ function profile() {
       .map(([name, count, affinity]) => ({ name, count, affinity })),
     top_rated: ['Heat', 'Memories of Murder', 'Zodiac', 'Mulholland Drive', 'Sicario', 'The Handmaiden', 'Children of Men', 'Oldboy', 'Arrival', 'Prisoners', 'Spirited Away', 'Collateral']
       .map((title, i) => ({ title, year: 1995 + i * 2, my_rating: i < 5 ? 5 : 4.5, liked: i < 3, poster_url: null })),
+  };
+}
+
+function feedback() {
+  const up = [...votes.values()].filter((v) => v === 1).length;
+  const down = [...votes.values()].filter((v) => v === -1).length;
+  const outcomes = NOFB ? [] : [
+    ['Prisoners', 2013, 87, 4.5, true, '2026-11-06', 'hit'],
+    ['Annihilation', 2018, 74, 2.5, false, '2026-11-03', 'miss'],
+    ['Zodiac', 2007, 91, 4, true, '2026-10-29', 'hit'],
+    ['Knives Out', 2019, 68, 3.5, false, '2026-10-21', 'ok'],
+    ['Moonlight', 2016, 63, null, false, null, 'pending'],
+  ].map(([title, year, predicted, my_rating, liked, watched_date, verdict]) => ({ title, year, poster_url: null, predicted, my_rating, liked, watched_date, verdict }));
+  return {
+    outcomes,
+    summary: NOFB ? { count: 0, rated: 0, hits: 0, misses: 0, mean_rating_of_picks: null, user_mean_rating: 3.4 }
+      : { count: 5, rated: 4, hits: 2, misses: 1, mean_rating_of_picks: 3.6, user_mean_rating: 3.4 },
+    votes: { up: up + (NOFB ? 0 : 5), down: down + (NOFB ? 0 : 2) },
+    backtest: NOFB ? { films: 0, spearman: null, top_quintile_hit_rate: null, base_rate: null, weights: {}, default_weights: {}, tuned: false, computed_at: null }
+      : { films: 230, spearman: 0.31, top_quintile_hit_rate: 0.55, base_rate: 0.3, weights: { genre: 1.2, director: 0.9, cast: 1 }, default_weights: { genre: 1, director: 1, cast: 1 }, tuned: true, computed_at: new Date(Date.now() - 3 * 86400e3).toISOString() },
   };
 }
 
@@ -210,6 +235,15 @@ export async function handle(method, path, p, body) {
     case 'DELETE /api/movies/:id/dismiss':
       dismissed.delete(id);
       return ok({ ok: true });
+    case 'POST /api/movies/:id/feedback':
+      if (body.vote) votes.set(id, body.vote); else votes.delete(id);
+      return ok({ ok: true });
+    case 'GET /api/feedback':
+      return FRESH ? err(409, 'Import your Letterboxd history first.') : ok(feedback());
+    case 'GET /api/me':
+      return ok({ auth: false, name: null });
+    case 'GET /api/chat/status':
+      return ok({ enabled: !NOCHAT, model: 'claude-sonnet-5' });
     case 'GET /api/profile':
       return lbState.watched ? ok(profile()) : err(409, 'Import your Letterboxd history first.');
     case 'POST /api/plex/pin':
@@ -243,4 +277,40 @@ export async function handle(method, path, p, body) {
     default:
       return err(404, `Mock has no route for ${method} ${path}`);
   }
+}
+
+// ---- fake chat stream: tool label, text deltas, movies, done ----
+
+const sleep = (ms, signal) => new Promise((resolve, reject) => {
+  const t = setTimeout(resolve, ms);
+  signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+});
+
+export async function* chatStream(messages, signal) {
+  const ask = (messages[messages.length - 1]?.content || '').toLowerCase();
+  await sleep(500, signal);
+  if (ask.includes('error')) {
+    yield { event: 'text', data: { delta: 'Let me look' } };
+    yield { event: 'error', data: { detail: 'The assistant stopped unexpectedly. Try again in a moment.' } };
+    yield { event: 'done', data: {} };
+    return;
+  }
+  const mood = ask.includes('tense') ? 'tense' : ask.includes('comfort') ? 'light' : ask.includes('watchlist') ? 'wl' : null;
+  yield { event: 'tool', data: { name: 'search_library', label: 'Searching your library…' } };
+  await sleep(1100, signal);
+  const pool = movies.filter((m) => !isDismissed(m)
+    && (mood === 'wl' ? m.on_watchlist : mood ? MOODS.find((x) => x.id === mood).test(m) : true)
+    && (!ask.includes('under 2 hours') || (m.runtime && m.runtime < 120)));
+  const picks = (pool.length >= 3 ? pool : movies).slice(0, 3);
+  yield { event: 'tool', data: { name: 'check_taste', label: 'Checking it against your taste…' } };
+  await sleep(900, signal);
+  const intro = `Here is what I would put on tonight.\n\n**${picks[0].title}** is the safest bet: ${picks[0].genres[0].toLowerCase()} done with real confidence, and it fits the time you have.\n\nTwo more worth a look:\n- **${picks[1].title}** if you want something with a different pace\n- **${picks[2].title}** if you are in the mood to be surprised\n\nTell me if you would like something shorter, older or lighter.`;
+  for (const word of intro.match(/\S+\s*|\n+/g)) {
+    yield { event: 'text', data: { delta: word } };
+    await sleep(28, signal);
+    if (word.includes('Two')) {
+      yield { event: 'movies', data: { items: picks.map((m, i) => ({ ...view(m), pitch: ['A clean, confident watch that rewards your love of tight plots.', 'Slower and stranger, with an ending you will want to talk about.', 'A wildcard that sits just outside your usual taste.'][i] })) } };
+    }
+  }
+  yield { event: 'done', data: {} };
 }

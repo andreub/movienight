@@ -1,7 +1,7 @@
 // Route + filter state lives in the URL hash: #/browse?mood=tense&rt=90&wl=1&genre=Horror&q=&sort=year&movie=42
 // so a refresh (or a shared link) keeps the view, filters and open film.
 
-export const VIEWS = ['tonight', 'browse', 'taste', 'setup'];
+export const VIEWS = ['tonight', 'browse', 'ask', 'taste', 'setup'];
 export const SORTS = [
   ['match', 'Best match'], ['rating', 'TMDB rating'], ['recent', 'Recently added'], ['year', 'Newest'], ['runtime', 'Shortest'],
 ];

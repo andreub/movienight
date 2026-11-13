@@ -1,4 +1,4 @@
-import { api } from '../api.js';
+import { api, getChatStatus } from '../api.js';
 import { h, fill, icon, num, ago, toast, errorBox } from '../dom.js';
 import { subscribe, refreshStatus, STAGES, syncPercent } from '../status.js';
 
@@ -14,8 +14,19 @@ export function mount(root) {
   const lb = letterboxdStep();
   const plex = plexStep();
   const sync = syncStep();
+  const chatNote = h('p', { class: 'note', hidden: true });
+  getChatStatus().then((c) => {
+    fill(chatNote, icon(c.enabled ? 'check' : 'info'), h('span', { text: c.enabled ? `AI chat is on${c.model ? ` (${c.model})` : ''}.` : 'AI chat is off (no API key configured).' }));
+    chatNote.hidden = false;
+  });
+  const me = h('p', { class: 'note', hidden: true });
+  api.me().then((u) => {
+    if (!u?.auth) return;
+    fill(me, icon('check'), h('span', { text: u.name ? `Signed in as ${u.name}.` : 'Signed in.' }), h('a', { href: '/logout', text: 'Sign out' }));
+    me.hidden = false;
+  }).catch(() => {});
   root.append(h('div', { class: 'setup' }, intro, statusError,
-    h('ol', { class: 'steps' }, lb.el, plex.el, sync.el)));
+    h('ol', { class: 'steps' }, lb.el, plex.el, sync.el), chatNote, me));
 
   let wasReady = null;
   const unsubscribe = subscribe((s, err) => {

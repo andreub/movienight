@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import { h, icon, poster, runtime, matchStub, errorBox, num } from '../dom.js';
 import { filterBar } from '../filters.js';
+import { voteButtons } from '../vote.js';
 import { go, apiFilters, setFilters, hasAnyFilters, SORTS, EMPTY_FILTERS } from '../state.js';
 
 export const title = 'Browse';
@@ -127,7 +128,8 @@ export function mount(root, route) {
           matchStub(m.match, { size: 'sm' }),
           m.on_watchlist ? h('span', { class: 'card__flag', title: 'On your watchlist' }, icon('watchlist'), h('span', { class: 'sr-only', text: 'On your watchlist' })) : null),
         h('span', { class: 'card__title', text: m.title }),
-        h('span', { class: 'card__meta', text: [m.year, runtime(m.runtime)].filter(Boolean).join(', ') })));
+        h('span', { class: 'card__meta', text: [m.year, runtime(m.runtime)].filter(Boolean).join(', ') })),
+      voteButtons(m, { compact: true }));
   }
 
   function emptyState() {

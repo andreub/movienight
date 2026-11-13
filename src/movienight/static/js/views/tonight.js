@@ -3,11 +3,14 @@ import { h, fill, icon, poster, genPoster, hueOf, runtime, matchStub, reasonList
 import { filterBar } from '../filters.js';
 import { playControl } from '../play.js';
 import { go, apiFilters, hasQuickFilters, setFilters } from '../state.js';
+import { endsAt } from '../clock.js';
+import { initialRuntime, rememberRuntime } from '../timecontrol.js';
+import { voteButtons, setVote } from '../vote.js';
 
 export const title = 'Tonight';
 
 export function mount(root, route) {
-  const bar = filterBar();
+  const bar = filterBar({ time: true });
   const stage = h('div', { class: 'tonight__stage' });
   root.append(
     h('h1', { class: 'sr-only', text: "Tonight's pick" }),
@@ -19,6 +22,11 @@ export function mount(root, route) {
   let data = null;
   let seen = [];
   let req = 0;
+  let alive = true;
+  // A smart default (or the remembered choice) is applied right after mount; hold the first load until it lands.
+  const startRt = initialRuntime(route.filters);
+  let holdLoad = startRt != null;
+  if (holdLoad) setTimeout(() => { if (alive) setFilters({ rt: startRt }); }, 0);
 
   async function load(mode) {
     const token = ++req;
@@ -77,13 +85,16 @@ export function mount(root, route) {
             playControl(m, 'pick__play'),
             shuffleBtn,
             h('button', { type: 'button', class: 'btn btn--ghost', onclick: () => notTonight(m) }, icon('eyeoff'), 'Not tonight'),
-            h('button', { type: 'button', class: 'btn btn--quiet', onclick: () => go({ movie: m.id }) }, icon('info'), 'Details')))));
+            h('div', { class: 'pick__tail' },
+              h('button', { type: 'button', class: 'btn btn--quiet', onclick: () => go({ movie: m.id }) }, icon('info'), 'Details'),
+              voteButtons(m, { onVote: (vote, done) => { if (vote === -1) lessLikeThis(m, done); } }))))));
   }
 
   function meta(m) {
     return h('p', { class: 'meta' },
       m.year ? h('span', { text: String(m.year) }) : null,
       runtime(m.runtime) ? h('span', { text: runtime(m.runtime) }) : null,
+      endsAt(m.runtime),
       m.genres?.length ? h('span', { text: m.genres.slice(0, 3).join(', ') }) : null,
       m.on_watchlist ? h('span', { class: 'meta__flag' }, icon('watchlist'), 'On your watchlist') : null);
   }
@@ -97,7 +108,7 @@ export function mount(root, route) {
           poster(m, { cls: 'alt__poster' }),
           h('span', { class: 'alt__body' },
             h('span', { class: 'alt__title', text: m.title }),
-            h('span', { class: 'alt__meta', text: [m.year, runtime(m.runtime)].filter(Boolean).join(', ') }),
+            h('span', { class: 'alt__meta' }, [m.year, runtime(m.runtime)].filter(Boolean).join(', '), m.runtime ? ', ' : '', endsAt(m.runtime, { prefix: 'ends ' })),
             m.reasons?.[0] ? h('span', { class: 'alt__why', text: m.reasons[0].text }) : null),
           matchStub(m.match, { size: 'sm' }))))));
   }
@@ -131,6 +142,24 @@ export function mount(root, route) {
     load('shuffle');
   }
 
+  // A thumbs-down is feedback, not a hide: the film ranks lower and the next pick comes up.
+  async function lessLikeThis(m, done) {
+    if (!(await done)) return;
+    const previous = data;
+    toast(`Noted. “${m.title}” will rank lower.`, {
+      action: {
+        label: 'Undo',
+        run: async () => {
+          if (!(await setVote(m, 0))) return;
+          req++;
+          data = previous;
+          render('shuffle');
+        },
+      },
+    });
+    load('shuffle');
+  }
+
   function empty() {
     const filtered = hasQuickFilters(filters);
     return h('div', { class: 'state' },
@@ -140,7 +169,7 @@ export function mount(root, route) {
         ? 'Every film that fits is watched or hidden. Loosen a filter to see more.'
         : 'Your Plex library may still be syncing. Check progress in Setup.' }),
       filtered
-        ? h('button', { type: 'button', class: 'btn btn--primary', onclick: () => setFilters({ mood: null, rt: null, wl: false }) }, 'Clear filters')
+        ? h('button', { type: 'button', class: 'btn btn--primary', onclick: () => { rememberRuntime(null); setFilters({ mood: null, rt: null, wl: false }); } }, 'Clear filters')
         : h('a', { class: 'btn btn--primary', href: '#/setup' }, 'Open Setup'));
   }
 
@@ -163,6 +192,10 @@ export function mount(root, route) {
   function update(r) {
     filters = r.filters;
     bar.sync(filters);
+    if (holdLoad) {
+      if (filters.rt == null) { if (!data) fill(stage, skeleton()); return; }
+      holdLoad = false;
+    }
     const key = JSON.stringify(apiFilters(filters));
     if (key !== filterKey) { filterKey = key; load('fresh'); }
   }
@@ -176,6 +209,7 @@ export function mount(root, route) {
   return {
     update,
     destroy() {
+      alive = false;
       req++;
       document.removeEventListener('keydown', onKey);
       window.removeEventListener('movienight:changed', onChanged);
