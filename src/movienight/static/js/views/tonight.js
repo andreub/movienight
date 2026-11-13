@@ -6,15 +6,24 @@ import { go, apiFilters, hasQuickFilters, setFilters } from '../state.js';
 import { endsAt } from '../clock.js';
 import { initialRuntime, rememberRuntime } from '../timecontrol.js';
 import { voteButtons, setVote } from '../vote.js';
+import { setSeen } from '../seen.js';
+
+const HINT_KEY = 'movienight.seenHintDismissed';
+const HINT_BELOW = 20;
+
+function hintDismissed() {
+  try { return localStorage.getItem(HINT_KEY) === '1'; } catch { return false; }
+}
 
 export const title = 'Tonight';
 
 export function mount(root, route) {
   const bar = filterBar({ time: true });
   const stage = h('div', { class: 'tonight__stage' });
+  const hint = h('div', { class: 'tonight__hint' });
   root.append(
     h('h1', { class: 'sr-only', text: "Tonight's pick" }),
-    h('div', { class: 'tonight' }, stage, h('div', { class: 'tonight__filters' }, bar.el)),
+    h('div', { class: 'tonight' }, hint, stage, h('div', { class: 'tonight__filters' }, bar.el)),
   );
 
   let filters = null;
@@ -27,6 +36,21 @@ export function mount(root, route) {
   const startRt = initialRuntime(route.filters);
   let holdLoad = startRt != null;
   if (holdLoad) setTimeout(() => { if (alive) setFilters({ rt: startRt }); }, 0);
+
+  // Nudge towards the triage screen until the user has marked a few films, unless dismissed.
+  if (!hintDismissed()) {
+    api.profile().then((p) => {
+      if (!alive || hintDismissed() || (p?.stats?.seen_here ?? 0) >= HINT_BELOW) return;
+      fill(hint, h('div', { class: 'note note--hint', role: 'region', 'aria-label': 'Tip' },
+        icon('eye'),
+        h('span', { class: 'note__text', text: 'Your history starts in 2021, so classics you saw long ago can show up. Mark the ones you have seen and they stop coming back.' }),
+        h('a', { class: 'btn btn--ghost btn--sm', href: '#/seen' }, 'Seen these?'),
+        h('button', {
+          type: 'button', class: 'iconbtn note__close', 'aria-label': 'Dismiss tip',
+          onclick: () => { try { localStorage.setItem(HINT_KEY, '1'); } catch { /* private mode */ } fill(hint); },
+        }, icon('close'))));
+    }).catch(() => {});
+  }
 
   async function load(mode) {
     const token = ++req;
@@ -71,6 +95,8 @@ export function mount(root, route) {
 
     const shuffleBtn = h('button', { type: 'button', class: 'btn btn--ghost', onclick: shuffle, 'aria-keyshortcuts': 'S' },
       icon('shuffle'), 'Shuffle');
+    const seenBtn = h('button', { type: 'button', class: 'btn btn--ghost', onclick: () => { seenBtn.disabled = true; markSeen(m).finally(() => { seenBtn.disabled = false; }); } },
+      icon('eye'), 'Seen it');
     return h('article', { class: `pick ${mode === 'shuffle' ? 'is-shuffled' : ''}`, style: { '--h': String(hueOf(m)) }, 'aria-labelledby': 'pick-title' },
       h('div', { class: 'pick__art' }, art),
       h('div', { class: 'pick__inner' },
@@ -84,6 +110,7 @@ export function mount(root, route) {
           h('div', { class: 'pick__actions' },
             playControl(m, 'pick__play'),
             shuffleBtn,
+            seenBtn,
             h('button', { type: 'button', class: 'btn btn--ghost', onclick: () => notTonight(m) }, icon('eyeoff'), 'Not tonight'),
             h('div', { class: 'pick__tail' },
               h('button', { type: 'button', class: 'btn btn--quiet', onclick: () => go({ movie: m.id }) }, icon('info'), 'Details'),
@@ -136,6 +163,36 @@ export function mount(root, route) {
             data = previous;
             render('shuffle');
           } catch (err) { toast(err.detail); }
+        },
+      },
+    });
+    load('shuffle');
+  }
+
+  // "Seen it": the film stops being suggested, the next pick comes up, and a quick thumbs-up/down is offered.
+  async function markSeen(m) {
+    if (!(await setSeen(m, true, 'hero'))) return;
+    const previous = data;
+    const quick = (close) => h('div', { class: 'toast__votes', role: 'group', 'aria-label': 'Did you like it?' },
+      [[1, 'thumbup', 'I liked it'], [-1, 'thumbdown', "I didn't like it"]].map(([vote, name, label]) =>
+        h('button', {
+          type: 'button', class: 'toast__vote', title: label, 'aria-label': label,
+          onclick: async () => {
+            if (!(await setVote(m, vote))) return;
+            close();
+            toast(vote > 0 ? 'Noted: more like this.' : 'Noted: less like this.', { timeout: 3000 });
+          },
+        }, icon(name))));
+    toast('Marked as seen. Did you like it?', {
+      timeout: 8000,
+      extra: quick,
+      action: {
+        label: 'Undo',
+        run: async () => {
+          if (!(await setSeen(m, false, 'hero'))) return;
+          req++;
+          data = previous;
+          render('shuffle');
         },
       },
     });
@@ -202,8 +259,13 @@ export function mount(root, route) {
   update(route);
 
   window.addEventListener('movienight:changed', onChanged);
+  window.addEventListener('movienight:seen', onSeen);
   function onChanged(e) {
     if (data && e.detail.id === data.pick.id && e.detail.dismissed) load('shuffle');
+  }
+  // Marked from the detail sheet while this film is the pick: move on (the hero handles its own).
+  function onSeen(e) {
+    if (data && e.detail.id === data.pick.id && e.detail.seen && e.detail.source === 'sheet') load('shuffle');
   }
 
   return {
@@ -213,6 +275,7 @@ export function mount(root, route) {
       req++;
       document.removeEventListener('keydown', onKey);
       window.removeEventListener('movienight:changed', onChanged);
+      window.removeEventListener('movienight:seen', onSeen);
     },
   };
 }

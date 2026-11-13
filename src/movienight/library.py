@@ -193,6 +193,9 @@ def load_inputs(conn: sqlite3.Connection) -> tuple[list, list]:
     votes = {r["key"]: r["vote"] for r in conn.execute("SELECT key, vote FROM votes")}
     for c in cands:
         c.vote = votes.get(feedback_key(c.tmdb_id, c.dkey))
+    seen = {r["key"] for r in conn.execute("SELECT key FROM seen")}
+    for c in cands:
+        c.seen_local = feedback_key(c.tmdb_id, c.dkey) in seen
     return cands, history
 
 
@@ -428,6 +431,7 @@ def movie_json(c: rec.Cand, st: State, dismissed: dict, with_reasons: bool = Tru
         "reasons": rec.reasons_for(c, st.profile) if with_reasons else [],
         "on_watchlist": c.on_watchlist,
         "watched": c.watched,
+        "seen_here": c.seen_here,
         "my_rating": c.my_rating,
         "liked": c.liked,
         "my_vote": c.vote,
@@ -442,6 +446,18 @@ def movie_detail_json(c: rec.Cand, st: State, dismissed: dict) -> dict:
     d["keywords"] = c.meta.get("keywords") or []
     d["because"] = rec.because(c, st.history, st.profile)
     return d
+
+
+def seen_candidates(st: State, dismissed: dict, limit: int, offset: int, min_age_years: int = 3) -> tuple[list, int]:
+    """Unwatched, not dismissed library films most likely to have been seen already.
+
+    Ordered by TMDB vote count (popularity proxy), descending; only films released at least
+    `min_age_years` ago (films without a known year are left out)."""
+    cutoff = datetime.now(timezone.utc).year - min_age_years
+    pool = [c for c in st.cands
+            if not c.watched and c.id not in dismissed and c.year and c.year <= cutoff]
+    pool.sort(key=lambda c: (-(c.meta.get("vote_count") or 0), c.id))
+    return pool[offset:offset + limit], len(pool)
 
 
 def profile_json(st: State, model: dict | None = None) -> dict:
@@ -475,7 +491,8 @@ def profile_json(st: State, model: dict | None = None) -> dict:
     return {
         "stats": {
             "watched": p.n_watched, "rated": p.n_rated, "mean_rating": mean, "liked": p.n_liked,
-            "hours": round(hours), "library_unwatched": sum(1 for c in st.cands if not c.watched),
+            "hours": round(hours), "seen_here": sum(1 for c in st.cands if c.seen_here),
+            "library_unwatched": sum(1 for c in st.cands if not c.watched),
             "watchlist_on_plex": sum(1 for c in st.cands if c.on_watchlist and not c.watched),
         },
         "rating_histogram": [{"rating": r / 2, "count": hist_counts.get(r / 2, 0)} for r in range(1, 11)],

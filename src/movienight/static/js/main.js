@@ -8,8 +8,9 @@ import * as browse from './views/browse.js';
 import * as ask from './views/ask.js';
 import * as taste from './views/taste.js';
 import * as setup from './views/setup.js';
+import * as seenView from './views/seen.js';
 
-const VIEWS = { tonight, browse, ask, taste, setup };
+const VIEWS = { tonight, browse, ask, taste, setup, seen: seenView };
 const main = document.getElementById('main');
 const tabs = [...document.querySelectorAll('.tab')];
 const pill = document.querySelector('.sync-pill');
@@ -31,7 +32,7 @@ initDetail(() => {
 });
 
 function render(route) {
-  if (status && !status.ready && (route.view === 'tonight' || route.view === 'browse')) {
+  if (status && !status.ready && (route.view === 'tonight' || route.view === 'browse' || route.view === 'seen')) {
     go({ view: 'setup', movie: null }, { replace: true });
     return;
   }

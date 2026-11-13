@@ -3,6 +3,7 @@ import { api } from '../api.js';
 import { h, icon, poster, hueOf, runtime, stars, matchStub, reasonList, errorBox, toast, num } from '../dom.js';
 import { playControl } from '../play.js';
 import { voteButtons } from '../vote.js';
+import { setSeen } from '../seen.js';
 
 const dialog = document.getElementById('detail');
 const body = dialog.querySelector('.sheet__body');
@@ -69,6 +70,12 @@ async function setDismissed(m, days) {
   load();
 }
 
+async function markSeen(m, seen) {
+  if (!(await setSeen(m, seen, 'sheet'))) return;
+  toast(seen ? `Marked “${m.title}” as seen.` : `“${m.title}” is back in your picks.`);
+  load();
+}
+
 function render(m) {
   const hidden = hiddenUntil(m);
   const art = m.backdrop_url
@@ -101,7 +108,10 @@ function render(m) {
     h('div', { class: 'detail__actions' },
       playControl(m),
       voteButtons(m),
+      !m.watched ? h('button', { type: 'button', class: 'btn btn--ghost', onclick: () => markSeen(m, true) }, icon('eye'), 'Seen it') : null,
       m.letterboxd_url ? h('a', { class: 'btn btn--ghost', href: m.letterboxd_url, target: '_blank', rel: 'noopener' }, 'Letterboxd', icon('external', 'icon--end')) : null),
+    m.seen_here ? h('p', { class: 'detail__seen' }, icon('check'), "You've seen this",
+      h('button', { type: 'button', class: 'linkbtn', onclick: () => markSeen(m, false) }, 'Undo')) : null,
     m.tagline ? h('p', { class: 'detail__tagline', text: m.tagline }) : null,
     m.overview ? h('p', { class: 'detail__overview', text: m.overview }) : null,
     m.reasons?.length ? section('Why it fits you', reasonList(m.reasons)) : null,

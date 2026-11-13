@@ -89,6 +89,7 @@ class Cand:
     liked: bool = False
     on_watchlist: bool = False
     vote: int | None = None             # thumb: 1, -1 or None
+    seen_local: bool = False            # marked "seen it" in this app (neutral: not a taste signal)
     dkey: str = ""                      # stable library key (movies.dkey)
     # computed
     feats: dict = field(default_factory=dict)
@@ -98,7 +99,12 @@ class Cand:
 
     @property
     def watched(self) -> bool:
-        return self.plex_watched or self.lb_watched
+        return self.plex_watched or self.lb_watched or self.seen_local
+
+    @property
+    def seen_here(self) -> bool:
+        """Watched only because of the local mark (not Letterboxd / Plex)."""
+        return self.seen_local and not (self.plex_watched or self.lb_watched)
 
 
 @dataclass
