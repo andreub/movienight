@@ -1,0 +1,24 @@
+services:
+  movienight:
+    build: .
+    image: movienight:local
+    container_name: movienight
+    restart: unless-stopped
+    ports:
+      - "${MOVIENIGHT_PORT:-8080}:8080"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TZ: ${TZ:-Europe/Madrid}
+    volumes:
+      - ./data:/data
+      - ./letterboxd:/letterboxd:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 384m
