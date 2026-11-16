@@ -51,6 +51,7 @@ const params = new URLSearchParams(location.search);
 const FRESH = params.get('mock') === 'fresh';
 const NOFB = params.get('mock') === 'nofb'; // no accuracy check or outcomes yet
 const NOCHAT = params.get('mock') === 'nochat'; // AI chat switched off
+const FREECHAT = params.get('mock') === 'free'; // AI chat on a free OpenAI-compatible tier (price 0)
 const votes = new Map(); // id -> -1 | 1 | 2 (love)
 const seenSet = new Set(); // films marked "seen it" in this session
 const seenAt = new Map(); // id -> when it was marked (for the "Already marked" list, newest first)
@@ -282,10 +283,13 @@ export async function handle(method, path, p, body) {
       return ok({ auth: false, name: null });
     case 'GET /api/chat/status':
       return ok({
-        enabled: !NOCHAT, model: 'claude-sonnet-5',
+        enabled: !NOCHAT, provider: FREECHAT ? 'openai' : 'anthropic', model: FREECHAT ? 'openai/gpt-oss-120b' : 'claude-sonnet-5',
+        problem: NOCHAT ? 'No API key is configured (ANTHROPIC_API_KEY).' : null,
         usage: params.get('mock') === 'budget'
-          ? { month: '2026-11', spent_usd: 2.01, budget_usd: 2, questions: 61, model: 'claude-sonnet-5', exhausted: true }
-          : { month: '2026-11', spent_usd: 0.0123, budget_usd: 2, questions: 14, model: 'claude-sonnet-5', exhausted: false },
+          ? { month: '2026-11', spent_usd: 2.01, budget_usd: 2, questions: 61, tokens: 912000, model: 'claude-sonnet-5', exhausted: true }
+          : FREECHAT
+            ? { month: '2026-11', spent_usd: 0, budget_usd: 2, questions: 9, tokens: 48700, model: 'openai/gpt-oss-120b', exhausted: false }
+            : { month: '2026-11', spent_usd: 0.0123, budget_usd: 2, questions: 14, tokens: 23400, model: 'claude-sonnet-5', exhausted: false },
       });
     case 'GET /api/profile':
       return lbState.watched ? ok(profile()) : err(409, 'Import your Letterboxd history first.');
