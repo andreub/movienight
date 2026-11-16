@@ -494,6 +494,13 @@ def test_migration_7_on_version_6_database(tmp_path):
     db.migrate(path)                                            # idempotent
 
 
+def test_status_plex_block_is_empty_with_jellyfin(jf):
+    run_sync(jf)
+    s = jf.get("/api/status").json()
+    assert s["jellyfin"]["movies"] > 0
+    assert s["plex"]["movies"] == 0 and s["plex"]["connected"] is False and s["plex"]["servers"] == []
+
+
 # --------------------------------------------------------------------------- Plex mode unchanged
 
 def test_plex_mode_status_payload_only_adds_media_server(client):

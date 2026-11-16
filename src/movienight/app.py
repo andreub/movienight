@@ -336,7 +336,8 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                 "letterboxd": {"username": lb.username(c, cfg.letterboxd_user), **counts,
                                "last_sync": db.get_meta(c, "lb_last_sync")},
                 "plex": {"connected": bool(token), "account": (db.get_meta(c, "plex_account") or None) if is_plex else None,
-                         "movies": movies, "last_sync": db.get_meta(c, "plex_last_sync") if is_plex else None,
+                         "movies": movies if is_plex else 0,   # the shared tables hold the selected server's library only
+                         "last_sync": db.get_meta(c, "plex_last_sync") if is_plex else None,
                          "servers": server_rows, "seen_pushed": pushed if is_plex else None},
                 "tmdb": tmdb_counts(c, sync_mgr().tmdb.configured),
                 "sync": dict(sync_mgr().state),
