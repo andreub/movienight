@@ -59,7 +59,7 @@ def seed(db_path):
         for d in DETAILS:
             c.execute("INSERT INTO tmdb_details(tmdb_id,json) VALUES(?,?)", (d["id"], json.dumps(d)))
         c.execute("INSERT INTO tmdb_recs(tmdb_id,json) VALUES(101,?)", (json.dumps([111, 113]),))
-        c.execute("INSERT INTO plex_servers(id,name,owned,reachable,base_url,access_token) VALUES"
+        c.execute("INSERT INTO media_servers(id,name,owned,reachable,base_url,access_token) VALUES"
                   "('m1','Home',1,1,'http://plex.local:32400','SECRET')")
         library.store_server_items(c, "m1", [plex_item(k, t, y, tid, views=v) for k, t, y, tid, v in LIBRARY])
         library.assign_movies(c)

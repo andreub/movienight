@@ -41,7 +41,7 @@ def test_parse_tags_and_family():
 
 
 def test_migration_6_creates_tags_table(conn):
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) == 6
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) >= 6
     cols = {r[1] for r in conn.execute("PRAGMA table_info(lb_tags)")}
     assert {"lb_id", "tag", "family", "edition", "watched_date", "rating", "source"} <= cols
 

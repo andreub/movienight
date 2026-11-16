@@ -77,7 +77,7 @@ class Hist:
 
 @dataclass
 class Cand:
-    """A movie in the Plex library."""
+    """A movie in the media server's library (Plex or Jellyfin)."""
     id: int
     title: str
     year: int | None = None
@@ -465,7 +465,7 @@ def _rating_phrase(h: Hist) -> str:
     return ""
 
 
-def reasons_for(c: Cand, prof: Profile, limit: int = 4) -> list[dict]:
+def reasons_for(c: Cand, prof: Profile, limit: int = 4, server: str = "Plex") -> list[dict]:
     items: list[tuple[float, dict]] = []
 
     def add(value, kind, text):
@@ -540,7 +540,7 @@ def reasons_for(c: Cand, prof: Profile, limit: int = 4) -> list[dict]:
 
     v, _ = comps.get("fresh", (0, None))
     if v > 0.01:
-        add(v, "fresh", "Recently added to Plex")
+        add(v, "fresh", f"Recently added to {server}")
 
     if c.vote is None:
         liked_vote = _similar_vote(c, prof)
@@ -556,7 +556,7 @@ def reasons_for(c: Cand, prof: Profile, limit: int = 4) -> list[dict]:
         if genres:
             out = [{"kind": "genre", "text": f"A {genres[0]} pick from your library"}]
         else:
-            out = [{"kind": "fresh", "text": "From your Plex library"}]
+            out = [{"kind": "fresh", "text": f"From your {server} library"}]
     return out
 
 
