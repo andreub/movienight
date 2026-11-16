@@ -90,20 +90,49 @@ no client id the app answers 503: it never runs open by accident. Sessions last 
 
 ## AI chat (optional)
 
-With `ANTHROPIC_API_KEY` set, an "Ask" tab lets you describe what you feel like watching; Claude
-answers with films from your Plex library. Only film metadata, your ratings and the chat text are
-sent to the Anthropic API. `MOVIENIGHT_AI_MODEL` changes the model.
+An "Ask" tab lets you describe what you feel like watching; an AI model answers with films from your
+Plex library, using tools that search the library, read film details and your taste profile. Two kinds of
+provider work:
+
+| Variable | Meaning |
+|---|---|
+| `MOVIENIGHT_AI_PROVIDER` | `anthropic` (default) or `openai` = any OpenAI-compatible endpoint (Groq, OpenAI, a local server…). Unset with `MOVIENIGHT_AI_BASE_URL` set means `openai`. |
+| `ANTHROPIC_API_KEY` | key for `anthropic` (`MOVIENIGHT_AI_MODEL` defaults to `claude-opus-5-5`) |
+| `MOVIENIGHT_AI_BASE_URL` | `openai` only, e.g. `https://api.groq.com/openai/v1` |
+| `MOVIENIGHT_AI_API_KEY` | `openai` only: the provider's key |
+| `MOVIENIGHT_AI_MODEL` | model id; required for `openai` (no default). The model must support streaming tool calls. |
+| `MOVIENIGHT_AI_PRICE_INPUT` / `_OUTPUT` | `openai` only: USD per 1M tokens for the spend estimate; default `0` (free tier) |
+| `MOVIENIGHT_AI_MAX_TOKENS` | `openai` only: reply cap per request, default `2048` (free tiers meter tokens per minute) |
+
+The chat stays hidden until the chosen provider is fully configured; `GET /api/chat/status` names the
+missing variable (never a value). Example for Groq's free tier:
+
+```sh
+MOVIENIGHT_AI_PROVIDER=openai
+MOVIENIGHT_AI_BASE_URL=https://api.groq.com/openai/v1
+MOVIENIGHT_AI_API_KEY=gsk_...
+MOVIENIGHT_AI_MODEL=openai/gpt-oss-120b
+```
+
+A free tier's own limits are the real cap there (Groq's free plan for that model: 30 requests/minute,
+1,000/day, 8K tokens/minute, 200K/day as of 2026-11; one question takes 2-5 requests). When they are hit,
+the chat says so and you try again later.
 
 A monthly spending quota protects your tokens: `MOVIENIGHT_AI_MONTHLY_BUDGET_USD` (default `2.00`, `0` = no
-limit). Usage is counted per UTC month and priced from list prices, so it is an estimate, not the invoice.
-Once it is reached, new questions get a short "budget used" reply (no API call) until the 1st. A hard cap
-can also be set on the Anthropic Console side.
+limit). Usage is counted per UTC month and priced from list prices (Claude models) or the
+`MOVIENIGHT_AI_PRICE_*` values (other models), so it is an estimate, not the invoice. With price `0` it
+never trips; the usage line then shows questions and tokens only. Once the budget is reached, new
+questions get a short "budget used" reply (no API call) until the 1st. A hard cap can also be set on the
+provider's console.
 
 ## Privacy
 
 Your Letterboxd export and the Plex token are stored only in the local data volume
 (`./data`). Nothing is sent anywhere except the Letterboxd RSS feed, plex.tv, TMDB and, if you
-enable the chat, the Anthropic API. Without the optional login, keep the service on a private
+enable the chat, the configured AI provider. Each chat question sends it your taste profile (top
+genres, directors, cast, your highest-rated and recently watched titles), titles and details from your
+library, and the conversation itself. Free tiers may keep or use that data on their own terms: read the
+provider's data policy before you turn the chat on. Without the optional login, keep the service on a private
 network (VPN or a reverse proxy with access control).
 
 ## Health

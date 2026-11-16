@@ -53,7 +53,8 @@ class FakeClient:
 @pytest.fixture
 def chat_client(client, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.delenv("MOVIENIGHT_AI_MODEL", raising=False)
+    for k in ("MOVIENIGHT_AI_MODEL", "MOVIENIGHT_AI_PROVIDER", "MOVIENIGHT_AI_BASE_URL"):
+        monkeypatch.delenv(k, raising=False)
     if not any(getattr(r, "path", "") == "/api/chat" for r in client.app.routes):
         client.app.include_router(chat.router)
     return client
@@ -100,7 +101,8 @@ U = [{"role": "user", "content": "something tense"}]
 def test_status_enabled_and_disabled(client, monkeypatch):
     client.app.include_router(chat.router) if not any(
         getattr(r, "path", "") == "/api/chat/status" for r in client.app.routes) else None
-    for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+    for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "MOVIENIGHT_AI_PROVIDER", "MOVIENIGHT_AI_BASE_URL",
+              "MOVIENIGHT_AI_MODEL"):
         monkeypatch.delenv(k, raising=False)
     st = client.get("/api/chat/status").json()
     assert (st["enabled"], st["model"]) == (False, "claude-opus-5-5")
@@ -377,7 +379,7 @@ def test_status_payload_shape(chat_client, monkeypatch, clock):
     script(monkeypatch, [{"text": ["hi"], "usage": U_(1000, 500), "model": "claude-haiku-5-5"}])
     post(chat_client, U)
     u = chat_client.get("/api/chat/status").json()["usage"]
-    assert u == {"month": "2026-11", "spent_usd": 0.0003, "budget_usd": 2.0, "questions": 1,
+    assert u == {"month": "2026-11", "spent_usd": 0.0003, "budget_usd": 2.0, "questions": 1, "tokens": 1500,
                  "model": "claude-opus-5-5", "exhausted": False}
 
 

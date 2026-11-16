@@ -1,4 +1,4 @@
-// Ask: chat with Claude, which recommends from the Plex library. Text is only ever added as text nodes.
+// Ask: chat with the configured AI model, which recommends from the Plex library. Text is only ever added as text nodes.
 import { getChatStatus } from '../api.js';
 import { h, fill, icon, poster, runtime, matchStub } from '../dom.js';
 import { chat, subscribeChat, sendChat, stopChat, clearChat, retryChat } from '../chat.js';
@@ -219,14 +219,19 @@ export function mount(root) {
 
   // ---- usage (this month's estimated spend) ----
   const money = (n) => `$${Number(n).toFixed(2)}`;
+  const count = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n));
+  let provider = null;
   function paintUsage(u) {
     if (!alive || !u) return;
-    const q = `${u.questions} question${u.questions === 1 ? '' : 's'}`;
+    const parts = [`${u.questions} question${u.questions === 1 ? '' : 's'}`];
+    if (u.tokens) parts.push(`${count(u.tokens)} tokens`);
+    // a free OpenAI-compatible tier costs nothing: show what it used, not "$0.00 of $2.00"
+    if (!(provider === 'openai' && !u.spent_usd)) parts.unshift(`${money(u.spent_usd)}${u.budget_usd ? ` of ${money(u.budget_usd)}` : ''}`);
     usageLine.hidden = false;
     usageLine.classList.toggle('is-exhausted', Boolean(u.exhausted));
     usageLine.textContent = u.exhausted
       ? `Monthly budget used (${money(u.spent_usd)} of ${money(u.budget_usd)}). Ask comes back on the 1st.`
-      : `This month: ${money(u.spent_usd)}${u.budget_usd ? ` of ${money(u.budget_usd)}` : ''} \u00b7 ${q}`;
+      : `This month: ${parts.join(' \u00b7 ')}`;
   }
   const refreshUsage = () => getChatStatus().then((c) => paintUsage(c.usage)).catch(() => {});
 
@@ -235,13 +240,15 @@ export function mount(root) {
   getChatStatus().then((c) => {
     if (!alive) return;
     page.classList.remove('is-loading');
+    provider = c.provider || null;
     if (!c.enabled) {
       newChat.hidden = true;
       fill(page, h('h1', { class: 'page-title', text: 'Ask' }),
         h('div', { class: 'state' },
           icon('info', 'state__icon state__icon--calm'),
           h('p', { class: 'state__title', text: 'AI chat is off' }),
-          h('p', { class: 'state__text', text: 'The server has no API key configured, so Ask is switched off. Everything else works as usual.' }),
+          h('p', { class: 'state__text', text: 'The server has no AI provider configured, so Ask is switched off. Everything else works as usual.' }),
+          c.problem ? h('p', { class: 'state__text help', text: c.problem }) : null,
           h('a', { class: 'btn btn--ghost', href: '#/tonight' }, "See tonight's pick")));
       return;
     }

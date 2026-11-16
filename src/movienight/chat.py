@@ -1,7 +1,11 @@
-"""Optional AI chat assistant: Claude + client-side tools over the local Plex/Letterboxd data.
+"""Optional AI chat assistant: an LLM + client-side tools over the local Plex/Letterboxd data.
 
-Mount with `app.include_router(chat.router)`. Everything here is lazy: the Anthropic client is
-only created when a chat request arrives, and the app works fully without credentials.
+Mount with `app.include_router(chat.router)`. Everything here is lazy: the model client is only
+created when a chat request arrives, and the app works fully without credentials.
+
+Providers (MOVIENIGHT_AI_PROVIDER): "anthropic" (default, ANTHROPIC_API_KEY) or "openai" = any
+OpenAI-compatible endpoint (MOVIENIGHT_AI_BASE_URL + MOVIENIGHT_AI_API_KEY + MOVIENIGHT_AI_MODEL).
+The wire formats live in `chat_backends.py`; the loop, tools and HTTP routes here are provider-neutral.
 
 SSE contract (POST /api/chat, text/event-stream, JSON `data:` payloads):
   text    {"delta": str}                      assistant text as it streams
@@ -10,7 +14,8 @@ SSE contract (POST /api/chat, text/event-stream, JSON `data:` payloads):
   error   {"detail": str}                     friendly message, never a stack trace or secret
   done    {}                                  always the last event
 A question asked once the monthly budget is spent is answered with a plain `text` event (no API call).
-GET /api/chat/status also carries usage: {month, spent_usd, budget_usd (null = no limit), questions, model, exhausted}.
+GET /api/chat/status: {enabled, provider, model, problem (null or a config hint, never a secret), usage}
+with usage = {month, spent_usd, budget_usd (null = no limit), questions, tokens, model, exhausted}.
 """
 from __future__ import annotations
 
@@ -28,6 +33,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import library, queries
+from .chat_backends import AnthropicBackend, OpenAIBackend, Usage
 
 log = logging.getLogger("movienight.chat")
 
@@ -84,12 +90,16 @@ def _history(st) -> list:
 DEFAULT_MODEL = "claude-opus-5-5"
 MAX_TURNS = 8
 MAX_TOKENS = 8000
+# OpenAI-compatible providers: smaller default cap. Free tiers meter tokens per minute (Groq free:
+# 8K TPM), and replies here are short. MOVIENIGHT_AI_MAX_TOKENS overrides it.
+OPENAI_MAX_TOKENS = 2048
 CHAT_TIMEOUT_S = 150.0
 API_TIMEOUT_S = 90.0
 MAX_MESSAGES = 40
 MAX_CONTENT = 4000
 RESULT_LIMIT = 30
-FALLBACK_BETA = "server-side-fallback-2026-07-01"
+USER_AGENT = "MovieNight/0.1 (self-hosted film picker)"
+PROVIDERS = ("anthropic", "openai")
 
 
 # =========================================================================== usage + budget
@@ -123,6 +133,29 @@ def estimate_cost(model: str, input: int = 0, output: int = 0, cache_write: int 
             + cache_read * pin * CACHE_READ_MULT) / 1_000_000
 
 
+def _env_price(name: str) -> float:
+    """USD per 1M tokens from env; unset, blank or invalid = 0 (free tier)."""
+    try:
+        v = float((os.environ.get(name) or "").strip() or 0)
+    except ValueError:
+        return 0.0
+    return v if math.isfinite(v) and v >= 0 else 0.0
+
+
+def openai_prices() -> tuple[float, float]:
+    return _env_price("MOVIENIGHT_AI_PRICE_INPUT"), _env_price("MOVIENIGHT_AI_PRICE_OUTPUT")
+
+
+def row_cost(model: str, input: int = 0, output: int = 0, cache_write: int = 0, cache_read: int = 0) -> float:
+    """Estimated cost of one ai_usage row. With the openai provider, rows of non-Claude models are priced
+    with MOVIENIGHT_AI_PRICE_INPUT/OUTPUT (cache reads at the full input price: the discount varies by
+    provider, so never under-count); claude-* rows and everything under the anthropic provider use PRICES."""
+    if provider() == "openai" and not (model or "").startswith("claude-"):
+        pin, pout = openai_prices()
+        return ((input + cache_write + cache_read) * pin + output * pout) / 1_000_000
+    return estimate_cost(model, input, output, cache_write, cache_read)
+
+
 def monthly_budget() -> float:
     """USD per month; 0 = no limit. Unset, blank or invalid (non-number, negative, inf) = default."""
     raw = (os.environ.get("MOVIENIGHT_AI_MONTHLY_BUDGET_USD") or "").strip()
@@ -143,9 +176,11 @@ def current_month() -> str:
     return _now().strftime("%Y-%m")
 
 
-def record_usage(conn, model: str, usage: Any, *, new_question: bool) -> None:
-    def n(name):
-        v = getattr(usage, name, 0)
+def record_usage(conn, model: str, usage: Usage | None, *, new_question: bool) -> None:
+    """usage: the neutral Usage of one API request (None = the provider sent none: counts the request only)."""
+    u = usage or Usage()
+
+    def n(v):
         return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else 0
 
     conn.execute(
@@ -153,20 +188,22 @@ def record_usage(conn, model: str, usage: Any, *, new_question: bool) -> None:
         "VALUES(?,?,?,?,?,?,1,?) ON CONFLICT(month,model) DO UPDATE SET "
         "input=input+excluded.input, output=output+excluded.output, cache_write=cache_write+excluded.cache_write, "
         "cache_read=cache_read+excluded.cache_read, requests=requests+1, questions=questions+excluded.questions",
-        (current_month(), model or "unknown", n("input_tokens"), n("output_tokens"),
-         n("cache_creation_input_tokens"), n("cache_read_input_tokens"), 1 if new_question else 0))
+        (current_month(), model or "unknown", n(u.input), n(u.output), n(u.cache_write), n(u.cache_read),
+         1 if new_question else 0))
     conn.commit()
 
 
 def month_usage(conn) -> dict:
     month = current_month()
-    spent, questions = 0.0, 0
+    spent, questions, tokens = 0.0, 0, 0
     for r in conn.execute("SELECT * FROM ai_usage WHERE month=?", (month,)):
-        spent += estimate_cost(r["model"], r["input"], r["output"], r["cache_write"], r["cache_read"])
+        spent += row_cost(r["model"], r["input"], r["output"], r["cache_write"], r["cache_read"])
         questions += r["questions"]
+        tokens += r["input"] + r["output"] + r["cache_write"] + r["cache_read"]
     budget = monthly_budget()
     return {"month": month, "spent_usd": round(spent, 4), "budget_usd": round(budget, 2) if budget else None,
-            "questions": questions, "model": model_name(), "exhausted": bool(budget) and spent >= budget}
+            "questions": questions, "tokens": tokens, "model": model_name(),
+            "exhausted": bool(budget) and spent >= budget}
 
 
 def budget_message(budget: float) -> str:
@@ -186,13 +223,48 @@ def _db_call(request: Request, fn):
         conn.close()
 
 
+def _env(name: str) -> str:
+    return (os.environ.get(name) or "").strip()
+
+
+def provider() -> str:
+    """'anthropic', 'openai', or the unknown value as given (lowercased): then the chat is off."""
+    p = _env("MOVIENIGHT_AI_PROVIDER").lower()
+    if p:
+        return p[:32]
+    return "openai" if _env("MOVIENIGHT_AI_BASE_URL") else "anthropic"
+
+
 def model_name() -> str:
-    return (os.environ.get("MOVIENIGHT_AI_MODEL") or "").strip() or DEFAULT_MODEL
+    """Configured model id. The openai provider has no default ('' = not configured)."""
+    m = _env("MOVIENIGHT_AI_MODEL")
+    return m or (DEFAULT_MODEL if provider() == "anthropic" else "")
+
+
+def openai_max_tokens() -> int:
+    raw = _env("MOVIENIGHT_AI_MAX_TOKENS")
+    try:
+        v = int(raw)
+    except ValueError:
+        return OPENAI_MAX_TOKENS
+    return v if 256 <= v <= 65536 else OPENAI_MAX_TOKENS
+
+
+def config_problem() -> str | None:
+    """Why the chat is off, as a hint for the owner (names of variables only, never values). None = ready."""
+    p = provider()
+    if p == "anthropic":
+        if _env("ANTHROPIC_API_KEY") or _env("ANTHROPIC_AUTH_TOKEN"):
+            return None
+        return "No API key is configured (ANTHROPIC_API_KEY)."
+    if p == "openai":
+        missing = [n for n in ("MOVIENIGHT_AI_BASE_URL", "MOVIENIGHT_AI_API_KEY", "MOVIENIGHT_AI_MODEL") if not _env(n)]
+        return f"Missing {', '.join(missing)}." if missing else None
+    return "MOVIENIGHT_AI_PROVIDER must be anthropic or openai."
 
 
 def chat_enabled() -> bool:
-    env = os.environ
-    return bool((env.get("ANTHROPIC_API_KEY") or "").strip() or (env.get("ANTHROPIC_AUTH_TOKEN") or "").strip())
+    return config_problem() is None
 
 
 def make_client():
@@ -200,6 +272,21 @@ def make_client():
     import anthropic
 
     return anthropic.AsyncAnthropic(timeout=API_TIMEOUT_S, max_retries=2)
+
+
+def make_openai_client():
+    """Factory for the async OpenAI-compatible client (monkeypatched in tests). The SDK retries 429/5xx
+    twice, honouring the provider's retry-after."""
+    import openai
+
+    return openai.AsyncOpenAI(base_url=_env("MOVIENIGHT_AI_BASE_URL"), api_key=_env("MOVIENIGHT_AI_API_KEY"),
+                              timeout=API_TIMEOUT_S, max_retries=2, default_headers={"User-Agent": USER_AGENT})
+
+
+def make_backend(model: str):
+    if provider() == "openai":
+        return OpenAIBackend(make_openai_client(), model, openai_max_tokens())
+    return AnthropicBackend(make_client(), model, MAX_TOKENS)
 
 
 # =========================================================================== prompt + tools
@@ -468,30 +555,9 @@ def run_tool(name: str, args: Any, st, dismissed: dict) -> Outcome:
 
 # =========================================================================== agent loop
 
-def _supports_modern(model: str) -> bool:
-    return model.startswith(("claude-opus-5", "claude-fable-5", "claude-mythos-5", "claude-sonnet-5-5"))
-
-
-def _request_kwargs(model: str, messages: list) -> dict:
-    kw: dict = dict(model=model, max_tokens=MAX_TOKENS, system=SYSTEM_PROMPT, tools=TOOLS, messages=messages,
-                    cache_control={"type": "ephemeral"})
-    if _supports_modern(model):
-        kw.update(thinking={"type": "adaptive"}, output_config={"effort": "medium"},
-                  betas=[FALLBACK_BETA], fallbacks="default")
-    return kw
-
-
-def _echo_content(content: list) -> list:
-    """Assistant content to send back. After a mid-output fallback, drop thinking/tool_use before the boundary."""
-    last = max((i for i, b in enumerate(content) if getattr(b, "type", None) == "fallback"), default=None)
-    if last is None:
-        return list(content)
-    return [b for i, b in enumerate(content)
-            if i >= last or getattr(b, "type", None) not in ("thinking", "redacted_thinking", "tool_use")]
-
-
 def _friendly(exc: Exception) -> str:
     import anthropic
+    import openai
 
     if isinstance(exc, anthropic.AuthenticationError):
         return "The AI assistant's credentials were rejected. Check the API key."
@@ -501,7 +567,7 @@ def _friendly(exc: Exception) -> str:
         return "The configured AI model was not found. Check MOVIENIGHT_AI_MODEL."
     if isinstance(exc, anthropic.RateLimitError):
         return "The AI service is busy right now. Try again in a minute."
-    if isinstance(exc, (anthropic.APITimeoutError, TimeoutError)):
+    if isinstance(exc, (anthropic.APITimeoutError, openai.APITimeoutError, TimeoutError)):
         return "The AI service took too long to answer. Try again."
     if isinstance(exc, anthropic.APIConnectionError):
         return "Could not reach the AI service."
@@ -509,6 +575,23 @@ def _friendly(exc: Exception) -> str:
         return "The AI service rejected the request."
     if isinstance(exc, anthropic.APIStatusError):
         return "The AI service had a problem. Try again shortly."
+    # OpenAI-compatible providers (MOVIENIGHT_AI_PROVIDER=openai)
+    if isinstance(exc, openai.AuthenticationError):
+        return "The AI provider rejected the credentials. Check MOVIENIGHT_AI_API_KEY."
+    if isinstance(exc, openai.PermissionDeniedError):
+        return "The AI provider does not allow this key to use the model. Check MOVIENIGHT_AI_MODEL."
+    if isinstance(exc, openai.NotFoundError):
+        return "The AI provider did not find the model or endpoint. Check MOVIENIGHT_AI_MODEL and MOVIENIGHT_AI_BASE_URL."
+    if isinstance(exc, openai.RateLimitError):
+        return "The AI provider's usage limit was reached (free tiers allow only a few requests a minute and a day). Try again later."
+    if isinstance(exc, openai.APIConnectionError):
+        return "Could not reach the AI provider. Check MOVIENIGHT_AI_BASE_URL."
+    if isinstance(exc, openai.BadRequestError):
+        return "The AI provider rejected the request. The model may not support tool calling."
+    if isinstance(exc, openai.APIStatusError):
+        if exc.status_code == 413:
+            return "The conversation is too long for the AI provider's limits. Start a new chat."
+        return "The AI provider had a problem. Try again shortly."
     return "Something went wrong with the assistant."
 
 
@@ -526,6 +609,9 @@ async def agent_events(request: Request, history: list[dict]) -> AsyncIterator[t
     yield "done", {}
 
 
+BAD_ARGS = "The tool arguments were not valid JSON. Call the tool again with a single JSON object."
+
+
 async def _loop(request: Request, history: list[dict]) -> AsyncIterator[tuple[str, dict]]:
     model = model_name()
     budget = monthly_budget()
@@ -538,8 +624,8 @@ async def _loop(request: Request, history: list[dict]) -> AsyncIterator[tuple[st
         if state["exhausted"]:
             yield "text", {"delta": budget_message(budget)}
             return
-    client = make_client()
-    messages: list = list(history)
+    backend = make_backend(model)
+    backend.start(SYSTEM_PROMPT, TOOLS, list(history))
     counted = False
     st, dismissed = await asyncio.to_thread(_load_context, request)
     json_failures = 0
@@ -547,18 +633,17 @@ async def _loop(request: Request, history: list[dict]) -> AsyncIterator[tuple[st
         turns = 0
         while turns < MAX_TURNS:
             turns += 1
+            turn = None
             try:
-                async with client.beta.messages.stream(**_request_kwargs(model, messages)) as stream:
-                    async for event in stream:
-                        if event.type == "text" and event.text:
-                            yield "text", {"delta": event.text}
-                    msg = await stream.get_final_message()
+                async for item in backend.turn():
+                    if isinstance(item, str):
+                        yield "text", {"delta": item}
+                    else:
+                        turn = item
                 json_failures = 0
                 try:
-                    served = getattr(msg, "model", None)
                     await asyncio.to_thread(_db_call, request, lambda c: record_usage(
-                        c, served if isinstance(served, str) and served else model,
-                        getattr(msg, "usage", None), new_question=not counted))
+                        c, turn.model or model, turn.usage, new_question=not counted))
                     counted = True
                 except Exception as e:  # noqa: BLE001
                     log.warning("usage record failed: %s", type(e).__name__)
@@ -571,40 +656,33 @@ async def _loop(request: Request, history: list[dict]) -> AsyncIterator[tuple[st
                 turns -= 1
                 continue
 
-            stop = msg.stop_reason
-            content = _echo_content(msg.content)
-            tool_uses = [b for b in content if b.type == "tool_use"]
-
-            if stop == "refusal":
+            if turn.stop == "refusal":
                 yield "error", {"detail": "The assistant can't help with that request. Try rephrasing."}
                 return
-            if stop == "max_tokens":
+            if turn.stop == "length":
                 yield "error", {"detail": "The answer got cut off. Try asking again, a bit more simply."}
                 return
-            if stop == "pause_turn":
-                messages.append({"role": "assistant", "content": content})
+            if turn.stop == "pause":
                 continue
-            if stop != "tool_use" or not tool_uses:
-                return                                  # end_turn / stop_sequence / anything final
+            if turn.stop != "tools" or not turn.tool_calls:
+                return                                  # end of turn / anything final
 
-            for b in tool_uses:
-                yield "tool", {"name": b.name, "label": TOOL_LABELS.get(b.name, "Working…")}
-            outcomes = await asyncio.gather(
-                *(asyncio.to_thread(run_tool, b.name, b.input, st, dismissed) for b in tool_uses))
+            calls = turn.tool_calls
+            for c in calls:
+                yield "tool", {"name": c.name, "label": TOOL_LABELS.get(c.name, "Working…")}
+            outcomes = await asyncio.gather(*(
+                asyncio.to_thread(run_tool, c.name, c.args, st, dismissed) if c.args is not None
+                else asyncio.sleep(0, Outcome(BAD_ARGS, True)) for c in calls))
             results = []
-            for b, o in zip(tool_uses, outcomes):
+            for c, o in zip(calls, outcomes):
                 for ev in o.events:
                     yield ev
-                r = {"type": "tool_result", "tool_use_id": b.id, "content": o.content}
-                if o.is_error:
-                    r["is_error"] = True
-                results.append(r)
-            messages.append({"role": "assistant", "content": content})
-            messages.append({"role": "user", "content": results})
+                results.append((c.id, o.content, o.is_error))
+            backend.add_tool_results(results)
         yield "error", {"detail": "I couldn't settle on a pick in time. Try a more specific request."}
     finally:
         try:
-            await client.close()
+            await backend.close()
         except Exception:  # noqa: BLE001
             pass
 
@@ -624,7 +702,8 @@ def chat_status(request: Request):
         usage = _db_call(request, month_usage)
     except Exception:  # noqa: BLE001
         usage = None
-    return {"enabled": chat_enabled(), "model": model_name(), "usage": usage}
+    return {"enabled": chat_enabled(), "provider": provider(), "model": model_name(), "problem": config_problem(),
+            "usage": usage}
 
 
 def _validate(body: Any) -> list[dict]:
@@ -656,7 +735,7 @@ def _validate(body: Any) -> list[dict]:
 @router.post("/api/chat")
 async def chat(request: Request):
     if not chat_enabled():
-        return JSONResponse({"detail": "AI chat is not configured (set ANTHROPIC_API_KEY)."}, status_code=503)
+        return JSONResponse({"detail": f"AI chat is not configured. {config_problem()}"}, status_code=503)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
