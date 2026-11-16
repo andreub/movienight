@@ -7,6 +7,7 @@ import { endsAt } from '../clock.js';
 import { initialRuntime, rememberRuntime } from '../timecontrol.js';
 import { voteButtons, setVote } from '../vote.js';
 import { setSeen } from '../seen.js';
+import { serverName } from '../status.js';
 
 const HINT_KEY = 'movienight.seenHintDismissed';
 const HINT_BELOW = 20;
@@ -281,7 +282,7 @@ export function mount(root, route) {
       h('p', { class: 'state__title', text: filtered ? 'Nothing matches these filters' : 'No picks yet' }),
       h('p', { class: 'state__text', text: filtered
         ? 'Every film that fits is watched or hidden. Loosen a filter to see more.'
-        : 'Your Plex library may still be syncing. Check progress in Setup.' }),
+        : `Your ${serverName()} library may still be syncing. Check progress in Setup.` }),
       filtered
         ? h('button', { type: 'button', class: 'btn btn--primary', onclick: () => { rememberRuntime(null); setFilters(CLEAR_QUICK); } }, 'Clear filters')
         : h('a', { class: 'btn btn--primary', href: '#/setup' }, 'Open Setup'));

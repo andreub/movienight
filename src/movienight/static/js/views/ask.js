@@ -1,10 +1,11 @@
-// Ask: chat with the configured AI model, which recommends from the Plex library. Text is only ever added as text nodes.
+// Ask: chat with the configured AI model, which recommends from the media server's library. Text is only ever added as text nodes.
 import { getChatStatus } from '../api.js';
 import { h, fill, icon, poster, runtime, matchStub } from '../dom.js';
 import { chat, subscribeChat, sendChat, stopChat, clearChat, retryChat, stripShownNote } from '../chat.js';
 import { playControl } from '../play.js';
 import { endsAt } from '../clock.js';
 import { go } from '../state.js';
+import { serverName } from '../status.js';
 
 export const title = 'Ask';
 
@@ -214,7 +215,7 @@ export function mount(root) {
   // ---- empty state ----
   fill(lede,
     h('p', { class: 'ask__lede', text: 'What kind of night is it?' }),
-    h('p', { class: 'help', text: 'Describe the mood, the time you have or who is watching. I will pick from what is on your Plex servers.' }),
+    h('p', { class: 'help', text: `Describe the mood, the time you have or who is watching. I will pick from what is on your ${serverName()} ${serverName() === 'Plex' ? 'servers' : 'server'}.` }),
     h('div', { class: 'starters' }, STARTERS.map((s) => h('button', { type: 'button', class: 'chip', onclick: () => send(s) }, s))));
 
   // ---- usage (this month's estimated spend) ----

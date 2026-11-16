@@ -1,16 +1,18 @@
-// "Play on Plex": a plain link for one server, a small chooser for several.
+// "Play on Plex" (or Jellyfin): a plain link for one server, a small chooser for several.
+// `movie.plex` holds the selected media server's entries, whichever it is.
 import { h, icon } from './dom.js';
+import { serverName } from './status.js';
 
 const RES = { '4k': '4K', 1080: '1080p', 720: '720p', sd: 'SD' };
 
 export function playControl(movie, cls = '') {
   const sources = movie.plex || [];
   if (!sources.length) {
-    return h('button', { type: 'button', class: `btn btn--primary ${cls}`, disabled: true }, icon('play'), 'Not on Plex right now');
+    return h('button', { type: 'button', class: `btn btn--primary ${cls}`, disabled: true }, icon('play'), `Not on ${serverName()} right now`);
   }
   if (sources.length === 1) {
     return h('a', { class: `btn btn--primary ${cls}`, href: sources[0].url, target: '_blank', rel: 'noopener' },
-      icon('play'), 'Play on Plex');
+      icon('play'), `Play on ${serverName()}`);
   }
 
   const menuId = `play-${movie.id}-${Math.random().toString(36).slice(2, 7)}`;
@@ -21,7 +23,7 @@ export function playControl(movie, cls = '') {
   const button = h('button', {
     type: 'button', class: `btn btn--primary ${cls}`, 'aria-expanded': 'false', 'aria-controls': menuId,
     onclick: () => toggle(menu.hidden),
-  }, icon('play'), 'Play on Plex', icon('chevron', 'icon--end'));
+  }, icon('play'), `Play on ${serverName()}`, icon('chevron', 'icon--end'));
   const wrap = h('div', { class: `menu-wrap ${cls}` }, button, menu);
 
   function onOutside(e) { if (!wrap.contains(e.target)) toggle(false); }

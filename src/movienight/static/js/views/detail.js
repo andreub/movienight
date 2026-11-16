@@ -5,6 +5,7 @@ import { playControl } from '../play.js';
 import { voteButtons } from '../vote.js';
 import { setSeen } from '../seen.js';
 import { parse } from '../state.js';
+import { serverName } from '../status.js';
 
 const dialog = document.getElementById('detail');
 const body = dialog.querySelector('.sheet__body');
@@ -92,7 +93,7 @@ function render(m) {
     ['Countries', m.countries?.join(', ')],
     ['TMDB rating', m.tmdb_rating != null ? `${m.tmdb_rating.toFixed(1)} / 10${m.tmdb_votes ? ` from ${num(m.tmdb_votes)} votes` : ''}` : null],
     ['Your rating', m.my_rating != null ? stars(m.my_rating) : null],
-    ['On Plex', m.plex?.length ? m.plex.map((p) => p.server + (p.resolution ? ` (${p.resolution === '4k' ? '4K' : p.resolution === 'sd' ? 'SD' : `${p.resolution}p`})` : '')).join(', ') : null],
+    [`On ${serverName()}`, m.plex?.length ? m.plex.map((p) => p.server + (p.resolution ? ` (${p.resolution === '4k' ? '4K' : p.resolution === 'sd' ? 'SD' : `${p.resolution}p`})` : '')).join(', ') : null],
   ].filter(([, v]) => v);
 
   return h('article', { class: 'detail', style: { '--h': String(hueOf(m)) } },
