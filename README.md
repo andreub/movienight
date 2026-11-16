@@ -2,7 +2,9 @@
 
 "What do I watch tonight?" MovieNight ranks the movies available on your Plex servers (or your
 Jellyfin server, see [Media server](#media-server-plex-or-jellyfin)) using your Letterboxd history (watched films, ratings, likes, watchlist) and TMDB metadata.
-It is a single-user app with no login, meant to run on a private network.
+It is a single-user app. With Plex, sign-in with the Plex account it belongs to is on by default;
+with Jellyfin, sign-in is OIDC or switched off (see [Login](#login)). Without a login, run it only
+on a private network.
 
 ## How it gets data
 
@@ -91,7 +93,7 @@ The UI can run without a backend in mock mode at http://localhost:8080/?mock=1.
 | `MOVIENIGHT_JELLYFIN_WATCHED` | on | `0`: ignore what was played in Jellyfin (use it when the account is shared with other people) |
 | `MOVIENIGHT_SYNC_HOURS` | `6` | Background sync interval |
 | `MOVIENIGHT_PUSH_SEEN` | off | `1`/`true`/`yes`: marks films you flag "seen it" as played on the media server (writes to that account). `MOVIENIGHT_PLEX_PUSH_SEEN` is the older name and still works |
-| `MOVIENIGHT_LOGIN` | `plex` (Plex), empty (Jellyfin) | Login methods, comma-separated: `plex`, `oidc`, or `none`. See [Login](#login-optional) |
+| `MOVIENIGHT_LOGIN` | `plex` (Plex), empty (Jellyfin) | Login methods, comma-separated: `plex`, `oidc`, or `none`. See [Login](#login) |
 | `MOVIENIGHT_PLEX_OWNER` | empty | Plex login only: the account id, username or email allowed in; empty = the first sign-in (or the account of the stored token) |
 | `MOVIENIGHT_PORT` | `8080` | Compose only: host port |
 | `TZ` | `Europe/Madrid` | Compose only: container timezone |
@@ -142,7 +144,7 @@ The script syncs the committed project to `REMOTE_DIR` (default `~/movienight`) 
 `movienight`) through the server's main compose file (which needs direnv variables), and waits up to
 two minutes for the container (`CONTAINER`, default `SERVICE`) to report healthy.
 
-## Login (optional)
+## Login
 
 With Plex the default is "Sign in with Plex": only the Plex account the app belongs to gets in
 (`MOVIENIGHT_PLEX_OWNER`, or the first sign-in). With Jellyfin there is no Jellyfin login: use OIDC
