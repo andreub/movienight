@@ -234,6 +234,28 @@ async def fetch_movies(client: httpx.AsyncClient, base: str, client_id: str, tok
     return items
 
 
+SCROBBLE_TIMEOUT = httpx.Timeout(10.0, connect=4.0)
+LIBRARY_IDENTIFIER = "com.plexapp.plugins.library"
+
+
+async def _scrobble(client: httpx.AsyncClient, path: str, base_url: str, client_id: str, token: str,
+                    rating_key: str) -> None:
+    r = await client.get(base_url.rstrip("/") + path,
+                         params={"key": str(rating_key), "identifier": LIBRARY_IDENTIFIER},
+                         headers=base_headers(client_id, token), timeout=SCROBBLE_TIMEOUT)
+    r.raise_for_status()
+
+
+async def scrobble(client: httpx.AsyncClient, base_url: str, client_id: str, token: str, rating_key: str) -> None:
+    """Mark an item played for the account behind `token`. Raises httpx errors."""
+    await _scrobble(client, "/:/scrobble", base_url, client_id, token, rating_key)
+
+
+async def unscrobble(client: httpx.AsyncClient, base_url: str, client_id: str, token: str, rating_key: str) -> None:
+    """Mark an item unplayed for the account behind `token`. Raises httpx errors."""
+    await _scrobble(client, "/:/unscrobble", base_url, client_id, token, rating_key)
+
+
 def web_url(machine_id: str, rating_key: str) -> str:
     key = quote(f"/library/metadata/{rating_key}", safe="")
     return f"https://app.plex.tv/desktop/#!/server/{machine_id}/details?key={key}"

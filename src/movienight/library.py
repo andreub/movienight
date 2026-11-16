@@ -131,6 +131,8 @@ def load_inputs(conn: sqlite3.Connection) -> tuple[list, list]:
         grouped.setdefault(r["id"], []).append(r)
     cands: list[rec.Cand] = []
     plex_meta_by_tmdb: dict[int, dict] = {}
+    # items this app marked played itself (seen marks pushed to Plex): not the user watching in Plex
+    pushed = {(r[0], r[1]) for r in conn.execute("SELECT server_id, rating_key FROM seen_pushes")}
     for mid, rs in grouped.items():
         items = [json.loads(r["json"]) for r in rs]
         tmdb_id = rs[0]["tmdb_id"]
@@ -141,7 +143,8 @@ def load_inputs(conn: sqlite3.Connection) -> tuple[list, list]:
             added_at=max(added) if added else None,
             # Shared servers count too: each server reports the watched state of the account
             # whose token asked, so this is always the user's own.
-            plex_watched=any(it.get("view_count", 0) > 0 for it in items),
+            plex_watched=any(it.get("view_count", 0) > 0 and (r["server_id"], it["rating_key"]) not in pushed
+                             for r, it in zip(rs, items)),
             plex=[{"server": r["sname"], "server_id": r["server_id"], "resolution": it.get("resolution"),
                    "url": plex.web_url(r["server_id"], it["rating_key"]), "rating_key": it["rating_key"]}
                   for r, it in zip(rs, items)],

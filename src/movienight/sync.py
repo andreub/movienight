@@ -7,7 +7,7 @@ import logging
 
 import httpx
 
-from . import letterboxd as lb, library, plex
+from . import letterboxd as lb, library, plex, seenpush
 from .config import Config
 from .db import client_id, connect, get_meta, set_meta
 from .tmdb import Tmdb, TmdbError
@@ -30,6 +30,8 @@ class SyncManager:
         self.state = {"running": False, "stage": "idle", "done": 0, "total": 0, "error": None}
         self._task: asyncio.Task | None = None
         self._errors: list[str] = []
+        self.push_lock = asyncio.Lock()        # seen-mark pushes to Plex: one writer at a time
+        self.last_push: dict | None = None
 
     # ---- status / control
     @property
@@ -129,9 +131,23 @@ class SyncManager:
             library.assign_movies(conn)
             set_meta(conn, "plex_last_sync", now_iso())
             conn.commit()
+            if self.cfg.plex_push_seen:
+                try:
+                    await self.push_seen(conn, cid)
+                except Exception as e:  # noqa: BLE001 - the library itself is already stored
+                    self._fail("plex seen marks", e)
         finally:
             conn.close()
         self.engine.invalidate()
+
+    async def push_seen(self, conn, cid: str) -> dict:
+        """Retry pending unscrobbles, then mark played every seen film not yet pushed (also the backfill)."""
+        async with self.push_lock:
+            undone = await seenpush.unpush(conn, self.http, cid)
+            counts = await seenpush.push(conn, self.http, cid)
+        self.last_push = {**counts, "unpushed": undone["unpushed"], "unpush_failed": undone["failed"]}
+        log.info("seen marks on Plex: %s", self.last_push)
+        return self.last_push
 
     async def stage_letterboxd(self) -> None:
         conn = connect(self.cfg.db_path)
