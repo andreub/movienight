@@ -842,7 +842,7 @@ html.kb-open .composer { bottom: var(--kb); padding-bottom: 8px; }
   animation: rise .25s var(--ease);
 }
 .toast.is-leaving { opacity: 0; transition: opacity .2s; }
-.toast__text { flex: 1; padding: 8px 0; }
+.toast__text { flex: 1; min-width: 0; padding: 8px 0; overflow-wrap: anywhere; }
 .toast__action { min-height: 44px; padding: 0 14px; border: 0; border-radius: 8px; background: var(--ink); color: var(--bulb); font-weight: 700; }
 .toast__close { display: grid; place-items: center; width: 44px; height: 44px; border: 0; background: none; color: var(--ink); }
 .toast :focus-visible { outline-color: var(--ink); }

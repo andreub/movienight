@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { h, fill, icon, poster, genPoster, hueOf, runtime, matchStub, reasonList, errorBox, announce, toast, isTyping } from '../dom.js';
+import { h, fill, icon, poster, genPoster, hueOf, runtime, matchStub, reasonList, errorBox, announce, toast, quoted, isTyping } from '../dom.js';
 import { filterBar } from '../filters.js';
 import { playControl } from '../play.js';
 import { go, apiFilters, hasQuickFilters, setFilters } from '../state.js';
@@ -153,7 +153,7 @@ export function mount(root, route) {
       return;
     }
     const previous = data;
-    toast(`Hid “${m.title}” for 30 days.`, {
+    toast(`Hid ${quoted(m)} for 30 days.`, {
       action: {
         label: 'Undo',
         run: async () => {
@@ -182,10 +182,10 @@ export function mount(root, route) {
           onclick: async () => {
             if (!(await setVote(m, vote))) return;
             close();
-            toast(vote > 1 ? 'Noted: a favourite.' : vote > 0 ? 'Noted: more like this.' : 'Noted: less like this.', { timeout: 3000 });
+            toast(vote > 1 ? `Noted: ${quoted(m)} is a favourite.` : vote > 0 ? `Noted: you liked ${quoted(m)}.` : `Noted: less like ${quoted(m)}.`, { timeout: 3000 });
           },
         }, icon(name))));
-    toast(`Marked “${m.title}” as seen. Did you like it?`, {
+    toast(`Marked ${quoted(m)} as seen. Did you like it?`, {
       timeout: 8000,
       extra: quick,
       action: {
@@ -214,7 +214,7 @@ export function mount(root, route) {
       load('shuffle').then(() => {
         const next = data?.pick?.id;
         seenToast(movie, next, () => {
-          if (data && data.pick.id === next) { req++; data = previous; render('shuffle'); } else toast('Unmarked. It can come back in your picks.');
+          if (data && data.pick.id === next) { req++; data = previous; render('shuffle'); } else toast(`Unmarked ${quoted(m)}. It can come back in your picks.`);
         });
       });
       return;
@@ -251,7 +251,7 @@ export function mount(root, route) {
       const cur = replId ? data.alternatives.findIndex((a) => a.id === replId) : -1;
       if (cur >= 0) data.alternatives[cur] = movie;
       else if (!replId && data.alternatives.length < 6) data.alternatives.splice(Math.min(at, data.alternatives.length), 0, movie);
-      else { toast('Unmarked. It can come back in your picks.'); return; }
+      else { toast(`Unmarked ${quoted(m)}. It can come back in your picks.`); return; }
       renderAlts();
     });
   }
@@ -260,7 +260,7 @@ export function mount(root, route) {
   async function lessLikeThis(m, done) {
     if (!(await done)) return;
     const previous = data;
-    toast(`Noted. “${m.title}” will rank lower.`, {
+    toast(`Noted. ${quoted(m)} will rank lower.`, {
       action: {
         label: 'Undo',
         run: async () => {
