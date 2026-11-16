@@ -253,7 +253,7 @@ export async function handle(method, path, p, body) {
         return ok({
           media_server: 'jellyfin',
           letterboxd: { ...lbState, last_sync: lbReady ? new Date(Date.now() - 2 * 3600e3).toISOString() : null },
-          plex: { connected: false, account: null, movies: 1696, last_sync: null, servers: [], seen_pushed: null },
+          plex: { connected: false, account: null, movies: 0, last_sync: null, servers: [], seen_pushed: null },
           jellyfin: { configured: true, connected: true, account: 'movie-fan', movies: 1696, last_sync: synced ? new Date(Date.now() - 2 * 3600e3).toISOString() : null, seen_pushed: null, problem: null },
           tmdb: { configured: true, enriched: 1400, pending: 12 },
           sync: sync.running && sync.stage === 'plex' ? { ...sync, stage: 'jellyfin' } : sync,
