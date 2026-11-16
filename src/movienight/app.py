@@ -15,17 +15,26 @@ from urllib.parse import quote
 import httpx
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, chat, db, letterboxd as lb, library, plex, queries, seenpush
+from . import auth, chat, db, letterboxd as lb, library, plex, queries, seenpush, version
 from .config import Config
 from .sync import SyncManager, plex_token, tmdb_counts
 from .util import now_iso, safe_error
 
 log = logging.getLogger("movienight")
 STATIC_DIR = Path(__file__).parent / "static"
+_PKG_DIR = Path(__file__).parent
+_APP_VERSION: str | None = None
+
+
+def _app_version() -> str:
+    global _APP_VERSION
+    if _APP_VERSION is None:  # read the code once per process
+        _APP_VERSION = version.compute_version(_PKG_DIR)
+    return _APP_VERSION
 MAX_UPLOAD = lb.MAX_ZIP_BYTES
 
 
@@ -603,6 +612,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
     app.include_router(chat.router)
 
     # ---- frontend
+    app_version = _app_version()
     if STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -619,9 +629,19 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
     def index():
         f = STATIC_DIR / "index.html"
         if f.is_file():
-            return FileResponse(f, headers={"Cache-Control": "no-cache"})
+            # The page learns which version it was loaded as; the client compares it with the API header.
+            html = f.read_text(encoding="utf-8").replace(version.PLACEHOLDER, app_version)
+            return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
         return HTMLResponse("<!doctype html><title>MovieNight</title><h1>MovieNight</h1>"
                             "<p>Frontend not installed yet. The API is available under /api.</p>")
+
+    @app.middleware("http")
+    async def _version_header(request, call_next):
+        # Added last, so it is outermost: also stamps 401s from the auth middleware.
+        resp = await call_next(request)
+        if request.url.path.startswith("/api/"):
+            resp.headers[version.HEADER] = app_version
+        return resp
 
     return app
 
