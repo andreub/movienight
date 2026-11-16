@@ -1,5 +1,6 @@
 import { api } from '../api.js';
 import { h, fill, icon, poster, stars, errorBox, num, ago } from '../dom.js';
+import { serverName } from '../status.js';
 
 export const title = 'Taste';
 
@@ -39,8 +40,8 @@ function render(p, knows) {
       stat('Rated', num(s.rated)),
       stat('Average rating', s.mean_rating != null ? h('span', null, s.mean_rating.toFixed(1), ' ', stars(Math.round(s.mean_rating * 2) / 2)) : '–'),
       stat('Liked', num(s.liked)),
-      stat('Unwatched on Plex', num(s.library_unwatched)),
-      stat('Watchlist films on Plex', num(s.watchlist_on_plex))),
+      stat(`Unwatched on ${serverName()}`, num(s.library_unwatched)),
+      stat(`Watchlist films on ${serverName()}`, num(s.watchlist_on_plex))),
     block('How well does it know you?', knows),
     p.rating_histogram?.length ? block('How you rate', histogram(p.rating_histogram, s.mean_rating)) : null,
     h('p', { class: 'taste__note', text: 'Bars to the right mean you rate films with that trait above your average; to the left, below it.' }),

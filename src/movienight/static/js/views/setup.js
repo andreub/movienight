@@ -1,6 +1,6 @@
 import { api, getChatStatus } from '../api.js';
 import { h, fill, icon, num, ago, toast, errorBox } from '../dom.js';
-import { subscribe, refreshStatus, STAGES, syncPercent } from '../status.js';
+import { subscribe, refreshStatus, STAGES, syncPercent, serverName, serverStatus } from '../status.js';
 
 export const title = 'Setup';
 
@@ -13,6 +13,8 @@ export function mount(root) {
   const statusError = h('div');
   const lb = letterboxdStep();
   const plex = plexStep();
+  const jf = jellyfinStep();       // shown instead of the Plex step when the server selects Jellyfin
+  jf.el.hidden = true;
   const sync = syncStep();
   const chatNote = h('p', { class: 'note', hidden: true });
   getChatStatus().then((c) => {
@@ -30,26 +32,30 @@ export function mount(root) {
     me.hidden = false;
   }).catch(() => {});
   root.append(h('div', { class: 'setup' }, intro, statusError,
-    h('ol', { class: 'steps' }, lb.el, plex.el, sync.el), triage, chatNote, me));
+    h('ol', { class: 'steps' }, lb.el, plex.el, jf.el, sync.el), triage, chatNote, me));
 
   let wasReady = null;
   const unsubscribe = subscribe((s, err) => {
     fill(statusError, err ? errorBox(err, refreshStatus) : '');
     if (!s) return;
-    if (wasReady !== s.ready) renderIntro(s.ready, wasReady === false);
+    if (wasReady !== s.ready) renderIntro(s.ready, wasReady === false, s);
     wasReady = s.ready;
     triage.hidden = !s.ready;
     lb.update(s);
-    plex.update(s);
+    const isJf = s.media_server === 'jellyfin';
+    plex.el.hidden = isJf;
+    jf.el.hidden = !isJf;
+    if (isJf) jf.update(s); else plex.update(s);
     sync.update(s);
   });
 
-  function renderIntro(ready, justBecameReady) {
+  function renderIntro(ready, justBecameReady, st) {
+    const sources = st?.media_server === 'jellyfin' ? 'your Jellyfin server' : 'your Plex servers';
     fill(intro, 
       h('h1', { class: 'page-title', text: ready ? 'Setup' : 'Set up movie night' }),
       ready
         ? h('p', { class: 'lede', text: 'Your sources and sync. Changes here update your picks after the next sync.' })
-        : h('p', { class: 'lede', text: 'Connect your Letterboxd history and your Plex servers. MovieNight then ranks what you can watch right now by how well it fits your taste.' }),
+        : h('p', { class: 'lede', text: `Connect your Letterboxd history and ${sources}. MovieNight then ranks what you can watch right now by how well it fits your taste.` }),
       justBecameReady
         ? h('div', { class: 'banner', role: 'status' }, icon('check'), h('span', { text: "You're all set." }), h('a', { class: 'btn btn--primary', href: '#/tonight' }, "See tonight's pick"))
         : null);
@@ -287,6 +293,44 @@ function plexStep() {
   };
 }
 
+// ---- 2. Jellyfin (read-only: the connection comes from server variables, not from a form) ----
+
+function jellyfinStep() {
+  const s = step(2, 'Jellyfin', 'MovieNight only suggests films you can play right now on your Jellyfin server.');
+  const body = h('div');
+  s.content.append(body);
+
+  async function syncNow(e) {
+    e.currentTarget.disabled = true;
+    try {
+      await api.sync('jellyfin');
+    } catch (err) {
+      toast(err.status === 409 ? 'A sync is already running.' : err.detail);
+    }
+    refreshStatus();
+  }
+
+  return {
+    el: s.el,
+    update(st) {
+      const j = st.jellyfin || {};
+      s.setDone(Boolean(j.connected), j.connected ? 'Connected' : j.configured ? 'Not connected' : 'Needed');
+      fill(body,
+        j.connected
+          ? h('p', { class: 'help' },
+            j.account ? ['Signed in as ', h('strong', { text: j.account }), '. '] : null,
+            `${num(j.movies)} films. Last read ${ago(j.last_sync)}.`)
+          : null,
+        j.problem ? h('div', { class: 'note note--error', role: 'alert' }, icon('alert'), h('span', { text: j.problem })) : null,
+        j.configured
+          ? (st.sync?.running ? null : h('button', { class: 'btn btn--ghost', type: 'button', onclick: syncNow }, 'Sync now'))
+          : h('p', { class: 'help' }, 'Set ', h('code', { text: 'MOVIENIGHT_JELLYFIN_URL' }), ', ',
+            h('code', { text: 'MOVIENIGHT_JELLYFIN_USER' }), ' and ', h('code', { text: 'MOVIENIGHT_JELLYFIN_PASSWORD' }),
+            ' in the server environment and restart.'));
+    },
+  };
+}
+
 // ---- 3. Sync ----
 
 function syncStep() {
@@ -324,12 +368,12 @@ function syncStep() {
         progress,
         sync.error ? h('div', { class: 'note note--error', role: 'alert' }, icon('alert'), h('span', { text: sync.error })) : null,
         h('dl', { class: 'facts facts--compact' },
-          h('div', null, h('dt', { text: 'Plex' }), h('dd', { text: `read ${ago(st.plex?.last_sync)}` })),
+          h('div', null, h('dt', { text: serverName(st) }), h('dd', { text: `read ${ago(serverStatus(st).last_sync)}` })),
           h('div', null, h('dt', { text: 'Letterboxd' }), h('dd', { text: `read ${ago(st.letterboxd?.last_sync)}` })),
-          st.plex?.seen_pushed != null ? h('div', null, h('dt', { text: 'Seen marks' }), h('dd', { text: `${num(st.plex.seen_pushed)} pushed to Plex` })) : null,
+          serverStatus(st).seen_pushed != null ? h('div', null, h('dt', { text: 'Seen marks' }), h('dd', { text: `${num(serverStatus(st).seen_pushed)} pushed to ${serverName(st)}` })) : null,
           tmdb.configured ? h('div', null, h('dt', { text: 'TMDB' }), h('dd', { text: `details for ${num(tmdb.enriched)} films${tmdb.pending ? `, ${num(tmdb.pending)} to go` : ''}` })) : null),
         tmdb.configured ? null : h('p', { class: 'note' }, icon('info'),
-          h('span', null, 'TMDB is not set up, so recommendations use Plex metadata only and are less precise. Add ',
+          h('span', null, `TMDB is not set up, so recommendations use ${serverName(st)} metadata only and are less precise. Add `,
             h('code', { text: 'MOVIENIGHT_TMDB_TOKEN' }), ' to the server environment to enable it.')));
     },
   };

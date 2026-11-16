@@ -3,6 +3,7 @@ import { h, icon, poster, runtime, matchStub, errorBox, num } from '../dom.js';
 import { filterBar } from '../filters.js';
 import { voteButtons } from '../vote.js';
 import { seenToggle } from '../seen.js';
+import { serverName } from '../status.js';
 import { go, apiFilters, setFilters, hasAnyFilters, SORTS, EMPTY_FILTERS } from '../state.js';
 
 export const title = 'Browse';
@@ -139,7 +140,7 @@ export function mount(root, route) {
       h('p', { class: 'state__title', text: hasAnyFilters(filters) ? 'Nothing matches these filters' : 'No films to show yet' }),
       h('p', { class: 'state__text', text: hasAnyFilters(filters)
         ? 'Try another mood, a longer runtime or fewer genres.'
-        : 'Once Plex has synced, every unwatched film shows up here, ranked for you.' }),
+        : `Once ${serverName()} has synced, every unwatched film shows up here, ranked for you.` }),
       hasAnyFilters(filters)
         ? h('button', { type: 'button', class: 'btn btn--primary', onclick: () => { search.value = ''; setFilters(EMPTY_FILTERS); } }, 'Reset filters')
         : h('a', { class: 'btn btn--primary', href: '#/setup' }, 'Open Setup'));
