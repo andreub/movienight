@@ -606,6 +606,15 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
     if STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+        @app.middleware("http")
+        async def revalidate_static_code(request, call_next):
+            # JS and CSS have no version strings in their URLs, so make the browser revalidate (ETag) on every
+            # load instead of reusing a heuristically cached copy after a deploy. Images keep default caching.
+            resp = await call_next(request)
+            if request.url.path.startswith(("/static/js/", "/static/css/")) and resp.status_code < 400:
+                resp.headers["Cache-Control"] = "no-cache"
+            return resp
+
     @app.get("/", include_in_schema=False)
     def index():
         f = STATIC_DIR / "index.html"

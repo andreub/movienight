@@ -177,6 +177,12 @@ export function announce(text) {
   requestAnimationFrame(() => { el.textContent = text; });
 }
 
+// A film title in curly quotes for messages, capped so toast buttons stay on screen on a phone.
+export function quoted(m, max = 40) {
+  const t = String(m.title || 'this film');
+  return `“${t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t}”`;
+}
+
 // `extra(remove)` may return a node (e.g. quick buttons); the toast then wraps onto two rows.
 export function toast(message, { action = null, timeout = 6000, extra = null } = {}) {
   const host = document.querySelector('dialog[open] .toasts') || document.querySelector('body > .toasts');

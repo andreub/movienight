@@ -1,6 +1,6 @@
 // Film detail: bottom sheet on phones, side panel on wider screens (one <dialog>).
 import { api } from '../api.js';
-import { h, icon, poster, hueOf, runtime, stars, matchStub, reasonList, errorBox, toast, num } from '../dom.js';
+import { h, icon, poster, hueOf, runtime, stars, matchStub, reasonList, errorBox, toast, quoted, num } from '../dom.js';
 import { playControl } from '../play.js';
 import { voteButtons } from '../vote.js';
 import { setSeen } from '../seen.js';
@@ -67,7 +67,7 @@ async function setDismissed(m, days) {
     return;
   }
   window.dispatchEvent(new CustomEvent('movienight:changed', { detail: { id: m.id, dismissed: days !== null } }));
-  toast(days === null ? `“${m.title}” is back in your picks.` : days === 0 ? `“${m.title}” won't be suggested again.` : `Hid “${m.title}” for 30 days.`);
+  toast(days === null ? `${quoted(m)} is back in your picks.` : days === 0 ? `${quoted(m)} won't be suggested again.` : `Hid ${quoted(m)} for 30 days.`);
   load();
 }
 
@@ -75,7 +75,7 @@ async function markSeen(m, seen) {
   if (!(await setSeen(m, seen, 'sheet'))) return;
   // On Tonight the page itself replaces the film and offers the rating toast.
   if (seen && parse().view === 'tonight') { load(); return; }
-  toast(seen ? `Marked “${m.title}” as seen.` : `“${m.title}” is back in your picks.`);
+  toast(seen ? `Marked ${quoted(m)} as seen.` : `${quoted(m)} is back in your picks.`);
   load();
 }
 

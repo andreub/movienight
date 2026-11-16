@@ -119,3 +119,11 @@ def test_image_proxy_validates_and_404s(client):
 
 def test_root_serves_something(client):
     assert client.get("/").status_code == 200
+
+
+def test_static_code_revalidates_but_images_do_not(client):
+    for path in ("/static/js/main.js", "/static/css/app.css"):
+        r = client.get(path)
+        assert r.status_code == 200 and r.headers["cache-control"] == "no-cache" and r.headers.get("etag")
+    assert client.get("/static/favicon.svg").headers.get("cache-control") != "no-cache"
+    assert client.get("/").headers["cache-control"] == "no-cache"
