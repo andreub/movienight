@@ -3,10 +3,28 @@ from __future__ import annotations
 
 import math
 import random
+from datetime import date
 from dataclasses import dataclass, field
 
 from .recommender import Cand
 from .util import norm_title
+
+# "Recent" mood window, counted back from today at request time.
+RECENT_MONTHS = 18
+
+
+def today() -> date:  # separate function so tests can patch the clock
+    return date.today()
+
+
+def recent_cutoff() -> date:
+    t = today()
+    m = t.year * 12 + t.month - 1 - RECENT_MONTHS
+    y, mo = divmod(m, 12)
+    mo += 1
+    last = [31, 29 if y % 4 == 0 and (y % 100 or y % 400 == 0) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1]
+    return date(y, mo, min(t.day, last))
+
 
 # Moods are data: every key is optional. A film matches when
 #   (it has one of `genres` OR one of `keywords` OR contains all genres of one `genre_sets` entry)
@@ -35,6 +53,8 @@ MOODS: list[dict] = [
      "max_runtime": 94},
     {"id": "classic", "label": "A classic (before 1980)", "emoji": "🎞️", "description": "From the golden decades",
      "max_year": 1979},
+    {"id": "recent", "label": "Something recent", "emoji": "🆕", "description": "Released in the last 18 months",
+     "recent": True},
 ]
 MOOD_BY_ID = {m["id"]: m for m in MOODS}
 
@@ -55,6 +75,8 @@ def mood_matches(mood: dict, c: Cand) -> bool:
         return False
     if "max_year" in mood and not (year and year <= mood["max_year"]):
         return False
+    if mood.get("recent") and not (year and year >= recent_cutoff().year):
+        return False   # only the release year is stored: year >= year of the cutoff date
     if "min_year" in mood and not (year and year >= mood["min_year"]):
         return False
     content = ("genres" in mood) or ("keywords" in mood) or ("genre_sets" in mood)

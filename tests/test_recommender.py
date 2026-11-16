@@ -126,3 +126,49 @@ def test_pick_weighted_exclude_and_diverse_alternatives():
     assert chosen.id != top and top not in {a.id for a in alts}
     assert len(alts) == 3 and chosen.id not in {a.id for a in alts}
     assert queries.pick([], set()) is None
+
+
+def test_recent_mood_window_and_year_fallback(monkeypatch):
+    from datetime import date
+    assert queries.RECENT_MONTHS == 18
+    assert queries.MOOD_BY_ID["recent"]["description"] == "Released in the last 18 months"
+    ids = [m["id"] for m in queries.MOODS]
+    assert ids.index("recent") == ids.index("classic") + 1
+    hist, cands = world()
+    rec.score_candidates(hist, cands, now=NOW)
+    mood = queries.MOOD_BY_ID["recent"]
+    by_id = {c.id: c for c in cands}
+
+    def recent(today):
+        monkeypatch.setattr(queries, "today", lambda: today)
+        return {c.id for c in queries.apply_filters(cands, queries.Filters(mood="recent"), {})}
+
+    # cutoff 2025-05-16 -> year >= 2025: 2024 film dropped
+    assert 26 not in recent(date(2026, 11, 16))
+    # cutoff 2023-12-31 (today 2025-06-30) -> 2024 kept
+    assert 26 in recent(date(2025, 6, 30))
+    # cutoff 2023-12-31 vs 2024-01-01: boundary on both sides
+    assert queries.recent_cutoff() == date(2023, 12, 30)
+    monkeypatch.setattr(queries, "today", lambda: date(2025, 7, 1))
+    assert queries.recent_cutoff() == date(2024, 1, 1)
+    assert 26 in recent(date(2025, 7, 1))
+    monkeypatch.setattr(queries, "today", lambda: date(2026, 1, 1))
+    assert queries.recent_cutoff() == date(2024, 7, 1)
+    assert 26 in recent(date(2026, 1, 1))
+    assert 26 not in recent(date(2027, 1, 1))     # cutoff 2025-07-01
+    # year only: falls back on year, no year -> out
+    by_id[26].year = None
+    by_id[26].meta["year"] = 2026
+    assert 26 in recent(date(2027, 1, 1))
+    by_id[26].meta["year"] = None
+    assert 26 not in recent(date(2027, 1, 1))
+    by_id[26].year = 2026
+    # combined with another filter
+    monkeypatch.setattr(queries, "today", lambda: date(2026, 11, 16))
+    f = queries.Filters(mood="recent", genres=["Crime"])
+    assert {c.id for c in queries.apply_filters(cands, f, {})} == {26}
+    f = queries.Filters(mood="recent", genres=["Horror"])
+    assert queries.apply_filters(cands, f, {}) == []
+    assert queries.recent_cutoff() == date(2025, 5, 16)
+    monkeypatch.setattr(queries, "today", lambda: date(2026, 8, 31))
+    assert queries.recent_cutoff() == date(2025, 2, 28)
