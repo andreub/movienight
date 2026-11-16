@@ -32,7 +32,8 @@ class FakeStream:
         for i, (name, inp) in enumerate(t.get("tools", [])):
             content.append(NS(type="tool_use", id=f"tu_{id(t)}_{i}", name=name, input=inp))
         stop = t.get("stop") or ("tool_use" if t.get("tools") else "end_turn")
-        return NS(stop_reason=stop, content=content)
+        usage = NS(**t["usage"]) if t.get("usage") else None
+        return NS(stop_reason=stop, content=content, usage=usage, model=t.get("model"))
 
 
 class FakeClient:
@@ -101,12 +102,14 @@ def test_status_enabled_and_disabled(client, monkeypatch):
         getattr(r, "path", "") == "/api/chat/status" for r in client.app.routes) else None
     for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
         monkeypatch.delenv(k, raising=False)
-    assert client.get("/api/chat/status").json() == {"enabled": False, "model": "claude-opus-5-5"}
+    st = client.get("/api/chat/status").json()
+    assert (st["enabled"], st["model"]) == (False, "claude-opus-5-5")
     r = client.post("/api/chat", json={"messages": U})
     assert r.status_code == 503 and "detail" in r.json()
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok")
     monkeypatch.setenv("MOVIENIGHT_AI_MODEL", "claude-sonnet-5-5")
-    assert client.get("/api/chat/status").json() == {"enabled": True, "model": "claude-sonnet-5-5"}
+    st = client.get("/api/chat/status").json()
+    assert (st["enabled"], st["model"]) == (True, "claude-sonnet-5-5")
 
 
 @pytest.mark.parametrize("body", [
@@ -251,3 +254,143 @@ def test_leading_assistant_dropped_and_non_modern_model(chat_client, monkeypatch
     post(chat_client, [{"role": "assistant", "content": "Hello!"}, {"role": "user", "content": "hey"}])
     assert fake.calls[0]["messages"] == [{"role": "user", "content": "hey"}]
     assert "fallbacks" not in fake.calls[0] and "thinking" not in fake.calls[0]
+
+
+# ------------------------------------------------------------------ spending quota
+
+import sqlite3
+from datetime import datetime, timezone
+
+
+def U_(i=0, o=0, w=0, r=0):
+    return {"input_tokens": i, "output_tokens": o, "cache_creation_input_tokens": w, "cache_read_input_tokens": r}
+
+
+def rows(c):
+    db = sqlite3.connect(c.cfg.db_path)
+    db.row_factory = sqlite3.Row
+    try:
+        return [dict(x) for x in db.execute("SELECT * FROM ai_usage ORDER BY month, model")]
+    finally:
+        db.close()
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    box = {"now": datetime(2026, 11, 16, 12, tzinfo=timezone.utc)}
+    monkeypatch.setattr(chat, "_now", lambda: box["now"])
+    return box
+
+
+def test_usage_recorded_per_turn_and_summed(chat_client, monkeypatch, clock):
+    script(monkeypatch, [
+        {"tools": [("get_taste_profile", {})], "usage": U_(100, 10, 1000, 0), "model": "claude-haiku-5-5"},
+        {"text": ["ok"], "usage": U_(50, 20, 0, 1000)},
+    ])
+    post(chat_client, U)
+    post(chat_client, U)
+    got = {r["model"]: r for r in rows(chat_client)}
+    assert set(got) == {"claude-haiku-5-5", "claude-opus-5-5"}      # served model, else the requested one
+    h = got["claude-haiku-5-5"]
+    assert (h["month"], h["input"], h["output"], h["cache_write"], h["cache_read"], h["requests"], h["questions"]) == \
+        ("2026-11", 100, 10, 1000, 0, 1, 1)
+    o = got["claude-opus-5-5"]
+    assert (o["input"], o["output"], o["cache_read"], o["requests"], o["questions"]) == (100, 40, 2000, 2, 1)
+    u = chat_client.get("/api/chat/status").json()["usage"]
+    assert u["month"] == "2026-11" and u["questions"] == 2 and u["budget_usd"] == 2.0 and not u["exhausted"]
+
+
+def test_usage_recorded_on_error_stop(chat_client, monkeypatch, clock):
+    script(monkeypatch, [{"text": ["cut"], "stop": "max_tokens", "usage": U_(10, 8000)}])
+    _, ev = post(chat_client, U)
+    assert "error" in names(ev)
+    assert rows(chat_client)[0]["output"] == 8000
+
+
+def test_cost_math():
+    assert chat.estimate_cost("claude-opus-5-5", 1_000_000, 1_000_000) == pytest.approx(24.0)
+    assert chat.estimate_cost("claude-opus-5-5", 0, 0, 1_000_000, 0) == pytest.approx(5.0)     # 1.25 x 4
+    assert chat.estimate_cost("claude-opus-5-5", 0, 0, 0, 1_000_000) == pytest.approx(0.4)     # 0.1 x 4
+    assert chat.estimate_cost("claude-opus-5-5-20270101", 1_000_000) == pytest.approx(4.0)    # longest prefix
+    assert chat.estimate_cost("claude-opus-5", 1_000_000) == pytest.approx(5.0)
+    assert chat.estimate_cost("claude-haiku-5-5", 1_000_000, 1_000_000) == pytest.approx(0.6)
+    assert chat.estimate_cost("claude-mystery-9", 1_000_000, 1_000_000) == pytest.approx(48.0)  # priciest row
+
+
+def test_budget_env_parsing(monkeypatch):
+    def b(v):
+        if v is None:
+            monkeypatch.delenv("MOVIENIGHT_AI_MONTHLY_BUDGET_USD", raising=False)
+        else:
+            monkeypatch.setenv("MOVIENIGHT_AI_MONTHLY_BUDGET_USD", v)
+        return chat.monthly_budget()
+
+    assert b(None) == 2.0 and b("") == 2.0 and b("abc") == 2.0 and b("-1") == 2.0 and b("nan") == 2.0
+    assert b("5") == 5.0 and b("0.5") == 0.5 and b("0") == 0.0
+
+
+def test_quota_blocks_new_question_without_api_call(chat_client, monkeypatch, clock):
+    monkeypatch.setenv("MOVIENIGHT_AI_MONTHLY_BUDGET_USD", "1")
+    fake = script(monkeypatch, [{"text": ["hi"], "usage": U_(0, 100_000), "model": "claude-opus-5-5"}])  # $2
+    post(chat_client, U)
+    assert len(fake.calls) == 1
+    r, ev = post(chat_client, U)
+    assert r.status_code == 200 and names(ev) == ["text", "done"]
+    assert "budget for this month ($1.00)" in ev[0][1]["delta"] and "1st" in ev[0][1]["delta"]
+    assert len(fake.calls) == 1
+    assert chat_client.get("/api/chat/status").json()["usage"]["exhausted"] is True
+
+
+def test_inflight_question_finishes_loop(chat_client, monkeypatch, clock):
+    monkeypatch.setenv("MOVIENIGHT_AI_MONTHLY_BUDGET_USD", "0.01")
+    fake = script(monkeypatch, [
+        {"tools": [("get_taste_profile", {})], "usage": U_(0, 100_000)},
+        {"text": ["done"], "usage": U_(0, 1)},
+    ])
+    _, ev = post(chat_client, U)
+    assert len(fake.calls) == 2 and "error" not in names(ev)
+
+
+def test_budget_zero_disables_limit(chat_client, monkeypatch, clock):
+    monkeypatch.setenv("MOVIENIGHT_AI_MONTHLY_BUDGET_USD", "0")
+    fake = script(monkeypatch, [{"text": ["hi"], "usage": U_(0, 1_000_000)}])
+    post(chat_client, U)
+    _, ev = post(chat_client, U)
+    assert len(fake.calls) == 2 and ev[0][1]["delta"] == "hi"
+    u = chat_client.get("/api/chat/status").json()["usage"]
+    assert u["budget_usd"] is None and u["exhausted"] is False
+
+
+def test_new_month_starts_from_zero(chat_client, monkeypatch, clock):
+    monkeypatch.setenv("MOVIENIGHT_AI_MONTHLY_BUDGET_USD", "1")
+    fake = script(monkeypatch, [{"text": ["hi"], "usage": U_(0, 100_000)}])
+    post(chat_client, U)
+    assert chat_client.get("/api/chat/status").json()["usage"]["exhausted"] is True
+    clock["now"] = datetime(2026, 12, 1, 0, 0, tzinfo=timezone.utc)
+    u = chat_client.get("/api/chat/status").json()["usage"]
+    assert u["month"] == "2026-12" and u["spent_usd"] == 0 and u["questions"] == 0 and not u["exhausted"]
+    _, ev = post(chat_client, U)
+    assert ev[0][1]["delta"] == "hi" and len(fake.calls) == 2
+
+
+def test_status_payload_shape(chat_client, monkeypatch, clock):
+    script(monkeypatch, [{"text": ["hi"], "usage": U_(1000, 500), "model": "claude-haiku-5-5"}])
+    post(chat_client, U)
+    u = chat_client.get("/api/chat/status").json()["usage"]
+    assert u == {"month": "2026-11", "spent_usd": 0.0003, "budget_usd": 2.0, "questions": 1,
+                 "model": "claude-opus-5-5", "exhausted": False}
+
+
+def test_migration_5_on_existing_v4_db(tmp_path):
+    from movienight import db
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    for i, sql in enumerate(db.MIGRATIONS[:4], start=1):
+        conn.executescript(sql)
+        conn.execute(f"PRAGMA user_version={i}")
+    conn.commit()
+    conn.close()
+    db.migrate(path)
+    conn = sqlite3.connect(path)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) >= 5
+    assert [r[1] for r in conn.execute("PRAGMA table_info(ai_usage)")][:3] == ["month", "model", "input"]

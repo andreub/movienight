@@ -700,6 +700,8 @@ button.menu__item { width: 100%; background: none; border: 0; text-align: left; 
 main > .ask { max-width: 760px; }
 .ask { padding: 0 var(--gutter) calc(var(--composer-h, 76px) + 28px); }
 .ask.is-loading > :not(.ask__top) { display: none; }
+.ask__usage { color: var(--muted); font-size: .8125rem; margin: -4px 0 12px; }
+.ask__usage.is-exhausted { color: var(--bulb); }
 .ask__top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .ask__top .page-title { margin-bottom: 12px; }
 .ask__lede { font: 800 clamp(2.5rem, 10vw, 4.25rem)/.95 var(--font-display); color: var(--bulb); max-width: 12ch; text-wrap: balance; margin-bottom: 14px; }
