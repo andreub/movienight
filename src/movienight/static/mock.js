@@ -44,6 +44,7 @@ const MOODS = [
   { id: 'heartfelt', label: 'Heartfelt', emoji: '💛', description: 'Drama and romance', test: (m) => hasAny(m, ['Romance', 'Drama']) },
   { id: 'short', label: 'Short one', emoji: '⏱️', description: 'Under 95 minutes', test: (m) => m.runtime && m.runtime < 100 },
   { id: 'classic', label: 'A classic', emoji: '🎞️', description: 'Before 1980', test: (m) => m.year < 1980 },
+  { id: 'recent', label: 'Something recent', emoji: '🆕', description: 'Released in the last 18 months', test: (m) => m.year >= new Date().getFullYear() - 1 },
 ];
 
 const hasAny = (m, gs) => m.genres.some((g) => gs.includes(g));

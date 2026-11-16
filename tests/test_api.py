@@ -13,7 +13,10 @@ def test_health_status_moods(client):
     assert s["tmdb"]["configured"] is False
     assert "SECRET" not in client.get("/api/status").text
     moods = client.get("/api/moods").json()
-    assert {"light", "short", "classic"} <= {m["id"] for m in moods}
+    assert {"light", "short", "classic", "recent"} <= {m["id"] for m in moods}
+    assert next(m for m in moods if m["id"] == "recent") == {
+        "id": "recent", "label": "Something recent", "emoji": "🆕", "description": "Released in the last 18 months"}
+    assert client.get("/api/recommendations", params={"mood": "recent"}).status_code == 200
 
 
 def test_recommendations_shape_and_ranking(client):
