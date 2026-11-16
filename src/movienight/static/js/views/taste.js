@@ -50,11 +50,28 @@ function render(p, knows) {
       affinityBlock('Directors', p.directors, 8),
       affinityBlock('Actors', p.cast, 8),
       affinityBlock('Themes', p.keywords, 10)),
+    p.tags?.length ? block('Your Letterboxd tags', tagList(p.tags)) : null,
     p.top_rated?.length ? block('Your highest rated', h('ul', { class: 'top-rated' }, p.top_rated.map((m) => h('li', null,
       poster(m, { label: `${m.title}${m.year ? ` (${m.year})` : ''}` }),
       h('span', { class: 'top-rated__title', text: m.title }),
       stars(m.my_rating))))) : null,
   ];
+}
+
+// One line per tag family, its editions (newest first) indented under it when there is more than one tag.
+function tagList(families) {
+  const line = (g) => [
+    `${num(g.films)} film${g.films === 1 ? '' : 's'}`,
+    g.mean_rating != null ? `avg ${g.mean_rating.toFixed(1)}★` : null,
+    g.top_genres?.length ? g.top_genres.join(', ') : null,
+  ].filter(Boolean).join(' · ');
+  return h('ul', { class: 'tags' }, families.map((f) => h('li', { class: 'tags__family' },
+    h('p', { class: 'tags__row' }, h('span', { class: 'tags__name', text: f.label || f.family }), h('span', { class: 'tags__meta', text: line(f) })),
+    f.editions.length > 1 || (f.editions[0] && f.editions[0].tag !== f.family)
+      ? h('ul', { class: 'tags__editions' }, f.editions.map((e) => h('li', { class: 'tags__row' },
+        h('span', { class: 'tags__name', text: e.edition && f.editions.every((x) => x.edition) ? String(e.edition) : e.tag }),
+        h('span', { class: 'tags__meta', text: line(e) }))))
+      : null)));
 }
 
 function stat(label, value) {

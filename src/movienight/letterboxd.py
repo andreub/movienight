@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import re
 import sqlite3
 import zipfile
 from dataclasses import dataclass, field
@@ -15,7 +16,11 @@ from defusedxml import ElementTree as ET
 from .db import get_meta, set_meta
 from .util import norm_title, now_iso, to_float, to_int
 
-EXPORT_FILES = ("watched.csv", "ratings.csv", "likes/films.csv", "watchlist.csv", "diary.csv", "profile.csv")
+EXPORT_FILES = ("watched.csv", "ratings.csv", "likes/films.csv", "watchlist.csv", "diary.csv", "reviews.csv",
+                "profile.csv")
+# Bumped when the importer starts reading something new from files it already had (v2: diary tags), so an
+# unchanged export folder is imported once more after the upgrade.
+IMPORT_VERSION = "2"
 MAX_ZIP_BYTES = 20 * 1024 * 1024          # uploaded archive
 MAX_MEMBER_BYTES = 8 * 1024 * 1024        # per extracted CSV
 MAX_TOTAL_BYTES = 24 * 1024 * 1024        # all extracted CSVs
@@ -46,6 +51,31 @@ class ExportFilm:
 class Export:
     films: dict = field(default_factory=dict)   # (norm_title, year) -> ExportFilm
     username: str = ""
+    # diary tags: {(film key, tag, watched date or ''): rating or None}; None = no diary in this export
+    tags: dict | None = None
+
+
+# --------------------------------------------------------------------------- tags
+
+_EDITION = re.compile(r"^(.*?\S)[\s_-]*((?:19|20)\d{2})$")
+
+
+def parse_tags(raw: str | None) -> list[str]:
+    """Letterboxd exports tags comma-separated ("a, b"). Lower case, inner spaces collapsed, deduped."""
+    out = []
+    for t in (raw or "").split(","):
+        t = " ".join(t.split()).lower()
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+def tag_family(tag: str) -> tuple[str, int | None]:
+    """'sitges2025' -> ('sitges', 2025); a tag without a trailing 4-digit year is its own family."""
+    m = _EDITION.match(tag)
+    if m:
+        return m.group(1), int(m.group(2))
+    return tag, None
 
 
 # --------------------------------------------------------------------------- parsing
@@ -96,13 +126,23 @@ def parse_export(files: dict[str, bytes]) -> Export:
         if f := film(row):
             f.watchlist = True
             f.uri = f.uri or (row.get("Letterboxd URI") or "").strip() or None
-    # diary: its URIs are entry URIs, so only use it for dates / fallback ratings
-    for row in _rows(files["diary.csv"]) if "diary.csv" in files else []:
-        if f := film(row):
-            f.watched = True
-            if f.rating is None:
-                f.rating = to_float(row.get("Rating"))
-            upd_date(f, row.get("Watched Date") or row.get("Date"))
+    # diary: its URIs are entry URIs, so only use it for dates / fallback ratings (and tags)
+    if "diary.csv" in files:
+        exp.tags = {}
+    for name in ("diary.csv", "reviews.csv"):
+        for row in _rows(files[name]) if name in files else []:
+            if f := film(row):
+                f.watched = True
+                if f.rating is None:
+                    f.rating = to_float(row.get("Rating"))
+                when = (row.get("Watched Date") or row.get("Date") or "").strip()
+                upd_date(f, when)
+                if exp.tags is not None:
+                    key = (norm_title(f.name), f.year)
+                    for t in parse_tags(row.get("Tags")):
+                        r = to_float(row.get("Rating"))
+                        if exp.tags.get((key, t, when)) is None:
+                            exp.tags[(key, t, when)] = r
     if "profile.csv" in files:
         for row in _rows(files["profile.csv"]):
             exp.username = (row.get("Username") or "").strip()
@@ -148,11 +188,29 @@ def apply_export(conn: sqlite3.Connection, exp: Export) -> dict:
             (f.name, f.uri, watched, rating, int(f.liked or row["liked"]),
              0 if watched else int(f.watchlist), date, now, row["id"]),
         )
+    if exp.tags is not None:
+        store_tags(conn, exp)
     if exp.username:
         set_meta(conn, "lb_export_user", exp.username)
     set_meta(conn, "lb_last_sync", now)
     counts = lb_counts(conn)
     return {k: counts[k] for k in ("watched", "rated", "liked", "watchlist")}
+
+
+def store_tags(conn: sqlite3.Connection, exp: Export) -> int:
+    """Replace the export's diary tags (rows from other sources stay). Idempotent."""
+    conn.execute("DELETE FROM lb_tags WHERE source='export'")
+    rows = []
+    for ((nt, year), tag, when), rating in exp.tags.items():
+        f = exp.films[(nt, year)]
+        row = _find_row(conn, f.uri, nt, year)
+        if row is None:
+            continue
+        family, edition = tag_family(tag)
+        rows.append((row["id"], tag, family, edition, when, rating))
+    conn.executemany("INSERT OR IGNORE INTO lb_tags(lb_id,tag,family,edition,watched_date,rating,source)"
+                     " VALUES(?,?,?,?,?,?,'export')", rows)
+    return len(rows)
 
 
 def lb_counts(conn: sqlite3.Connection) -> dict:
@@ -171,7 +229,7 @@ def username(conn: sqlite3.Connection, env_user: str = "") -> str:
 
 def _fingerprint(root: Path) -> tuple[str, dict[str, Path]]:
     found: dict[str, Path] = {}
-    h = hashlib.sha256()
+    h = hashlib.sha256(f"import:{IMPORT_VERSION}\n".encode())
     for rel in EXPORT_FILES:
         p = root / rel
         if p.is_file():

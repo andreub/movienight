@@ -7,7 +7,8 @@ It is a single-user app with no login, meant to run on a private network.
 ## How it gets data
 
 - **Letterboxd**: a data export (folder or ZIP upload) is the baseline for watched, rated,
-  liked and watchlist films. New diary entries are picked up automatically from the public RSS feed.
+  liked and watchlist films, and for diary tags (see below). New diary entries are picked up
+  automatically from the public RSS feed.
 - **Plex**: connect with a PIN login (plex.tv). Movie libraries from every server you own or
   have been shared are indexed; the first reachable connection is used.
 - **TMDB**: metadata (genres, cast, crew, keywords, posters, ratings) and recommendations.
@@ -28,6 +29,29 @@ It is a single-user app with no login, meant to run on a private network.
   `{"seen": true, "vote": 2}`); tapping the chosen verdict again removes both. The "Already
   marked" tab (`GET /api/seen-marked`, newest mark first) lets you rate films marked earlier.
 - With `MOVIENIGHT_PLEX_PUSH_SEEN` on, marks are also set as played on Plex, whichever way they are made.
+
+## Letterboxd tags
+
+Tags on diary entries (`diary.csv` and `reviews.csv` of the export, comma-separated, compared in lower
+case) are stored per entry. A tag ending in a 4-digit year is an edition of a family: `sitges2024`,
+`sitges2025` and `sitges 2026` all belong to `sitges`; a tag without a year is its own family.
+
+Tagged films are already watched, so a tag is a reference group, not a filter on them: "films like
+the ones I tagged X".
+
+- **Tonight / Browse**: a "Like my …" chip per family next to the moods; once picked, a second row
+  offers its editions. The filter keeps the quarter of the library most similar to the group (at
+  least 40 films) and ranks it by your taste plus 1.5x that similarity, computed with the same
+  affinity tables, idf weights and TMDB recommendations as the taste score. It combines with moods,
+  length, watchlist and the seen/hidden exclusions. API: `tag=sitges2025` or `tag_family=sitges` on
+  `/api/recommendations` and `/api/pick`; `GET /api/tags` lists the groups that can be used (at least
+  3 films with TMDB details).
+- **Taste**: per family and edition, number of films, mean rating of the entries and top genres
+  (`tags` in `/api/profile`).
+- **Ask**: the chat has a `list_tags` tool and a `tag` parameter on `search_library` ("something like
+  what I saw at Sitges 2025").
+
+The RSS feed carries no tags, so new tags arrive with the next export.
 
 ## Quick start (Docker)
 
@@ -66,9 +90,10 @@ The UI can run without a backend in mock mode at http://localhost:8080/?mock=1.
 ## Refreshing Letterboxd data
 
 1. On letterboxd.com go to Settings, then Data, then Export, and download the ZIP.
-2. In MovieNight open Settings and upload the ZIP.
+2. In MovieNight open Settings and upload the ZIP (or unpack it into the Letterboxd folder: it is
+   imported at start when its files change).
 
-Between exports, new diary entries arrive through RSS automatically.
+Between exports, new diary entries arrive through RSS automatically (without their tags).
 
 ## Deploy
 

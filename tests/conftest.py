@@ -82,3 +82,27 @@ def client(cfg):
         app.state.engine.invalidate()
         c.cfg = cfg
         yield c
+
+
+# Synthetic diary tags over HISTORY: (film name, tag, watched date, entry rating). "fest" is a family with
+# a usable edition (fest2023: three films) and a too-small one (fest2024); "favs" has no year.
+TAGS = [("Alpha Heist", "fest2023", "2023-10-05", 4.5), ("Delta Noir", "fest2023", "2023-10-06", 4.0),
+        ("Gamma", "fest2023", "2023-10-07", 3.0), ("Beta Romance", "fest2024", "2024-10-04", 2.0),
+        ("Alpha Heist", "favs", "2023-10-05", 4.5)]
+
+
+def seed_tags(db_path):
+    from movienight.letterboxd import tag_family
+    with db.session(db_path) as c:
+        for name, tag, when, rating in TAGS:
+            lb_id = c.execute("SELECT id FROM lb_films WHERE name=?", (name,)).fetchone()[0]
+            family, edition = tag_family(tag)
+            c.execute("INSERT INTO lb_tags(lb_id,tag,family,edition,watched_date,rating) VALUES(?,?,?,?,?,?)",
+                      (lb_id, tag, family, edition, when, rating))
+
+
+@pytest.fixture
+def tag_client(client):
+    seed_tags(client.cfg.db_path)
+    client.app.state.engine.invalidate()
+    return client

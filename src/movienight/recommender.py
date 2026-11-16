@@ -171,8 +171,10 @@ def film_signal(h: Hist, mean: float, now: datetime) -> tuple[float, float]:
     return s, w
 
 
-def build_profile(history: list[Hist], now: datetime | None = None) -> Profile:
+def build_profile(history: list[Hist], now: datetime | None = None, signal=None) -> Profile:
+    """`signal(h, mean, now) -> (signal, weight)` overrides `film_signal` (reference groups use it)."""
     now = now or datetime.now(timezone.utc)
+    signal = signal or film_signal
     p = Profile()
     watched = [h for h in history if h.watched and not h.synthetic]
     rated = [h.rating for h in watched if h.rating is not None]
@@ -181,7 +183,7 @@ def build_profile(history: list[Hist], now: datetime | None = None) -> Profile:
     if rated:
         p.mean_rating = sum(rated) / len(rated)
     for h in [h for h in history if h.watched]:
-        s, w = film_signal(h, p.mean_rating, now)
+        s, w = signal(h, p.mean_rating, now)
         if h.synthetic:
             p.vote_hists.append(h)
         else:
@@ -398,6 +400,57 @@ def calibrate(cands: list[Cand]) -> None:
         c.match = max(1, min(99, round(match)))
 
 
+# --------------------------------------------------------------------------- reference groups (tags)
+# "Films like the ones I tagged X": the tagged films form a small profile of their own, built with the
+# same affinity tables, idf weights and collaborative index as the taste profile, and a candidate's
+# similarity to the group is scored with the same component weights.
+
+GROUP_SIGNAL = 0.6          # every film of the group counts as liked: the group defines a kind of film
+GROUP_LOVED = 0.95          # ...more so when the user rated it half a star over their mean, or liked it
+GROUP_DISLIKED = 0.25       # ...less so when they rated it a star or more under their mean
+GROUP_COMPONENTS = FEATURE_TYPES + ("similar",)
+
+
+def group_signal_fn(user_mean: float):
+    def signal(h: Hist, _mean: float, _now: datetime) -> tuple[float, float]:
+        if h.liked or (h.rating is not None and h.rating >= user_mean + 0.5):
+            return GROUP_LOVED, 1.0
+        if h.rating is not None and h.rating <= user_mean - 1.0:
+            return GROUP_DISLIKED, 1.0
+        return GROUP_SIGNAL, 1.0
+    return signal
+
+
+def group_similarity(group: list[Hist], cands: list[Cand], idf: dict, user_mean: float,
+                     weights: dict | None = None) -> dict[int, float]:
+    """Candidate id -> similarity (>= 0) to a reference group of history films. `cands` need `feats`."""
+    w = {**DEFAULT_WEIGHTS, **(weights or {})}
+    prof = build_profile(group, signal=group_signal_fn(user_mean))
+    cidx = collab_index(group, prof)
+    out = {}
+    for c in cands:
+        vals = component_values(c.feats, c.meta, c.tmdb_id, lambda t: prof.stats[t], idf,
+                                cidx.get(c.tmdb_id, []) if c.tmdb_id else [])
+        out[c.id] = sum(w[k] * vals[k][0] for k in GROUP_COMPONENTS)
+    return out
+
+
+def closest_in_group(c: Cand, group: list[Hist]) -> Hist | None:
+    """The group film sharing most with `c` (director, cast, themes, genres, TMDB recommendations)."""
+    cf = c.feats or features(c.meta)
+    cg = set(cf["genre"])
+    best, best_score = None, 0.99
+    for h in group:
+        hf = features(h.meta)
+        hg = set(hf["genre"])
+        score = (3 * len(set(hf["director"]) & set(cf["director"])) + min(2, len(set(hf["cast"]) & set(cf["cast"])))
+                 + 0.5 * len(set(hf["keyword"]) & set(cf["keyword"])) + (2 if c.tmdb_id and c.tmdb_id in h.recs else 0)
+                 + (len(hg & cg) / len(hg | cg) if hg | cg else 0))
+        if score > best_score:
+            best, best_score = h, score
+    return best
+
+
 # --------------------------------------------------------------------------- reasons
 
 def half_stars(x: float) -> float:
@@ -419,6 +472,13 @@ def reasons_for(c: Cand, prof: Profile, limit: int = 4) -> list[dict]:
         items.append((value, {"kind": kind, "text": text}))
 
     comps = c.comps
+    v, detail = comps.get("tag", (0, None))
+    if detail and v > MIN_REASON:      # a tag filter is on: say which tagged film this one is close to
+        near = closest_in_group(c, detail["films"])
+        if near is not None:
+            add(v + 1.0, "tag", f"Close to {near.title}, from your {detail['tags'].get(near.key, detail['label'])} films")
+        else:
+            add(v + 1.0, "tag", f"Like the films you tagged {detail['label']}")
     if comps.get("watchlist", (0, 0))[0] > 0:
         add(comps["watchlist"][0] + 0.2, "watchlist", "On your Letterboxd watchlist")
 

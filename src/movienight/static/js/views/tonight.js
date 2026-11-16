@@ -2,7 +2,7 @@ import { api } from '../api.js';
 import { h, fill, icon, poster, genPoster, hueOf, runtime, matchStub, reasonList, errorBox, announce, toast, quoted, isTyping } from '../dom.js';
 import { filterBar } from '../filters.js';
 import { playControl } from '../play.js';
-import { go, apiFilters, hasQuickFilters, setFilters } from '../state.js';
+import { go, apiFilters, hasQuickFilters, setFilters, CLEAR_QUICK } from '../state.js';
 import { endsAt } from '../clock.js';
 import { initialRuntime, rememberRuntime } from '../timecontrol.js';
 import { voteButtons, setVote } from '../vote.js';
@@ -283,7 +283,7 @@ export function mount(root, route) {
         ? 'Every film that fits is watched or hidden. Loosen a filter to see more.'
         : 'Your Plex library may still be syncing. Check progress in Setup.' }),
       filtered
-        ? h('button', { type: 'button', class: 'btn btn--primary', onclick: () => { rememberRuntime(null); setFilters({ mood: null, rt: null, wl: false }); } }, 'Clear filters')
+        ? h('button', { type: 'button', class: 'btn btn--primary', onclick: () => { rememberRuntime(null); setFilters(CLEAR_QUICK); } }, 'Clear filters')
         : h('a', { class: 'btn btn--primary', href: '#/setup' }, 'Open Setup'));
   }
 
