@@ -198,6 +198,8 @@ main > .tonight { max-width: none; }
 .chip:hover { border-color: var(--muted); }
 .chip[aria-pressed="true"] { background: var(--paper); color: var(--ink); border-color: var(--paper); }
 .chip__emoji { font-size: 1.1em; }
+.chip--tag .icon { width: 1.05em; height: 1.05em; }
+.chips--sub .chip { min-height: 36px; }
 .chip--small { padding: 0 14px; font-size: .875rem; }
 .chip__count { color: var(--muted); font-size: .8125rem; }
 .chip[aria-pressed="true"] .chip__count { color: var(--ink-3); }
@@ -966,3 +968,12 @@ html.kb-open .composer { bottom: var(--kb); padding-bottom: 8px; }
 /* very narrow phones: two rows of two */
 @media (max-width: 359px) { .rate { grid-template-columns: repeat(2, minmax(0, 1fr)); } .rate__btn:nth-child(3) { box-shadow: inset 0 1px 0 var(--line); } .rate__btn:nth-child(4) { box-shadow: inset 1px 1px 0 var(--line); } }
 .triage__end { display: flex; justify-content: center; padding: 24px 0 8px; }
+
+/* ---------- taste: Letterboxd tags ---------- */
+.tags, .tags__editions { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.tags { gap: 12px; }
+.tags__editions { padding-left: 16px; margin-top: 4px; }
+.tags__row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin: 0; }
+.tags__name { font-weight: 600; min-width: 4.5em; }
+.tags__editions .tags__name { font-weight: 400; }
+.tags__meta { color: var(--muted); font-size: .875rem; }

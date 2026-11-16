@@ -8,7 +8,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from . import plex, recommender as rec, tmdb
+from . import plex, recommender as rec, tags as lbtags, tmdb
 from .db import get_meta, set_meta
 from .util import norm_title, now_iso, parse_iso
 
@@ -74,6 +74,9 @@ class State:
     history: list = field(default_factory=list)
     profile: rec.Profile = field(default_factory=rec.Profile)
     keywords_by_id: dict = field(default_factory=dict)
+    tags: list = field(default_factory=list)            # lb_tags rows (dicts)
+    weights: dict | None = None                         # adopted (tuned) component weights, None = defaults
+    cache: dict = field(default_factory=dict)           # derived data computed on demand (tags.py)
 
 
 def _merge_meta(items: list[dict], det: dict | None) -> dict:
@@ -207,13 +210,15 @@ def load_inputs(conn: sqlite3.Connection) -> tuple[list, list]:
 def load_state(conn: sqlite3.Connection) -> State:
     now = datetime.now(timezone.utc)
     cands, history = load_inputs(conn)
-    profile = rec.score_candidates(history, cands, now=now, weights=load_weights(conn))
+    weights = load_weights(conn)
+    profile = rec.score_candidates(history, cands, now=now, weights=weights)
     store_predictions(conn, cands, profile)
     by_id = {c.id: c for c in cands}
     for h in profile.vote_hists:            # synthetic entries of voted library films ("because" lists them)
         if -h.key in by_id:
             h.poster = poster_of(by_id[-h.key])
-    return State(cands=cands, by_id=by_id, history=history, profile=profile)
+    return State(cands=cands, by_id=by_id, history=history, profile=profile, tags=lbtags.load(conn),
+                 weights=weights)
 
 
 # --------------------------------------------------------------------------- feedback loop
@@ -523,6 +528,7 @@ def profile_json(st: State, model: dict | None = None) -> dict:
                                                   if k in ("films", "spearman", "top_quintile_hit_rate", "base_rate", "tuned")},
         "top_rated": [{"title": h.title, "year": h.year, "my_rating": h.rating, "liked": h.liked,
                        "poster_url": h.poster} for h, _, _ in top],
+        "tags": lbtags.stats(st),
     }
 
 

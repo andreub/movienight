@@ -32,7 +32,7 @@ from typing import Any, AsyncIterator
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from . import library, queries
+from . import library, queries, tags as lbtags
 from .chat_backends import AnthropicBackend, OpenAIBackend, Usage
 
 log = logging.getLogger("movienight.chat")
@@ -58,10 +58,20 @@ def _load_context(request: Request) -> tuple[Any, dict]:
 
 
 def _filter_cands(st, dismissed: dict, *, genres, max_runtime, min_year, max_year, watchlist_only,
-                  include_watched) -> list:
+                  include_watched, cands=None) -> list:
     f = queries.Filters(genres=genres, max_runtime=max_runtime, min_year=min_year, max_year=max_year,
                         watchlist_only=watchlist_only, include_watched=include_watched)
-    return queries.apply_filters(st.cands, f, dismissed)
+    return queries.apply_filters(st.cands if cands is None else cands, f, dismissed)
+
+
+def _tag_cands(st, tag: str) -> list:
+    """Library films most like the ones the user tagged `tag` (a tag or a whole family). Raises UnknownTag."""
+    kind, name, grp = lbtags.resolve(st, loose=tag)
+    return lbtags.group_cands(st, kind, name, grp)
+
+
+def _tags_overview(st) -> list:
+    return lbtags.stats(st)
 
 
 def _sort_cands(cands: list, sort: str) -> list:
@@ -301,6 +311,9 @@ SYSTEM_PROMPT = (
     "nothing suitable, say so and offer the closest options.\n"
     "- Use search_library to find candidates (try a couple of different searches if the first is thin), "
     "get_movie for details, and get_taste_profile when taste matters.\n"
+    "- The user tags Letterboxd diary entries, e.g. a festival edition as name+year (sitges2025). For "
+    "\"like what I saw at X\" requests call list_tags, then search_library with tag: the edition tag for "
+    "one year, the family name for all editions.\n"
     "- Prefer unwatched films unless the user asks for a rewatch.\n"
     "- Ask at most one short clarifying question, and only when the request is truly ambiguous. "
     "Otherwise just pick.\n"
@@ -336,6 +349,8 @@ TOOLS: list[dict] = [
                 "sort": {"type": "string", "enum": ["match", "rating", "recent", "year", "runtime"],
                          "description": "Default match (best fit for this user's taste)."},
                 "limit": {"type": "integer", "description": "1-30, default 10."},
+                "tag": {"type": "string", "description": "A tag or tag family from list_tags: only films most "
+                        "like the ones the user tagged with it, ranked by that likeness plus taste."},
             },
         },
     },
@@ -354,6 +369,16 @@ TOOLS: list[dict] = [
         "description": (
             "The user's taste: top genres, directors, cast and decades by affinity, plus their "
             "highest-rated and most recently watched films."
+        ),
+        "eager_input_streaming": True,
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "list_tags",
+        "description": (
+            "The user's Letterboxd diary tags grouped by family (a trailing year is an edition: sitges2025 is "
+            "family sitges, edition 2025), with film counts and mean rating. Tags with too few films are "
+            "marked usable=false."
         ),
         "eager_input_streaming": True,
         "input_schema": {"type": "object", "properties": {}},
@@ -391,6 +416,7 @@ TOOL_LABELS = {
     "search_library": "Searching your library…",
     "get_movie": "Checking film details…",
     "get_taste_profile": "Looking at your taste…",
+    "list_tags": "Checking your tags…",
     "recommend": "Picking your films…",
 }
 
@@ -448,10 +474,20 @@ def tool_search_library(args: dict, st, dismissed: dict) -> dict:
         (genres if canon else unknown).append(canon or str(g))
     sort = args.get("sort") if args.get("sort") in ("match", "rating", "recent", "year", "runtime") else "match"
     limit = _int(args.get("limit"), 1, RESULT_LIMIT) or 10
+    base = None
+    tag = args.get("tag")
+    if isinstance(tag, str) and tag.strip():
+        try:
+            base = _tag_cands(st, tag)
+        except lbtags.UnknownTag as e:
+            usable = [t for f in _tags_overview(st) if f["matched"] >= lbtags.MIN_GROUP_FILMS
+                      for t in [f["family"]] + [ed["tag"] for ed in f["editions"] if ed["matched"] >= lbtags.MIN_GROUP_FILMS]]
+            raise ToolError(f"{e}. Usable tags: {', '.join(dict.fromkeys(usable)) or 'none'}.") from None
     cands = _filter_cands(
         st, dismissed, genres=genres, max_runtime=_int(args.get("max_runtime"), 1),
         min_year=_int(args.get("min_year")), max_year=_int(args.get("max_year")),
         watchlist_only=args.get("watchlist_only") is True, include_watched=args.get("include_watched") is True,
+        cands=base,
     )
     if unknown and not genres:          # only unknown genres requested: nothing can match
         cands = []
@@ -502,6 +538,16 @@ def tool_get_taste_profile(args: dict, st, dismissed: dict) -> dict:
     }
 
 
+def tool_list_tags(args: dict, st, dismissed: dict) -> dict:
+    def ok(g):
+        return g["matched"] >= lbtags.MIN_GROUP_FILMS
+
+    fams = [{"family": f["family"], "films": f["films"], "mean_rating": f["mean_rating"], "usable": ok(f),
+             "editions": [{"tag": e["tag"], "films": e["films"], "mean_rating": e["mean_rating"], "usable": ok(e)}
+                          for e in f["editions"]]} for f in _tags_overview(st)]
+    return {"families": fams} if fams else {"families": [], "note": "The user has no tagged diary entries."}
+
+
 class ToolError(Exception):
     """Raised by a tool to return an is_error tool_result to the model."""
 
@@ -535,7 +581,8 @@ def tool_recommend(args: dict, st, dismissed: dict) -> Outcome:
 
 
 _TOOL_FUNCS = {"search_library": tool_search_library, "get_movie": tool_get_movie,
-               "get_taste_profile": tool_get_taste_profile, "recommend": tool_recommend}
+               "get_taste_profile": tool_get_taste_profile, "list_tags": tool_list_tags,
+               "recommend": tool_recommend}
 
 
 def run_tool(name: str, args: Any, st, dismissed: dict) -> Outcome:

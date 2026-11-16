@@ -47,6 +47,30 @@ const MOODS = [
   { id: 'recent', label: 'Something recent', emoji: '🆕', description: 'Released in the last 18 months', test: (m) => m.year >= new Date().getFullYear() - 1 },
 ];
 
+// Letterboxd diary tags (GET /api/tags): a festival with editions, and a tag without a year.
+const TAGS = [
+  { family: 'fest', label: 'Fest', films: 21, matched: 21, editions: [
+    { tag: 'fest2025', edition: 2025, films: 8, matched: 8 }, { tag: 'fest2024', edition: 2024, films: 7, matched: 7 }, { tag: 'fest2023', edition: 2023, films: 6, matched: 6 }] },
+  { family: 'date night', label: 'Date night', films: 5, matched: 5, editions: [{ tag: 'date night', edition: null, films: 5, matched: 5 }] },
+];
+const TAG_TESTS = {
+  fest: (m) => hasAny(m, ['Horror', 'Mystery', 'Science Fiction', 'Thriller']),
+  fest2025: (m) => hasAny(m, ['Horror', 'Science Fiction']),
+  fest2024: (m) => hasAny(m, ['Mystery', 'Thriller']),
+  fest2023: (m) => hasAny(m, ['Horror']),
+  'date night': (m) => hasAny(m, ['Romance']),
+};
+const TAG_STATS = [
+  { family: 'fest', label: 'Fest', films: 21, matched: 21, mean_rating: 3.6, top_genres: ['Horror', 'Thriller', 'Science Fiction'], editions: [
+    { tag: 'fest2025', edition: 2025, films: 8, matched: 8, mean_rating: 3.8, top_genres: ['Horror', 'Science Fiction', 'Drama'] },
+    { tag: 'fest2024', edition: 2024, films: 7, matched: 7, mean_rating: 3.4, top_genres: ['Thriller', 'Mystery', 'Horror'] },
+    { tag: 'fest2023', edition: 2023, films: 6, matched: 6, mean_rating: 3.5, top_genres: ['Horror', 'Comedy', 'Fantasy'] }] },
+  { family: 'date night', label: 'Date night', films: 5, matched: 5, mean_rating: 3.9, top_genres: ['Romance', 'Comedy', 'Drama'], editions: [
+    { tag: 'date night', edition: null, films: 5, matched: 5, mean_rating: 3.9, top_genres: ['Romance', 'Comedy', 'Drama'] }] },
+  { family: 'rewatch', label: 'Rewatch', films: 2, matched: 2, mean_rating: 4.5, top_genres: ['Drama'], editions: [
+    { tag: 'rewatch', edition: null, films: 2, matched: 2, mean_rating: 4.5, top_genres: ['Drama'] }] },
+];
+
 const hasAny = (m, gs) => m.genres.some((g) => gs.includes(g));
 const params = new URLSearchParams(location.search);
 const FRESH = params.get('mock') === 'fresh';
@@ -135,9 +159,11 @@ function filter(p) {
   const genres = [].concat(p.genre || []);
   const q = (p.q || '').toLowerCase();
   const mood = MOODS.find((x) => x.id === p.mood);
+  const tagTest = TAG_TESTS[p.tag || p.tag_family];
   return movies.filter((m) => (p.include_dismissed || !isDismissed(m))
     && (p.include_watched || !seenSet.has(m.id))
     && (!mood || mood.test(m))
+    && (!tagTest || tagTest(m))
     && (!p.max_runtime || (m.runtime && m.runtime <= p.max_runtime))
     && (!p.watchlist_only || m.on_watchlist)
     && genres.every((g) => m.genres.includes(g))
@@ -180,6 +206,7 @@ function profile() {
       .map(([name, count, affinity]) => ({ name, count, affinity })),
     top_rated: ['Heat', 'Memories of Murder', 'Zodiac', 'Mulholland Drive', 'Sicario', 'The Handmaiden', 'Children of Men', 'Oldboy', 'Arrival', 'Prisoners', 'Spirited Away', 'Collateral']
       .map((title, i) => ({ title, year: 1995 + i * 2, my_rating: i < 5 ? 5 : 4.5, liked: i < 3, poster_url: null })),
+    tags: TAG_STATS,
   };
 }
 
@@ -228,6 +255,7 @@ export async function handle(method, path, p, body) {
       });
     }
     case 'GET /api/moods': return ok(MOODS.map(({ test, ...m }) => m));
+    case 'GET /api/tags': return ok({ min_films: 3, families: FRESH ? [] : TAGS });
     case 'GET /api/recommendations': {
       const list = filter(p).sort(SORTERS[p.sort] || SORTERS.match);
       const counts = {};

@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, chat, db, letterboxd as lb, library, plex, queries, seenpush, version
+from . import auth, chat, db, letterboxd as lb, library, plex, queries, seenpush, tags as lbtags, version
 from .config import Config
 from .sync import SyncManager, plex_token, tmdb_counts
 from .util import now_iso, safe_error
@@ -424,9 +424,27 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         finally:
             c.close()
 
+    def base_cands(st, tag: str | None, tag_family: str | None) -> list:
+        """The library, or with a tag filter the films most like the ones the user tagged (see tags.py)."""
+        tag, tag_family = (tag or "").strip() or None, (tag_family or "").strip() or None
+        if not tag and not tag_family:
+            return st.cands
+        if tag and tag_family:
+            raise HTTPException(400, "Use tag or tag_family, not both")
+        try:
+            kind, name, grp = lbtags.resolve(st, tag=tag, family=tag_family)
+        except lbtags.UnknownTag as e:
+            raise HTTPException(400, str(e)) from None
+        return lbtags.group_cands(st, kind, name, grp)
+
     @app.get("/api/moods")
     def moods():
         return queries.moods_public()
+
+    @app.get("/api/tags")
+    def tags():
+        """Letterboxd diary tags that can steer picks (tag / tag_family on /api/recommendations and /api/pick)."""
+        return {"min_films": lbtags.MIN_GROUP_FILMS, "families": lbtags.usable(engine().get())}
 
     @app.get("/api/recommendations")
     def recommendations(
@@ -435,16 +453,17 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         mood: str | None = None, genre: list[str] = Query(default=[]),
         max_runtime: int | None = Query(None, ge=1), min_year: int | None = None, max_year: int | None = None,
         watchlist_only: bool = False, include_watched: bool = False, include_dismissed: bool = False,
-        server: str | None = None, q: str | None = None,
+        server: str | None = None, q: str | None = None, tag: str | None = None, tag_family: str | None = None,
     ):
         f = filters(mood, genre, max_runtime, min_year, max_year, watchlist_only, include_watched,
                     include_dismissed, server, q)
         st, dismissed = engine().get(), dismissed_now()
-        matched = queries.sort_cands(queries.apply_filters(st.cands, f, dismissed), sort)
+        cands = base_cands(st, tag, tag_family)
+        matched = queries.sort_cands(queries.apply_filters(cands, f, dismissed), sort)
         return {
             "items": [library.movie_json(c, st, dismissed) for c in matched[offset:offset + limit]],
             "total": len(matched),
-            "facets": queries.facets(st.cands, f, dismissed),
+            "facets": queries.facets(cands, f, dismissed),
         }
 
     @app.get("/api/pick")
@@ -453,12 +472,13 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         mood: str | None = None, genre: list[str] = Query(default=[]),
         max_runtime: int | None = Query(None, ge=1), min_year: int | None = None, max_year: int | None = None,
         watchlist_only: bool = False, include_watched: bool = False, include_dismissed: bool = False,
-        server: str | None = None, q: str | None = None,
+        server: str | None = None, q: str | None = None, tag: str | None = None, tag_family: str | None = None,
     ):
         f = filters(mood, genre, max_runtime, min_year, max_year, watchlist_only, include_watched,
                     include_dismissed, server, q)
         st, dismissed = engine().get(), dismissed_now()
-        result = queries.pick(queries.apply_filters(st.cands, f, dismissed), set(exclude), random.Random())
+        cands = base_cands(st, tag, tag_family)
+        result = queries.pick(queries.apply_filters(cands, f, dismissed), set(exclude), random.Random())
         if result is None:
             raise HTTPException(404, "Nothing matches these filters")
         chosen, alts = result

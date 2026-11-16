@@ -1,4 +1,5 @@
 // Route + filter state lives in the URL hash: #/browse?mood=tense&rt=90&wl=1&genre=Horror&q=&sort=year&movie=42
+// (plus tag=sitges2025 or tagf=sitges: "films like the ones I tagged", see /api/tags)
 // so a refresh (or a shared link) keeps the view, filters and open film.
 
 export const VIEWS = ['tonight', 'browse', 'ask', 'taste', 'setup', 'seen'];
@@ -17,6 +18,8 @@ export function parse() {
     view: VIEWS.includes(path) ? path : 'tonight',
     filters: {
       mood: p.get('mood') || null,
+      tag: p.get('tag') || null,
+      tagf: p.get('tag') ? null : p.get('tagf') || null,
       rt: toInt(p.get('rt')),
       wl: p.get('wl') === '1',
       genres: p.getAll('genre'),
@@ -30,6 +33,8 @@ export function parse() {
 export function filterQuery(f) {
   const p = new URLSearchParams();
   if (f.mood) p.set('mood', f.mood);
+  if (f.tag) p.set('tag', f.tag);
+  else if (f.tagf) p.set('tagf', f.tagf);
   if (f.rt) p.set('rt', f.rt);
   if (f.wl) p.set('wl', '1');
   for (const g of f.genres) p.append('genre', g);
@@ -71,14 +76,15 @@ export function go({ view, filters, movie } = {}, { replace = false } = {}) {
 export function start() { emit(); }
 
 export function setFilters(patch) { go({ filters: patch }, { replace: true }); }
-export const EMPTY_FILTERS = { mood: null, rt: null, wl: false, genres: [], q: '' };
+export const EMPTY_FILTERS = { mood: null, tag: null, tagf: null, rt: null, wl: false, genres: [], q: '' };
+export const CLEAR_QUICK = { mood: null, tag: null, tagf: null, rt: null, wl: false };
 
 // Tonight only uses the quick filters; Browse adds genres and search.
 export function apiFilters(f, { full = false } = {}) {
-  const out = { mood: f.mood, max_runtime: f.rt, watchlist_only: f.wl || null };
+  const out = { mood: f.mood, tag: f.tag, tag_family: f.tag ? null : f.tagf, max_runtime: f.rt, watchlist_only: f.wl || null };
   if (full) Object.assign(out, { genre: f.genres, q: f.q });
   return out;
 }
 
-export function hasQuickFilters(f) { return Boolean(f.mood || f.rt || f.wl); }
+export function hasQuickFilters(f) { return Boolean(f.mood || f.tag || f.tagf || f.rt || f.wl); }
 export function hasAnyFilters(f) { return hasQuickFilters(f) || f.genres.length > 0 || Boolean(f.q); }

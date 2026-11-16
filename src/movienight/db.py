@@ -133,6 +133,21 @@ MIGRATIONS = [
         PRIMARY KEY (month, model)
     );
     """,
+    # 6: Letterboxd diary tags, one row per (film, tag, diary entry). `family`/`edition` split a trailing
+    # 4-digit year off the tag (sitges2025 -> sitges, 2025); a tag without one is its own family.
+    """
+    CREATE TABLE IF NOT EXISTS lb_tags (
+        lb_id INTEGER NOT NULL REFERENCES lb_films(id) ON DELETE CASCADE,
+        tag TEXT NOT NULL,              -- normalised: lower case, single spaces
+        family TEXT NOT NULL,
+        edition INTEGER,
+        watched_date TEXT NOT NULL DEFAULT '',   -- '' when the entry has no date
+        rating REAL,                    -- the diary entry's rating, if any
+        source TEXT NOT NULL DEFAULT 'export',
+        PRIMARY KEY (lb_id, tag, watched_date)
+    );
+    CREATE INDEX IF NOT EXISTS lb_tags_family ON lb_tags(family);
+    """,
 ]
 
 

@@ -160,7 +160,7 @@ def test_tool_then_recommend_then_text(chat_client, monkeypatch):
     c0 = fake.calls[0]
     assert c0["model"] == "claude-opus-5-5" and c0["cache_control"] == {"type": "ephemeral"}
     assert c0["system"] == chat.SYSTEM_PROMPT and [t["name"] for t in c0["tools"]] == [
-        "search_library", "get_movie", "get_taste_profile", "recommend"]
+        "search_library", "get_movie", "get_taste_profile", "list_tags", "recommend"]
     assert "SECRET" not in json.dumps(fake.calls, default=str)
 
 
