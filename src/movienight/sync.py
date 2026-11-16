@@ -287,8 +287,10 @@ class SyncManager:
     # ---- TMDB work, resumable: only what is missing
     async def _batches(self, items: list, fn, on_done) -> None:
         total, done, bad_chunks = len(items), 0, 0
-        self.state["total"] = total
+        # The TMDB stage runs several sub-phases (resolve, details, recs) under one progress bar: done
+        # carries over from the previous sub-phase, so total must grow by this one's work, not be replaced.
         base = self.state["done"]
+        self.state["total"] = base + total
         for i in range(0, total, CHUNK):
             chunk = items[i:i + CHUNK]
             results = await asyncio.gather(*(fn(x) for x in chunk), return_exceptions=True)

@@ -94,3 +94,37 @@ def test_pin_flow(tmp_path):
         s = c.get("/api/status").json()
         assert s["plex"]["connected"] and s["plex"]["account"] == "tester"
         assert "PLEX-USER-TOKEN" not in json.dumps(s)
+
+
+async def test_tmdb_stage_progress_never_exceeds_total(tmp_path):
+    """Resolve + details + recs share one progress bar: done <= total at every step, done == total at the end."""
+    from movienight import db, library
+    from movienight.sync import SyncManager
+
+    cfg = Config(data_dir=tmp_path / "d", letterboxd_dir=tmp_path / "nolb", tmdb_token="eyJtest", sync_on_start=False)
+    cfg.data_dir.mkdir(parents=True, exist_ok=True)
+    db.migrate(cfg.db_path)
+    with db.session(cfg.db_path) as c:
+        for i in range(12):        # unresolved, loved films: need search, details and recommendations
+            c.execute("INSERT INTO lb_films(name,year,norm_title,resolve_state,watched,rating,liked) "
+                      "VALUES(?,?,?,0,1,5,1)", (f"Film {i}", 2000 + i, f"film {i}"))
+    snaps: list[tuple[int, int]] = []
+
+    def tmdb_handler(request: httpx.Request) -> httpx.Response:
+        snaps.append((mgr.state["done"], mgr.state["total"]))
+        path = request.url.path
+        if path == "/3/search/movie":
+            title = request.url.params["query"]
+            return httpx.Response(200, json={"results": [{"id": 1000 + int(title.split()[1]), "title": title,
+                                                          "release_date": request.url.params.get("year", "2000")}]})
+        if path.endswith("/recommendations"):
+            return httpx.Response(200, json={"results": [{"id": 5}]})
+        tid = int(path.split("/")[3])
+        return httpx.Response(200, json={"id": tid, "title": f"T{tid}", "release_date": "2015-01-01"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(tmdb_handler)) as http:
+        mgr = SyncManager(cfg, http, library.Engine(lambda: db.connect(cfg.db_path), None))
+        mgr._stage("tmdb")
+        await mgr.stage_tmdb()
+    assert snaps and all(d <= t for d, t in snaps), snaps
+    assert mgr.state["total"] == 36 and mgr.state["done"] == mgr.state["total"]
