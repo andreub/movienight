@@ -1,7 +1,7 @@
 // Ask: chat with the configured AI model, which recommends from the Plex library. Text is only ever added as text nodes.
 import { getChatStatus } from '../api.js';
 import { h, fill, icon, poster, runtime, matchStub } from '../dom.js';
-import { chat, subscribeChat, sendChat, stopChat, clearChat, retryChat } from '../chat.js';
+import { chat, subscribeChat, sendChat, stopChat, clearChat, retryChat, stripShownNote } from '../chat.js';
 import { playControl } from '../play.js';
 import { endsAt } from '../clock.js';
 import { go } from '../state.js';
@@ -140,7 +140,7 @@ export function mount(root) {
   }
 
   function botMessage(m, isLast) {
-    const text = h('div', { class: 'msg__text' }, richText(m.text));
+    const text = h('div', { class: 'msg__text' }, richText(stripShownNote(m.text)));
     const cards = h('ul', { class: 'picks', 'aria-label': 'Recommended films' }, m.movies.map(card));
     cards.hidden = !m.movies.length;
     const status = h('div', { class: 'msg__status' });
@@ -187,7 +187,7 @@ export function mount(root) {
     requestAnimationFrame(() => {
       textQueued = false;
       if (!alive || !live) return;
-      live.text.replaceChildren(...richText(live.m.text));
+      live.text.replaceChildren(...richText(stripShownNote(live.m.text)));
       paintStatus();
       follow();
     });

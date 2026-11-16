@@ -388,3 +388,16 @@ def test_openai_tools_conversion():
     out = chat_backends.openai_tools(chat.TOOLS)
     assert [t["function"]["name"] for t in out] == [t["name"] for t in chat.TOOLS]
     assert all(set(t) == {"type", "function"} for t in out)
+
+
+def test_prompt_explains_shown_films_note():
+    assert "Films shown to the user" in chat.SYSTEM_PROMPT and "Name the films you recommend by title" in chat.SYSTEM_PROMPT
+
+
+def test_history_with_shown_films_note_reaches_backend_unchanged(oa, monkeypatch):
+    note = "[Films shown to the user: 1. Heat (1995) #412; 2. Thief (1981) #88]"
+    hist = [{"role": "user", "content": "tonight?"}, {"role": "assistant", "content": f"Try Heat or Thief.\n{note}"},
+            {"role": "user", "content": "tell me more about the second one"}]
+    fake = script(monkeypatch, [text_turn("ok")])
+    r, ev = post(oa, hist)
+    assert r.status_code == 200 and fake.calls[0]["messages"][1:] == hist
