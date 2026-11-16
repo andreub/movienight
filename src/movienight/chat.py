@@ -1,4 +1,4 @@
-"""Optional AI chat assistant: an LLM + client-side tools over the local Plex/Letterboxd data.
+"""Optional AI chat assistant: an LLM + client-side tools over the local library (Plex or Jellyfin) and Letterboxd data.
 
 Mount with `app.include_router(chat.router)`. Everything here is lazy: the model client is only
 created when a chat request arrives, and the app works fully without credentials.
@@ -303,7 +303,7 @@ def make_backend(model: str):
 # Both are module constants: byte-stable across requests so prompt caching works.
 
 SYSTEM_PROMPT = (
-    "You are MovieNight's assistant. The user is choosing a film to watch tonight from their own Plex "
+    "You are MovieNight's assistant. The user is choosing a film to watch tonight from their own "
     "library, and you help them decide by chatting. They read on a phone from the couch, so keep every "
     "reply short and plain: no headings, no long lists.\n\n"
     "Rules:\n"
@@ -331,7 +331,7 @@ TOOLS: list[dict] = [
     {
         "name": "search_library",
         "description": (
-            "Search the user's Plex library. Returns compact rows (id, title, year, runtime, genres, "
+            "Search the user's library. Returns compact rows (id, title, year, runtime, genres, "
             "directors, cast, match score 0-100 for this user's taste, on_watchlist, watched, TMDB rating, "
             "short overview). Unwatched films only unless include_watched is true."
         ),

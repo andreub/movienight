@@ -43,7 +43,7 @@ def test_dedupe_by_tmdb_imdb_title(tmp_path):
     db.migrate(p)
     with db.session(p) as c:
         for sid in ("a", "b"):
-            c.execute("INSERT INTO plex_servers(id,name,owned) VALUES(?,?,1)", (sid, sid))
+            c.execute("INSERT INTO media_servers(id,name,owned) VALUES(?,?,1)", (sid, sid))
         base = {"genres": [], "title": "", "year": 2000}
         mk = lambda key, title, tm, im: {**plex.parse_item({"ratingKey": key, "title": title, "year": 2000}),
                                           "tmdb_id": tm, "imdb_id": im}
@@ -52,9 +52,9 @@ def test_dedupe_by_tmdb_imdb_title(tmp_path):
                                             mk(7, "Plain: Title", None, None), mk(6, "Imdb Fills", None, "tt5")])
         n = library.assign_movies(c)
         assert n == 3
-        counts = [r[0] for r in c.execute("SELECT COUNT(*) FROM plex_items GROUP BY movie_id ORDER BY 1")]
+        counts = [r[0] for r in c.execute("SELECT COUNT(*) FROM media_items GROUP BY movie_id ORDER BY 1")]
         assert sorted(counts) == [2, 2, 3]
-        same = c.execute("SELECT DISTINCT movie_id FROM plex_items WHERE tmdb_id=5 OR imdb_id='tt5'").fetchall()
+        same = c.execute("SELECT DISTINCT movie_id FROM media_items WHERE tmdb_id=5 OR imdb_id='tt5'").fetchall()
         assert len(same) == 1
 
 

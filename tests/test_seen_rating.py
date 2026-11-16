@@ -175,7 +175,7 @@ def test_seen_marked_list(client):
 def test_seen_marked_survives_library_rebuild(client):
     rate(client, "Drama Three", True, 2)
     with db.session(client.cfg.db_path) as c:
-        c.execute("DELETE FROM plex_items")
+        c.execute("DELETE FROM media_items")
         c.execute("DELETE FROM movies")
         library.store_server_items(c, "m1", [plex_item(k, t, y, tid, views=v) for k, t, y, tid, v in LIBRARY])
         library.assign_movies(c)

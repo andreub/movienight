@@ -94,7 +94,7 @@ def test_votes_survive_resync(client):
     client.post(f"/api/movies/{mid(client, 'Drama Three')}/feedback", json={"vote": 1})       # tmdb 113
     with db.session(client.cfg.db_path) as c:
         assert [tuple(r) for r in c.execute("SELECT key, vote FROM votes")] == [("tmdb:113", 1)]
-        c.execute("DELETE FROM plex_items")
+        c.execute("DELETE FROM media_items")
         c.execute("DELETE FROM movies")
         from conftest import plex_item, LIBRARY
         library.store_server_items(c, "m1", [plex_item(k, t, y, tid, views=v) for k, t, y, tid, v in LIBRARY])

@@ -64,7 +64,7 @@ def test_survives_library_rebuild(client):
     seen(client, "Drama Three")                      # tmdb 113
     with db.session(client.cfg.db_path) as c:
         assert [r[0] for r in c.execute("SELECT key FROM seen")] == ["tmdb:113"]
-        c.execute("DELETE FROM plex_items")
+        c.execute("DELETE FROM media_items")
         c.execute("DELETE FROM movies")
         library.store_server_items(c, "m1", [plex_item(k, t, y, tid, views=v) for k, t, y, tid, v in LIBRARY])
         library.assign_movies(c)
@@ -153,7 +153,7 @@ def test_seen_candidates(client):
 def test_plex_watched_on_a_shared_server_counts(client):
     """A shared server reports the watched state of the account that asks: it is the user's."""
     with db.session(client.cfg.db_path) as c:
-        c.execute("INSERT INTO plex_servers(id,name,owned,reachable,base_url,access_token) VALUES"
+        c.execute("INSERT INTO media_servers(id,name,owned,reachable,base_url,access_token) VALUES"
                   "('s2','Friend',0,1,'http://friend.local:32400','SECRET2')")
         library.store_server_items(c, "s2", [plex_item(91, "Crime Two", 2016, 111, views=1),
                                              plex_item(92, "Shared Only", 1999, None, views=2)])

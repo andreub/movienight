@@ -1,4 +1,4 @@
-"""Glue between SQLite and the pure recommender: storing Plex items, loading state, JSON views."""
+"""Glue between SQLite and the pure recommender: storing media-server items, loading state, JSON views."""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from . import plex, recommender as rec, tags as lbtags, tmdb
+from . import plex, recommender as rec, servers, tags as lbtags, tmdb
 from .db import get_meta, set_meta
 from .util import norm_title, now_iso, parse_iso
 
@@ -16,20 +16,21 @@ log = logging.getLogger("movienight.library")
 FOREVER = "9999-12-31T00:00:00Z"
 
 
-# --------------------------------------------------------------------------- storing Plex items
+# --------------------------------------------------------------------------- storing library items
+# Plex and Jellyfin items share one normalised dict (plex.parse_item / jellyfin.parse_item).
 
 def store_server_items(conn: sqlite3.Connection, server_id: str, items: list[dict]) -> None:
-    conn.execute("DELETE FROM plex_items WHERE server_id=?", (server_id,))
+    conn.execute("DELETE FROM media_items WHERE server_id=?", (server_id,))
     conn.executemany(
-        "INSERT OR REPLACE INTO plex_items(server_id,rating_key,title,year,tmdb_id,imdb_id,json) VALUES(?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO media_items(server_id,rating_key,title,year,tmdb_id,imdb_id,json) VALUES(?,?,?,?,?,?,?)",
         [(server_id, it["rating_key"], it["title"], it["year"], it["tmdb_id"], it["imdb_id"], json.dumps(it))
          for it in items],
     )
 
 
 def assign_movies(conn: sqlite3.Connection) -> int:
-    """Dedupe Plex items into logical movies (TMDB id, then IMDb id, then title+year)."""
-    rows = conn.execute("SELECT server_id, rating_key, title, year, tmdb_id, imdb_id FROM plex_items").fetchall()
+    """Dedupe library items into logical movies (TMDB id, then IMDb id, then title+year)."""
+    rows = conn.execute("SELECT server_id, rating_key, title, year, tmdb_id, imdb_id FROM media_items").fetchall()
     items = [dict(r) for r in rows]
     imdb_map, title_map = plex.key_maps(items)
     existing = {r["dkey"]: r["id"] for r in conn.execute("SELECT id, dkey FROM movies")}
@@ -43,13 +44,13 @@ def assign_movies(conn: sqlite3.Connection) -> int:
             cur = conn.execute("INSERT INTO movies(dkey, tmdb_id) VALUES(?,?)", (dkey, tmdb_id))
             existing[dkey] = cur.lastrowid
     conn.executemany(
-        "UPDATE plex_items SET movie_id=? WHERE server_id=? AND rating_key=?",
+        "UPDATE media_items SET movie_id=? WHERE server_id=? AND rating_key=?",
         [(existing[it["dkey"]], it["server_id"], it["rating_key"]) for it in items],
     )
-    conn.execute("DELETE FROM movies WHERE id NOT IN (SELECT DISTINCT movie_id FROM plex_items WHERE movie_id IS NOT NULL)")
+    conn.execute("DELETE FROM movies WHERE id NOT IN (SELECT DISTINCT movie_id FROM media_items WHERE movie_id IS NOT NULL)")
     conn.execute("DELETE FROM dismissals WHERE movie_id NOT IN (SELECT id FROM movies)")
     conn.execute(
-        "UPDATE plex_servers SET movies=(SELECT COUNT(*) FROM plex_items WHERE server_id=plex_servers.id)"
+        "UPDATE media_servers SET movies=(SELECT COUNT(*) FROM media_items WHERE server_id=media_servers.id)"
     )
     return len(keys)
 
@@ -77,6 +78,7 @@ class State:
     tags: list = field(default_factory=list)            # lb_tags rows (dicts)
     weights: dict | None = None                         # adopted (tuned) component weights, None = defaults
     cache: dict = field(default_factory=dict)           # derived data computed on demand (tags.py)
+    server_label: str = "Plex"                          # the media server's name in user-facing text
 
 
 def _merge_meta(items: list[dict], det: dict | None) -> dict:
@@ -118,15 +120,18 @@ def feedback_key(tmdb_id: int | None, dkey: str) -> str:
     return f"tmdb:{tmdb_id}" if tmdb_id else dkey
 
 
-def load_inputs(conn: sqlite3.Connection) -> tuple[list, list]:
-    """Candidates (Plex library) and Letterboxd history, with user state but not yet scored."""
+def load_inputs(conn: sqlite3.Connection, media=None) -> tuple[list, list]:
+    """Candidates (the media server's library) and Letterboxd history, with user state but not yet scored.
+
+    `media` is the selected backend (servers.backend(cfg)); default Plex."""
+    media = media or servers.PLEX
     details = {r["tmdb_id"]: json.loads(r["json"]) for r in conn.execute("SELECT tmdb_id, json FROM tmdb_details")}
     recs = {r["tmdb_id"]: json.loads(r["json"]) for r in conn.execute("SELECT tmdb_id, json FROM tmdb_recs")}
 
     # ---- candidates
     rows = conn.execute(
-        "SELECT m.id, m.dkey, m.tmdb_id, i.server_id, i.rating_key, i.json, s.name sname, s.owned"
-        " FROM movies m JOIN plex_items i ON i.movie_id=m.id JOIN plex_servers s ON s.id=i.server_id"
+        "SELECT m.id, m.dkey, m.tmdb_id, i.server_id, i.rating_key, i.json, s.name sname, s.owned, s.base_url"
+        " FROM movies m JOIN media_items i ON i.movie_id=m.id JOIN media_servers s ON s.id=i.server_id"
         " WHERE s.enabled=1 ORDER BY m.id, s.owned DESC, s.name"
     ).fetchall()
     grouped: dict[int, list] = {}
@@ -134,7 +139,7 @@ def load_inputs(conn: sqlite3.Connection) -> tuple[list, list]:
         grouped.setdefault(r["id"], []).append(r)
     cands: list[rec.Cand] = []
     plex_meta_by_tmdb: dict[int, dict] = {}
-    # items this app marked played itself (seen marks pushed to Plex): not the user watching in Plex
+    # items this app marked played itself (seen marks pushed to the server): not the user watching there
     pushed = {(r[0], r[1]) for r in conn.execute("SELECT server_id, rating_key FROM seen_pushes")}
     for mid, rs in grouped.items():
         items = [json.loads(r["json"]) for r in rs]
@@ -145,11 +150,15 @@ def load_inputs(conn: sqlite3.Connection) -> tuple[list, list]:
             id=mid, title=meta["title"], year=meta["year"], tmdb_id=tmdb_id, meta=meta, dkey=rs[0]["dkey"],
             added_at=max(added) if added else None,
             # Shared servers count too: each server reports the watched state of the account
-            # whose token asked, so this is always the user's own.
-            plex_watched=any(it.get("view_count", 0) > 0 and (r["server_id"], it["rating_key"]) not in pushed
-                             for r, it in zip(rs, items)),
+            # whose token asked, so this is always the user's own (Jellyfin: off with
+            # MOVIENIGHT_JELLYFIN_WATCHED=0, e.g. for an account shared with other people).
+            plex_watched=media.count_watched and any(
+                it.get("view_count", 0) > 0 and (r["server_id"], it["rating_key"]) not in pushed
+                for r, it in zip(rs, items)),
+            # `plex` holds the active media server's entries (Plex or Jellyfin); the name stays for the API
             plex=[{"server": r["sname"], "server_id": r["server_id"], "resolution": it.get("resolution"),
-                   "url": plex.web_url(r["server_id"], it["rating_key"]), "rating_key": it["rating_key"]}
+                   "url": media.web_url(r["server_id"], r["base_url"], it["rating_key"]),
+                   "rating_key": it["rating_key"]}
                   for r, it in zip(rs, items)],
         )
         cands.append(c)
@@ -207,9 +216,10 @@ def load_inputs(conn: sqlite3.Connection) -> tuple[list, list]:
     return cands, history
 
 
-def load_state(conn: sqlite3.Connection) -> State:
+def load_state(conn: sqlite3.Connection, media=None) -> State:
+    media = media or servers.PLEX
     now = datetime.now(timezone.utc)
-    cands, history = load_inputs(conn)
+    cands, history = load_inputs(conn, media)
     weights = load_weights(conn)
     profile = rec.score_candidates(history, cands, now=now, weights=weights)
     store_predictions(conn, cands, profile)
@@ -218,7 +228,7 @@ def load_state(conn: sqlite3.Connection) -> State:
         if -h.key in by_id:
             h.poster = poster_of(by_id[-h.key])
     return State(cands=cands, by_id=by_id, history=history, profile=profile, tags=lbtags.load(conn),
-                 weights=weights)
+                 weights=weights, server_label=media.label)
 
 
 # --------------------------------------------------------------------------- feedback loop
@@ -248,13 +258,13 @@ def load_backtest(conn: sqlite3.Connection) -> dict:
     return bt if isinstance(bt, dict) else empty_backtest()
 
 
-def refresh_model(conn: sqlite3.Connection) -> dict:
+def refresh_model(conn: sqlite3.Connection, media=None) -> dict:
     """Run the leave-one-out backtest and tuning, and persist the result (weights only if adopted).
 
     CPU-bound (well under a few seconds for hundreds of films): call from a thread, never from a
     request handler.
     """
-    cands, history = load_inputs(conn)
+    cands, history = load_inputs(conn, media)
     bt = rec.backtest(history, cands)
     bt["computed_at"] = now_iso()
     if not bt["tuned"]:
@@ -388,8 +398,9 @@ def feedback_json(conn: sqlite3.Connection) -> dict:
 class Engine:
     """Caches the computed state in memory; invalidate after any import/sync."""
 
-    def __init__(self, connect):
+    def __init__(self, connect, media=None):
         self._connect = connect
+        self._media = media
         self._lock = threading.Lock()
         self._state: State | None = None
 
@@ -402,7 +413,7 @@ class Engine:
             if self._state is None:
                 conn = self._connect()
                 try:
-                    self._state = load_state(conn)
+                    self._state = load_state(conn, self._media)
                 finally:
                     conn.close()
             return self._state
@@ -442,7 +453,7 @@ def movie_json(c: rec.Cand, st: State, dismissed: dict, with_reasons: bool = Tru
         "tmdb_id": c.tmdb_id,
         "letterboxd_url": f"https://letterboxd.com/tmdb/{c.tmdb_id}" if c.tmdb_id else None,
         "match": c.match,
-        "reasons": rec.reasons_for(c, st.profile) if with_reasons else [],
+        "reasons": rec.reasons_for(c, st.profile, server=st.server_label) if with_reasons else [],
         "on_watchlist": c.on_watchlist,
         "watched": c.watched,
         "seen_here": c.seen_here,

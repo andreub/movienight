@@ -1,4 +1,5 @@
-"""Background sync orchestration: Plex, Letterboxd, TMDB enrichment, profile warm-up."""
+"""Background sync orchestration: the media server (Plex or Jellyfin), Letterboxd, TMDB enrichment,
+profile warm-up."""
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +8,7 @@ import logging
 
 import httpx
 
-from . import letterboxd as lb, library, plex, seenpush
+from . import jellyfin, letterboxd as lb, library, plex, seenpush, servers
 from .config import Config
 from .db import client_id, connect, get_meta, set_meta
 from .tmdb import Tmdb, TmdbError
@@ -30,8 +31,10 @@ class SyncManager:
         self.state = {"running": False, "stage": "idle", "done": 0, "total": 0, "error": None}
         self._task: asyncio.Task | None = None
         self._errors: list[str] = []
-        self.push_lock = asyncio.Lock()        # seen-mark pushes to Plex: one writer at a time
+        self.media = servers.backend(cfg)
+        self.push_lock = asyncio.Lock()        # seen-mark pushes to the media server: one writer at a time
         self.last_push: dict | None = None
+        self.jellyfin_problem: str | None = None
 
     # ---- status / control
     @property
@@ -62,7 +65,9 @@ class SyncManager:
 
     async def _run(self, what: str) -> None:
         self._errors = []
-        first = {"plex": ["plex"], "letterboxd": ["letterboxd"], "tmdb": [], "all": ["plex", "letterboxd"]}.get(what, ["plex", "letterboxd"])
+        media = self.cfg.media_server          # only the selected server type's stage ever runs
+        first = {"plex": [media], "jellyfin": [media], "letterboxd": ["letterboxd"], "tmdb": [],
+                 "all": [media, "letterboxd"]}.get(what, [media, "letterboxd"])
         try:
             for name in first + ["tmdb", "profile"]:
                 self._stage(name)
@@ -87,6 +92,8 @@ class SyncManager:
 
     # ---- stages
     async def stage_plex(self) -> None:
+        if self.cfg.media_server != "plex":
+            return
         conn = connect(self.cfg.db_path)
         try:
             token = plex_token(conn, self.cfg)
@@ -104,20 +111,20 @@ class SyncManager:
             bases = await asyncio.gather(*(plex.pick_connection(self.http, s, cid) for s in servers))
             for s in servers:
                 conn.execute(
-                    "INSERT INTO plex_servers(id,name,owned) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET"
+                    "INSERT INTO media_servers(id,name,owned) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET"
                     " name=excluded.name, owned=excluded.owned", (s["id"], s["name"], int(s["owned"])))
             conn.commit()
             seen = {s["id"] for s in servers}
-            for r in conn.execute("SELECT id FROM plex_servers").fetchall():
+            for r in conn.execute("SELECT id FROM media_servers").fetchall():
                 if r["id"] not in seen:        # server no longer shared with us
-                    conn.execute("DELETE FROM plex_items WHERE server_id=?", (r["id"],))
-                    conn.execute("DELETE FROM plex_servers WHERE id=?", (r["id"],))
+                    conn.execute("DELETE FROM media_items WHERE server_id=?", (r["id"],))
+                    conn.execute("DELETE FROM media_servers WHERE id=?", (r["id"],))
             for s, base in zip(servers, bases):
-                conn.execute("UPDATE plex_servers SET reachable=?, base_url=?, access_token=? WHERE id=?",
+                conn.execute("UPDATE media_servers SET reachable=?, base_url=?, access_token=? WHERE id=?",
                              (int(bool(base)), base, s["access_token"], s["id"]))
             conn.commit()
             for s, base in zip(servers, bases):
-                enabled = conn.execute("SELECT enabled FROM plex_servers WHERE id=?", (s["id"],)).fetchone()["enabled"]
+                enabled = conn.execute("SELECT enabled FROM media_servers WHERE id=?", (s["id"],)).fetchone()["enabled"]
                 if not base or not enabled:
                     continue
                 try:
@@ -126,12 +133,12 @@ class SyncManager:
                     self._fail(f"plex ({s['name']})", e)
                     continue
                 library.store_server_items(conn, s["id"], items)
-                conn.execute("UPDATE plex_servers SET last_sync=? WHERE id=?", (now_iso(), s["id"]))
+                conn.execute("UPDATE media_servers SET last_sync=? WHERE id=?", (now_iso(), s["id"]))
                 conn.commit()
             library.assign_movies(conn)
             set_meta(conn, "plex_last_sync", now_iso())
             conn.commit()
-            if self.cfg.plex_push_seen:
+            if self.cfg.push_seen:
                 try:
                     await self.push_seen(conn, cid)
                 except Exception as e:  # noqa: BLE001 - the library itself is already stored
@@ -140,13 +147,97 @@ class SyncManager:
             conn.close()
         self.engine.invalidate()
 
+    async def stage_jellyfin(self) -> None:
+        """Sign in (or reuse the stored token), read the movie library, push seen marks if enabled."""
+        if self.cfg.media_server != "jellyfin":
+            return
+        cfg = self.cfg
+        self.jellyfin_problem = None
+        if not cfg.jellyfin_configured:
+            self.jellyfin_problem = ("Jellyfin is selected but MOVIENIGHT_JELLYFIN_URL, MOVIENIGHT_JELLYFIN_USER"
+                                     " or MOVIENIGHT_JELLYFIN_PASSWORD is not set")
+            raise RuntimeError(self.jellyfin_problem)
+        base = cfg.jellyfin_url.rstrip("/")
+        conn = connect(cfg.db_path)
+        try:
+            cid = client_id(conn)
+            row = conn.execute("SELECT * FROM media_servers WHERE id LIKE 'jf:%' ORDER BY id LIMIT 1").fetchone()
+            same_login = (row is not None and row["base_url"] == base
+                          and (get_meta(conn, "jellyfin_login") or "") == cfg.jellyfin_user.lower())
+            token = (row["access_token"] or "") if same_login else ""
+            user_id = get_meta(conn, "jellyfin_user_id") or ""
+            server_id = row["id"] if same_login else ""
+            try:
+                info = await jellyfin.server_info(self.http, base)
+            except httpx.HTTPError as e:
+                if row is not None:
+                    conn.execute("UPDATE media_servers SET reachable=0 WHERE id=?", (row["id"],))
+                    conn.commit()
+                self.jellyfin_problem = f"Jellyfin server not reachable ({safe_error(e)})"
+                raise
+
+            async def sign_in() -> None:
+                nonlocal token, user_id, server_id
+                try:
+                    a = await jellyfin.authenticate(self.http, base, cid, cfg.jellyfin_user, cfg.jellyfin_password)
+                except jellyfin.AuthError as e:
+                    self.jellyfin_problem = str(e)
+                    raise
+                token, user_id = a["token"], a["user_id"]
+                server_id = jellyfin.server_key(a["server_id"] or info["id"])
+                set_meta(conn, "jellyfin_user_id", user_id)
+                set_meta(conn, "jellyfin_account", a["name"])
+                set_meta(conn, "jellyfin_login", cfg.jellyfin_user.lower())
+                self._store_jellyfin_server(conn, server_id, info["name"], base, token)
+
+            if not token or not user_id:
+                await sign_in()
+            try:
+                items = await jellyfin.fetch_movies(self.http, base, cid, token, user_id, self._progress)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code != 401:
+                    raise
+                await sign_in()                    # token revoked or expired: sign in again, once
+                items = await jellyfin.fetch_movies(self.http, base, cid, token, user_id, self._progress)
+            self._store_jellyfin_server(conn, server_id, info["name"], base, token)
+            library.store_server_items(conn, server_id, items)
+            conn.execute("UPDATE media_servers SET last_sync=? WHERE id=?", (now_iso(), server_id))
+            conn.commit()
+            library.assign_movies(conn)
+            set_meta(conn, "jellyfin_last_sync", now_iso())
+            conn.commit()
+            self.jellyfin_problem = None
+            if cfg.push_seen:
+                try:
+                    await self.push_seen(conn, cid)
+                except Exception as e:  # noqa: BLE001 - the library itself is already stored
+                    self._fail("jellyfin seen marks", e)
+        except Exception as e:
+            self.jellyfin_problem = self.jellyfin_problem or f"Jellyfin sync failed ({safe_error(e)})"
+            raise
+        finally:
+            conn.close()
+        self.engine.invalidate()
+
+    @staticmethod
+    def _store_jellyfin_server(conn, server_id: str, name: str, base: str, token: str) -> None:
+        """One row for the Jellyfin server; rows of any other server (another URL or ServerId) go."""
+        for r in conn.execute("SELECT id FROM media_servers WHERE id != ?", (server_id,)).fetchall():
+            conn.execute("DELETE FROM media_items WHERE server_id=?", (r["id"],))
+            conn.execute("DELETE FROM media_servers WHERE id=?", (r["id"],))
+        conn.execute(
+            "INSERT INTO media_servers(id,name,owned,reachable,base_url,access_token) VALUES(?,?,0,1,?,?)"
+            " ON CONFLICT(id) DO UPDATE SET name=excluded.name, reachable=1, base_url=excluded.base_url,"
+            " access_token=excluded.access_token", (server_id, name, base, token))
+        conn.commit()
+
     async def push_seen(self, conn, cid: str) -> dict:
         """Retry pending unscrobbles, then mark played every seen film not yet pushed (also the backfill)."""
         async with self.push_lock:
-            undone = await seenpush.unpush(conn, self.http, cid)
-            counts = await seenpush.push(conn, self.http, cid)
+            undone = await seenpush.unpush(conn, self.http, cid, backend=self.media)
+            counts = await seenpush.push(conn, self.http, cid, backend=self.media)
         self.last_push = {**counts, "unpushed": undone["unpushed"], "unpush_failed": undone["failed"]}
-        log.info("seen marks on Plex: %s", self.last_push)
+        log.info("seen marks on %s: %s", self.media.label, self.last_push)
         return self.last_push
 
     async def stage_letterboxd(self) -> None:
@@ -189,7 +280,7 @@ class SyncManager:
         conn = connect(self.cfg.db_path)
         try:
             library.record_outcomes(conn)
-            library.refresh_model(conn)
+            library.refresh_model(conn, self.media)
         finally:
             conn.close()
 
@@ -225,7 +316,7 @@ class SyncManager:
         if not rows:
             return
         plex_ids = {}
-        for r in conn.execute("SELECT title, year, tmdb_id FROM plex_items WHERE tmdb_id IS NOT NULL"):
+        for r in conn.execute("SELECT title, year, tmdb_id FROM media_items WHERE tmdb_id IS NOT NULL"):
             plex_ids.setdefault((norm_title(r["title"]), r["year"]), r["tmdb_id"])
         todo = []
         for r in rows:

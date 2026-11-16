@@ -2,8 +2,14 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+MEDIA_SERVERS = ("plex", "jellyfin")
+
+
+def _flag(value: str | None) -> bool:
+    return (value or "").strip().lower() in ("1", "true", "yes")
 
 
 @dataclass(frozen=True)
@@ -22,17 +28,46 @@ class Config:
     oidc_client_id: str = ""
     oidc_allowed_subs: str = ""
     public_url: str = "http://localhost:8080"
-    plex_push_seen: bool = False     # mark "seen it" films as played on Plex (writes to the account)
+    push_seen: bool = False          # mark "seen it" films as played on the media server (writes to the account)
+    media_server: str = "plex"       # which library the app reads: plex | jellyfin (one at a time)
+    jellyfin_url: str = ""
+    jellyfin_user: str = ""
+    jellyfin_password: str = field(default="", repr=False)
+    jellyfin_watched: bool = True    # films played in Jellyfin count as watched
+
+    def __post_init__(self):
+        if self.media_server not in MEDIA_SERVERS:
+            raise ValueError(f"MOVIENIGHT_MEDIA_SERVER must be one of {', '.join(MEDIA_SERVERS)}"
+                             f" (got {self.media_server[:40]!r})")
+        if self.media_server != "plex" and "plex" in self._asked:
+            raise ValueError("MOVIENIGHT_LOGIN=plex needs MOVIENIGHT_MEDIA_SERVER=plex; with Jellyfin use"
+                             " OIDC (MOVIENIGHT_OIDC_ISSUER/CLIENT_ID) or MOVIENIGHT_LOGIN=none")
+
+    @property
+    def _asked(self) -> set[str]:
+        return {m.strip() for m in self.login.split(",") if m.strip()}
 
     @property
     def login_methods(self) -> set[str]:
         """An OIDC issuer turns OIDC on by itself; "none" turns every login off."""
-        asked = {m.strip() for m in self.login.split(",") if m.strip()}
+        asked = self._asked
         if "none" in asked:
             return set()
         if self.oidc_issuer:
             asked.add("oidc")
-        return {m for m in asked if m == "plex" or (m == "oidc" and self.oidc_issuer)}
+        return {m for m in asked if (m == "plex" and self.media_server == "plex") or (m == "oidc" and self.oidc_issuer)}
+
+    @property
+    def login_required(self) -> bool:
+        """Whether the app must refuse to run open. With Jellyfin there is no media-server login, so
+        unless MOVIENIGHT_LOGIN=none says otherwise a missing OIDC setup means 503, never open."""
+        if self.login_methods:
+            return True
+        return self.media_server != "plex" and "none" not in self._asked
+
+    @property
+    def jellyfin_configured(self) -> bool:
+        return bool(self.jellyfin_url and self.jellyfin_user and self.jellyfin_password)
 
     @property
     def db_path(self) -> Path:
@@ -49,6 +84,11 @@ class Config:
             hours = float(env.get("MOVIENIGHT_SYNC_HOURS", "6") or 6)
         except ValueError:
             hours = 6.0
+        media = (env.get("MOVIENIGHT_MEDIA_SERVER") or "plex").strip().lower()
+        push = env.get("MOVIENIGHT_PUSH_SEEN")
+        if push is None or not push.strip():
+            push = env.get("MOVIENIGHT_PLEX_PUSH_SEEN")     # older name, still honoured
+        jf_watched = (env.get("MOVIENIGHT_JELLYFIN_WATCHED") or "").strip().lower()
         return cls(
             data_dir=Path(env.get("MOVIENIGHT_DATA_DIR") or "./data"),
             letterboxd_dir=Path(env.get("MOVIENIGHT_LETTERBOXD_DIR") or "./letterboxd"),
@@ -56,12 +96,18 @@ class Config:
             tmdb_token=(env.get("MOVIENIGHT_TMDB_TOKEN") or "").strip(),
             plex_token=(env.get("MOVIENIGHT_PLEX_TOKEN") or "").strip(),
             sync_hours=hours,
-            login=(env.get("MOVIENIGHT_LOGIN") or "plex").strip().lower(),
+            # Plex: sign in with Plex by default. Jellyfin has no login of its own (OIDC or none).
+            login=(env.get("MOVIENIGHT_LOGIN") or ("plex" if media == "plex" else "")).strip().lower(),
             plex_owner=(env.get("MOVIENIGHT_PLEX_OWNER") or "").strip(),
             oidc_name=(env.get("MOVIENIGHT_OIDC_NAME") or "Single sign-on").strip()[:40],
             oidc_issuer=(env.get("MOVIENIGHT_OIDC_ISSUER") or "").strip(),
             oidc_client_id=(env.get("MOVIENIGHT_OIDC_CLIENT_ID") or "").strip(),
             oidc_allowed_subs=(env.get("MOVIENIGHT_OIDC_ALLOWED_SUBS") or "").strip(),
             public_url=(env.get("MOVIENIGHT_PUBLIC_URL") or "http://localhost:8080").strip(),
-            plex_push_seen=(env.get("MOVIENIGHT_PLEX_PUSH_SEEN") or "").strip().lower() in ("1", "true", "yes"),
+            push_seen=_flag(push),
+            media_server=media,
+            jellyfin_url=(env.get("MOVIENIGHT_JELLYFIN_URL") or "").strip().rstrip("/"),
+            jellyfin_user=(env.get("MOVIENIGHT_JELLYFIN_USER") or "").strip(),
+            jellyfin_password=env.get("MOVIENIGHT_JELLYFIN_PASSWORD") or "",
+            jellyfin_watched=jf_watched not in ("0", "false", "no"),
         )

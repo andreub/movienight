@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, chat, db, letterboxd as lb, library, plex, queries, seenpush, tags as lbtags, version
+from . import auth, chat, db, letterboxd as lb, library, plex, queries, seenpush, servers, tags as lbtags, version
 from .config import Config
 from .sync import SyncManager, plex_token, tmdb_counts
 from .util import now_iso, safe_error
@@ -39,7 +39,7 @@ MAX_UPLOAD = lb.MAX_ZIP_BYTES
 
 
 class SyncBody(BaseModel):
-    what: Literal["all", "plex", "letterboxd", "tmdb"] = "all"
+    what: Literal["all", "plex", "jellyfin", "letterboxd", "tmdb"] = "all"   # plex/jellyfin = the selected server
 
 
 class DismissBody(BaseModel):
@@ -68,6 +68,7 @@ class UserBody(BaseModel):
 
 def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
     cfg = cfg or Config.from_env()
+    media = servers.backend(cfg)
     for noisy in ("httpx", "httpcore"):          # request URLs may contain credentials
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
@@ -76,14 +77,21 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         cfg.data_dir.mkdir(parents=True, exist_ok=True)
         cfg.image_dir.mkdir(parents=True, exist_ok=True)
         db.migrate(cfg.db_path)
+        with db.session(cfg.db_path) as c:
+            wiped = db.switch_media_server(c, cfg.media_server)
+        if wiped:
+            log.warning("media server changed from %s to %s: library, dismissals and %s settings deleted;"
+                        " seen marks, votes and Letterboxd data kept", wiped, cfg.media_server, wiped)
+            for f in cfg.image_dir.glob("*.img"):     # cached by movie id, and the ids start over
+                f.unlink(missing_ok=True)
         http = httpx.AsyncClient(transport=transport, follow_redirects=False,
                                  timeout=httpx.Timeout(20.0, connect=5.0))
-        engine = library.Engine(lambda: db.connect(cfg.db_path))
+        engine = library.Engine(lambda: db.connect(cfg.db_path), media)
         sync = SyncManager(cfg, http, engine)
         app.state.http, app.state.engine, app.state.sync = http, engine, sync
         methods = cfg.login_methods
         app.state.sessions = app.state.oidc = app.state.plex_login = None
-        if methods:
+        if cfg.login_required:       # with Jellyfin and no OIDC this fails closed (503), never open
             with db.session(cfg.db_path) as c:
                 key = db.get_meta(c, "session_key")
                 if not key:
@@ -174,6 +182,9 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         if sessions is None or path in auth.PUBLIC_PATHS:
             return await call_next(request)
         if st.plex_login is None and not _oidc_ready(st):
+            if cfg.media_server != "plex" and not cfg.oidc_issuer:
+                return JSONResponse({"detail": "Login is not configured (set MOVIENIGHT_OIDC_ISSUER and"
+                                               " MOVIENIGHT_OIDC_CLIENT_ID, or MOVIENIGHT_LOGIN=none)"}, status_code=503)
             return JSONResponse({"detail": "Login is not configured yet (MOVIENIGHT_OIDC_CLIENT_ID)"}, status_code=503)
         session = sessions.check(request.cookies.get(auth.SESSION_COOKIE))
         if not _session_ok(st, session):
@@ -202,6 +213,9 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         if _oidc_ready(st):
             links.append((f"Sign in with {cfg.oidc_name}", "/login/oidc" + q))
         if not links:
+            if cfg.media_server != "plex" and not cfg.oidc_issuer:
+                return _page("Login not configured", "Set MOVIENIGHT_OIDC_ISSUER and MOVIENIGHT_OIDC_CLIENT_ID"
+                             " (or MOVIENIGHT_LOGIN=none) and restart.", 503, [])
             return _page("Login not configured", "Set MOVIENIGHT_OIDC_CLIENT_ID and restart.", 503, [])
         return _page("MovieNight", "Sign in to pick tonight's film.", links=links)
 
@@ -308,75 +322,93 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         c = conn()
         try:
             counts = lb.lb_counts(c)
-            token = plex_token(c, cfg)
-            servers = [
+            is_plex = cfg.media_server == "plex"
+            token = plex_token(c, cfg) if is_plex else ""
+            server_rows = [
                 {"id": r["id"], "name": r["name"], "owned": bool(r["owned"]), "movies": r["movies"],
                  "enabled": bool(r["enabled"]), "reachable": bool(r["reachable"])}
-                for r in c.execute("SELECT * FROM plex_servers ORDER BY owned DESC, name")
-            ]
+                for r in c.execute("SELECT * FROM media_servers ORDER BY owned DESC, name")
+            ] if is_plex else []
             movies = c.execute("SELECT COUNT(*) FROM movies").fetchone()[0]
+            pushed = seenpush.pushed_count(c) if cfg.push_seen else None
             res = {
+                "media_server": cfg.media_server,
                 "letterboxd": {"username": lb.username(c, cfg.letterboxd_user), **counts,
                                "last_sync": db.get_meta(c, "lb_last_sync")},
-                "plex": {"connected": bool(token), "account": db.get_meta(c, "plex_account") or None,
-                         "movies": movies, "last_sync": db.get_meta(c, "plex_last_sync"), "servers": servers,
-                         "seen_pushed": seenpush.pushed_count(c) if cfg.plex_push_seen else None},
+                "plex": {"connected": bool(token), "account": (db.get_meta(c, "plex_account") or None) if is_plex else None,
+                         "movies": movies, "last_sync": db.get_meta(c, "plex_last_sync") if is_plex else None,
+                         "servers": server_rows, "seen_pushed": pushed if is_plex else None},
                 "tmdb": tmdb_counts(c, sync_mgr().tmdb.configured),
                 "sync": dict(sync_mgr().state),
                 "ready": bool(movies) and (counts["watched"] + counts["watchlist"]) > 0,
             }
+            if not is_plex:
+                jf = c.execute("SELECT reachable, access_token FROM media_servers WHERE id LIKE 'jf:%'"
+                               " ORDER BY id LIMIT 1").fetchone()
+                problem = sync_mgr().jellyfin_problem
+                if not cfg.jellyfin_configured:
+                    problem = ("Jellyfin is selected but MOVIENIGHT_JELLYFIN_URL, MOVIENIGHT_JELLYFIN_USER"
+                               " or MOVIENIGHT_JELLYFIN_PASSWORD is not set")
+                res["jellyfin"] = {
+                    "configured": cfg.jellyfin_configured,
+                    "connected": bool(cfg.jellyfin_configured and jf and jf["access_token"] and jf["reachable"]),
+                    "account": db.get_meta(c, "jellyfin_account") or None,
+                    "movies": movies, "last_sync": db.get_meta(c, "jellyfin_last_sync"),
+                    "seen_pushed": pushed, "problem": problem,
+                }
             return res
         finally:
             c.close()
 
-    # ---- Plex
-    @app.post("/api/plex/pin")
-    async def plex_pin():
-        with db.session(cfg.db_path) as c:
-            cid = db.client_id(c)
-        try:
-            return await plex.create_pin(app.state.http, cid)
-        except (httpx.HTTPError, KeyError, ValueError) as e:
-            raise HTTPException(502, f"Could not reach plex.tv ({safe_error(e)})") from None
+    # ---- Plex (only mounted when Plex is the selected media server)
+    if cfg.media_server == "plex":
+        @app.post("/api/plex/pin")
+        async def plex_pin():
+            with db.session(cfg.db_path) as c:
+                cid = db.client_id(c)
+            try:
+                return await plex.create_pin(app.state.http, cid)
+            except (httpx.HTTPError, KeyError, ValueError) as e:
+                raise HTTPException(502, f"Could not reach plex.tv ({safe_error(e)})") from None
 
-    @app.get("/api/plex/pin/{pin_id}")
-    async def plex_pin_check(pin_id: int):
-        with db.session(cfg.db_path) as c:
-            cid = db.client_id(c)
-        try:
-            token = await plex.check_pin(app.state.http, cid, pin_id)
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise HTTPException(404, "PIN expired, start again") from None
-            raise HTTPException(502, f"Could not reach plex.tv ({safe_error(e)})") from None
-        except (httpx.HTTPError, KeyError, ValueError) as e:
-            raise HTTPException(502, f"Could not reach plex.tv ({safe_error(e)})") from None
-        if not token:
-            return {"authorized": False}
-        account = await plex.account_name(app.state.http, cid, token)
-        with db.session(cfg.db_path) as c:
-            library.set_plex_token(c, token, account)
-        sync_mgr().start("plex")
-        return {"authorized": True}
+        @app.get("/api/plex/pin/{pin_id}")
+        async def plex_pin_check(pin_id: int):
+            with db.session(cfg.db_path) as c:
+                cid = db.client_id(c)
+            try:
+                token = await plex.check_pin(app.state.http, cid, pin_id)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    raise HTTPException(404, "PIN expired, start again") from None
+                raise HTTPException(502, f"Could not reach plex.tv ({safe_error(e)})") from None
+            except (httpx.HTTPError, KeyError, ValueError) as e:
+                raise HTTPException(502, f"Could not reach plex.tv ({safe_error(e)})") from None
+            if not token:
+                return {"authorized": False}
+            account = await plex.account_name(app.state.http, cid, token)
+            with db.session(cfg.db_path) as c:
+                library.set_plex_token(c, token, account)
+            sync_mgr().start("plex")
+            return {"authorized": True}
 
-    @app.post("/api/plex/logout")
-    def plex_logout():
-        with db.session(cfg.db_path) as c:
-            library.set_plex_token(c, None, None)
-            for t in ("plex_items", "movies", "plex_servers", "dismissals"):
-                c.execute(f"DELETE FROM {t}")           # fixed table names
-            db.set_meta(c, "plex_last_sync", None)
-        engine().invalidate()
-        return {"ok": True}
+        @app.post("/api/plex/logout")
+        def plex_logout():
+            with db.session(cfg.db_path) as c:
+                library.set_plex_token(c, None, None)
+                for t in ("media_items", "movies", "media_servers", "dismissals"):
+                    c.execute(f"DELETE FROM {t}")           # fixed table names
+                db.set_meta(c, "plex_last_sync", None)
+            engine().invalidate()
+            return {"ok": True}
 
-    @app.put("/api/plex/servers/{server_id}")
-    def plex_server(server_id: str, body: ServerBody):
-        with db.session(cfg.db_path) as c:
-            cur = c.execute("UPDATE plex_servers SET enabled=? WHERE id=?", (int(body.enabled), server_id))
-            if cur.rowcount == 0:
-                raise HTTPException(404, "Unknown server")
-        engine().invalidate()
-        return {"ok": True}
+        @app.put("/api/plex/servers/{server_id}")
+        def plex_server(server_id: str, body: ServerBody):
+            with db.session(cfg.db_path) as c:
+                cur = c.execute("UPDATE media_servers SET enabled=? WHERE id=?", (int(body.enabled), server_id))
+                if cur.rowcount == 0:
+                    raise HTTPException(404, "Unknown server")
+            engine().invalidate()
+            return {"ok": True}
 
     # ---- sync / import
     @app.post("/api/sync", status_code=202)
@@ -540,18 +572,18 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                 c.execute("DELETE FROM seen WHERE key=?", (key,))
             if body.vote is not None:          # same transaction: seen + vote land together or not at all
                 _store_vote(c, key, body.vote)
-        if cfg.plex_push_seen:
+        if cfg.push_seen:
             # best effort: the local mark is saved; whatever fails here is retried by the sync
             c = conn()
             try:
                 async with sync_mgr().push_lock:
                     cid = db.client_id(c)
                     if body.seen:
-                        await seenpush.push(c, app.state.http, cid, [key])
+                        await seenpush.push(c, app.state.http, cid, [key], backend=media)
                     else:
-                        await seenpush.unpush(c, app.state.http, cid, [key])
+                        await seenpush.unpush(c, app.state.http, cid, [key], backend=media)
             except Exception as e:  # noqa: BLE001
-                log.warning("seen mark not synced to Plex: %s", safe_error(e))
+                log.warning("seen mark not synced to %s: %s", media.label, safe_error(e))
             finally:
                 c.close()
         engine().invalidate()
@@ -604,8 +636,8 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         field = "thumb" if kind == "poster" else "art"
         with db.session(cfg.db_path) as c:
             row = c.execute(
-                "SELECT i.json, s.base_url, s.access_token, db_cid.value cid FROM plex_items i"
-                " JOIN plex_servers s ON s.id=i.server_id LEFT JOIN meta db_cid ON db_cid.key='plex_client_id'"
+                "SELECT i.json, s.base_url, s.access_token, db_cid.value cid FROM media_items i"
+                " JOIN media_servers s ON s.id=i.server_id LEFT JOIN meta db_cid ON db_cid.key='plex_client_id'"
                 " WHERE i.movie_id=? AND s.enabled=1 AND s.base_url IS NOT NULL ORDER BY s.owned DESC", (movie_id,)
             ).fetchall()
         import json as _json
@@ -614,8 +646,8 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             if not path:
                 continue
             w, h = (500, 750) if kind == "poster" else (1280, 720)
-            got = await plex.fetch_image(app.state.http, r["base_url"], r["access_token"] or "", r["cid"] or "",
-                                         path, w, h)
+            got = await media.fetch_image(app.state.http, r["base_url"], r["access_token"] or "", r["cid"] or "",
+                                          path, w, h)
             if got:
                 data, _ = got
                 try:
