@@ -37,12 +37,16 @@ class DismissBody(BaseModel):
     days: int = Field(default=30, ge=0, le=3650)
 
 
+Vote = Literal[2, 1, -1, 0]      # 2 love (a favourite), 1 thumb up, -1 thumb down, 0 clears the vote
+
+
 class VoteBody(BaseModel):
-    vote: Literal[1, -1, 0]
+    vote: Vote
 
 
 class SeenBody(BaseModel):
     seen: bool
+    vote: Vote | None = None    # also set (or with 0, clear) the vote in the same transaction
 
 
 class ServerBody(BaseModel):
@@ -483,15 +487,16 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             row = c.execute("SELECT tmdb_id, dkey FROM movies WHERE id=?", (movie_id,)).fetchone()
             if row is None:
                 raise HTTPException(404, "Movie not found")
-            key = library.feedback_key(row["tmdb_id"], row["dkey"])
-            if body.vote == 0:
-                c.execute("DELETE FROM votes WHERE key=?", (key,))
-            else:
-                c.execute("INSERT INTO votes(key, vote, updated_at) VALUES(?,?,?) ON CONFLICT(key)"
-                          " DO UPDATE SET vote=excluded.vote, updated_at=excluded.updated_at",
-                          (key, body.vote, now_iso()))
+            _store_vote(c, library.feedback_key(row["tmdb_id"], row["dkey"]), body.vote)
         engine().invalidate()
         return {"ok": True}
+
+    def _store_vote(c, key: str, vote: int) -> None:
+        if vote == 0:
+            c.execute("DELETE FROM votes WHERE key=?", (key,))
+        else:
+            c.execute("INSERT INTO votes(key, vote, updated_at) VALUES(?,?,?) ON CONFLICT(key)"
+                      " DO UPDATE SET vote=excluded.vote, updated_at=excluded.updated_at", (key, vote, now_iso()))
 
     @app.post("/api/movies/{movie_id}/seen")
     async def mark_seen(movie_id: int, body: SeenBody):
@@ -504,6 +509,8 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                 c.execute("INSERT OR IGNORE INTO seen(key, created_at) VALUES(?,?)", (key, now_iso()))
             else:
                 c.execute("DELETE FROM seen WHERE key=?", (key,))
+            if body.vote is not None:          # same transaction: seen + vote land together or not at all
+                _store_vote(c, key, body.vote)
         if cfg.plex_push_seen:
             # best effort: the local mark is saved; whatever fails here is retried by the sync
             c = conn()
@@ -526,6 +533,17 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         st, dismissed = engine().get(), dismissed_now()
         items, total = library.seen_candidates(st, dismissed, limit, offset)
         return {"items": [library.movie_json(c, st, dismissed, with_reasons=False) for c in items], "total": total}
+
+    @app.get("/api/seen-marked")
+    def seen_marked(limit: int = Query(60, ge=1, le=200), offset: int = Query(0, ge=0)):
+        """Films marked "seen it" here, newest mark first, with their current vote (`my_vote`)."""
+        st, dismissed = engine().get(), dismissed_now()
+        c = conn()
+        try:
+            items, total = library.seen_marked(c, st, limit, offset)
+        finally:
+            c.close()
+        return {"items": [library.movie_json(m, st, dismissed, with_reasons=False) for m in items], "total": total}
 
     @app.get("/api/feedback")
     def feedback_overview():

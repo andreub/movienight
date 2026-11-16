@@ -30,7 +30,7 @@ def genre_aff(client, name):
 def test_vote_endpoint_and_my_vote(client):
     assert mv(client, mid(client, 'Crime Two'))["my_vote"] is None
     assert client.post("/api/movies/9999/feedback", json={"vote": 1}).status_code == 404
-    for bad in ({"vote": 2}, {"vote": "up"}, {}):
+    for bad in ({"vote": 3}, {"vote": -2}, {"vote": "up"}, {"vote": 1.5}, {}):
         assert client.post(f"/api/movies/{mid(client, 'Crime Two')}/feedback", json=bad).status_code == 422
     assert client.post(f"/api/movies/{mid(client, 'Crime Two')}/feedback", json={"vote": 1}).json() == {"ok": True}
     assert mv(client, mid(client, 'Crime Two'))["my_vote"] == 1
@@ -41,7 +41,7 @@ def test_vote_endpoint_and_my_vote(client):
     assert mv(client, mid(client, 'Crime Two'))["my_vote"] == -1
     client.post(f"/api/movies/{mid(client, 'Crime Two')}/feedback", json={"vote": 0})
     assert mv(client, mid(client, 'Crime Two'))["my_vote"] is None
-    assert client.get("/api/feedback").json()["votes"] == {"up": 0, "down": 0}
+    assert client.get("/api/feedback").json()["votes"] == {"up": 0, "down": 0, "love": 0}
 
 
 def test_vote_effect_on_ranking(client):
@@ -51,7 +51,7 @@ def test_vote_effect_on_ranking(client):
     after = {i["id"]: i["match"] for i in client.get("/api/recommendations").json()["items"]}
     assert after[mid(client, 'Rom Com')] < base[mid(client, 'Rom Com')] and after[mid(client, 'Drama Three')] > base[mid(client, 'Drama Three')]
     assert after[mid(client, 'Rom Com')] in range(1, 100)           # penalised, not removed
-    assert client.get("/api/feedback").json()["votes"] == {"up": 1, "down": 1}
+    assert client.get("/api/feedback").json()["votes"] == {"up": 1, "down": 1, "love": 0}
 
 
 def test_vote_is_weaker_than_rating_and_ignored_when_rated(client):
@@ -116,7 +116,7 @@ def test_feedback_shape_empty(client):
     assert fb["outcomes"] == []
     assert set(fb["summary"]) == {"count", "rated", "hits", "misses", "mean_rating_of_picks", "user_mean_rating"}
     assert fb["summary"]["count"] == 0 and fb["summary"]["mean_rating_of_picks"] is None
-    assert fb["votes"] == {"up": 0, "down": 0}
+    assert fb["votes"] == {"up": 0, "down": 0, "love": 0}
     assert set(fb["backtest"]) >= {"films", "spearman", "top_quintile_hit_rate", "base_rate", "weights",
                                    "default_weights", "tuned", "computed_at"}
 

@@ -209,7 +209,11 @@ def load_state(conn: sqlite3.Connection) -> State:
     cands, history = load_inputs(conn)
     profile = rec.score_candidates(history, cands, now=now, weights=load_weights(conn))
     store_predictions(conn, cands, profile)
-    return State(cands=cands, by_id={c.id: c for c in cands}, history=history, profile=profile)
+    by_id = {c.id: c for c in cands}
+    for h in profile.vote_hists:            # synthetic entries of voted library films ("because" lists them)
+        if -h.key in by_id:
+            h.poster = poster_of(by_id[-h.key])
+    return State(cands=cands, by_id=by_id, history=history, profile=profile)
 
 
 # --------------------------------------------------------------------------- feedback loop
@@ -371,7 +375,7 @@ def feedback_json(conn: sqlite3.Connection) -> dict:
             "mean_rating_of_picks": round(sum(rated) / len(rated), 2) if rated else None,
             "user_mean_rating": round(user_mean, 2) if user_mean is not None else None,
         },
-        "votes": {"up": votes.get(1, 0), "down": votes.get(-1, 0)},
+        "votes": {"up": votes.get(1, 0), "down": votes.get(-1, 0), "love": votes.get(rec.LOVE, 0)},
         "backtest": load_backtest(conn),
     }
 
@@ -462,6 +466,15 @@ def seen_candidates(st: State, dismissed: dict, limit: int, offset: int, min_age
     pool = [c for c in st.cands
             if not c.watched and c.id not in dismissed and c.year and c.year <= cutoff]
     pool.sort(key=lambda c: (-(c.meta.get("vote_count") or 0), c.id))
+    return pool[offset:offset + limit], len(pool)
+
+
+def seen_marked(conn: sqlite3.Connection, st: State, limit: int, offset: int) -> tuple[list, int]:
+    """Library films with a local "seen it" mark, newest mark first (marks of films no longer in the
+    library are left out). Returns (page of candidates, total)."""
+    by_key = {feedback_key(c.tmdb_id, c.dkey): c for c in st.cands}
+    pool = [by_key[r["key"]] for r in conn.execute("SELECT key FROM seen ORDER BY created_at DESC, rowid DESC")
+            if r["key"] in by_key]
     return pool[offset:offset + limit], len(pool)
 
 

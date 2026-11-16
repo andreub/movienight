@@ -13,6 +13,22 @@ It is a single-user app with no login, meant to run on a private network.
 - **TMDB**: metadata (genres, cast, crew, keywords, posters, ratings) and recommendations.
   Responses are cached forever in the local database.
 
+## Votes and "seen it" marks
+
+- **Votes** on a film (detail sheet, tonight's pick, browse cards): thumbs down (-1), thumbs up (1)
+  and ❤ "a favourite" (2). A vote teaches the recommender about films you never rated on
+  Letterboxd: the film counts as a synthetic history entry (signal ±0.6, 0.95 for a favourite,
+  about a liked 5-star film) and gets a direct boost or penalty. A Letterboxd rating always wins:
+  once a film is rated there, its vote is ignored.
+- **Seen it** marks a film as already watched here (not on Letterboxd): it stops showing up in your
+  picks. On its own the mark is neutral; it teaches nothing about taste.
+- **Seen these?** (`#/seen`) lists popular older films you probably know. Each card has four
+  one-tap verdicts: 👎 seen, didn't like it · ✓ seen, no opinion · 👍 seen, liked it · ❤ a
+  favourite. One tap saves the mark and the vote together (`POST /api/movies/{id}/seen` with
+  `{"seen": true, "vote": 2}`); tapping the chosen verdict again removes both. The "Already
+  marked" tab (`GET /api/seen-marked`, newest mark first) lets you rate films marked earlier.
+- With `MOVIENIGHT_PLEX_PUSH_SEEN` on, marks are also set as played on Plex, whichever way they are made.
+
 ## Quick start (Docker)
 
 ```sh

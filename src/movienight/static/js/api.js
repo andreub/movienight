@@ -75,8 +75,10 @@ export const api = {
   undismiss: (id) => request('DELETE', `/api/movies/${id}/dismiss`),
   profile: () => request('GET', '/api/profile'),
   feedback: (id, vote) => request('POST', `/api/movies/${id}/feedback`, { json: { vote } }),
-  seen: (id, seen) => request('POST', `/api/movies/${id}/seen`, { json: { seen } }),
+  // `vote` (optional): also set the vote in the same request (2 love, 1 up, -1 down, 0 clears it).
+  seen: (id, seen, vote) => request('POST', `/api/movies/${id}/seen`, { json: vote === undefined ? { seen } : { seen, vote } }),
   seenCandidates: (params) => request('GET', '/api/seen-candidates', { params }),
+  seenMarked: (params) => request('GET', '/api/seen-marked', { params }),
   feedbackSummary: () => request('GET', '/api/feedback'),
   me: () => request('GET', '/api/me'),
   chatStatus: () => request('GET', '/api/chat/status'),

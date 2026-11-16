@@ -160,10 +160,11 @@ function changedWeights(bt) {
 
 function votesLine(v) {
   if (!v) return null;
-  const total = (v.up || 0) + (v.down || 0);
+  const total = (v.up || 0) + (v.down || 0) + (v.love || 0);
+  const loves = v.love ? `, ${num(v.love)} ${v.love === 1 ? 'favourite' : 'favourites'}` : '';
   return h('p', { class: 'knows__votes' },
     total
-      ? `You have given ${num(v.up || 0)} thumbs up and ${num(v.down || 0)} thumbs down. Each one nudges what it suggests next.`
+      ? `You have given ${num(v.up || 0)} thumbs up${loves} and ${num(v.down || 0)} thumbs down. Each one nudges what it suggests next; a favourite counts most.`
       : 'No thumbs yet. Use the thumbs on a pick to tell it what to show more or less of.');
 }
 
