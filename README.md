@@ -1,7 +1,7 @@
 # MovieNight
 
-"What do I watch tonight?" MovieNight ranks the movies available on your Plex servers
-using your Letterboxd history (watched films, ratings, likes, watchlist) and TMDB metadata.
+"What do I watch tonight?" MovieNight ranks the movies available on your Plex servers (or your
+Jellyfin server, see [Media server](#media-server-plex-or-jellyfin)) using your Letterboxd history (watched films, ratings, likes, watchlist) and TMDB metadata.
 It is a single-user app with no login, meant to run on a private network.
 
 ## How it gets data
@@ -11,6 +11,8 @@ It is a single-user app with no login, meant to run on a private network.
   automatically from the public RSS feed.
 - **Plex**: connect with a PIN login (plex.tv). Movie libraries from every server you own or
   have been shared are indexed; the first reachable connection is used.
+- **Jellyfin** (instead of Plex): user name and password from the environment; the movies that
+  account can see are indexed.
 - **TMDB**: metadata (genres, cast, crew, keywords, posters, ratings) and recommendations.
   Responses are cached forever in the local database.
 
@@ -28,7 +30,8 @@ It is a single-user app with no login, meant to run on a private network.
   favourite. One tap saves the mark and the vote together (`POST /api/movies/{id}/seen` with
   `{"seen": true, "vote": 2}`); tapping the chosen verdict again removes both. The "Already
   marked" tab (`GET /api/seen-marked`, newest mark first) lets you rate films marked earlier.
-- With `MOVIENIGHT_PLEX_PUSH_SEEN` on, marks are also set as played on Plex, whichever way they are made.
+- With `MOVIENIGHT_PUSH_SEEN` on, marks are also set as played on Plex or Jellyfin, whichever way they are
+  made. Only items the app marked itself are ever set back to unplayed.
 
 ## Letterboxd tags
 
@@ -61,7 +64,7 @@ mkdir -p data letterboxd      # put your unpacked Letterboxd export in ./letterb
 docker compose up -d --build
 ```
 
-Open http://localhost:8080 and connect Plex in Settings.
+Open http://localhost:8080 and connect Plex in Settings (with Jellyfin, set its variables instead).
 
 ## Local development (uv)
 
@@ -81,11 +84,43 @@ The UI can run without a backend in mock mode at http://localhost:8080/?mock=1.
 | `MOVIENIGHT_LETTERBOXD_DIR` | `./letterboxd` (`/letterboxd` in image) | Unpacked Letterboxd export, imported at start if present or changed |
 | `MOVIENIGHT_LETTERBOXD_USER` | empty | Username for RSS sync; empty = read from `profile.csv` |
 | `MOVIENIGHT_TMDB_TOKEN` | empty | TMDB v4 bearer token (`eyJ...`) or v3 API key; empty = degraded mode |
-| `MOVIENIGHT_PLEX_TOKEN` | empty | Optional pre-set Plex token (otherwise PIN login in the UI) |
+| `MOVIENIGHT_MEDIA_SERVER` | `plex` | `plex` or `jellyfin`: where the library comes from (one at a time; any other value stops the app at start) |
+| `MOVIENIGHT_PLEX_TOKEN` | empty | Plex only: optional pre-set Plex token (otherwise PIN login in the UI) |
+| `MOVIENIGHT_JELLYFIN_URL` | empty | Jellyfin only: server URL as opened in the browser, e.g. `https://jellyfin.example.com` |
+| `MOVIENIGHT_JELLYFIN_USER` / `_PASSWORD` | empty | Jellyfin only: the account MovieNight signs in with |
+| `MOVIENIGHT_JELLYFIN_WATCHED` | on | `0`: ignore what was played in Jellyfin (use it when the account is shared with other people) |
 | `MOVIENIGHT_SYNC_HOURS` | `6` | Background sync interval |
-| `MOVIENIGHT_PLEX_PUSH_SEEN` | off | `1`/`true`/`yes`: marks films you flag "seen it" as played on your Plex servers (writes to your Plex account) |
+| `MOVIENIGHT_PUSH_SEEN` | off | `1`/`true`/`yes`: marks films you flag "seen it" as played on the media server (writes to that account). `MOVIENIGHT_PLEX_PUSH_SEEN` is the older name and still works |
+| `MOVIENIGHT_LOGIN` | `plex` (Plex), empty (Jellyfin) | Login methods, comma-separated: `plex`, `oidc`, or `none`. See [Login](#login-optional) |
+| `MOVIENIGHT_PLEX_OWNER` | empty | Plex login only: the account id, username or email allowed in; empty = the first sign-in (or the account of the stored token) |
 | `MOVIENIGHT_PORT` | `8080` | Compose only: host port |
 | `TZ` | `Europe/Madrid` | Compose only: container timezone |
+
+## Media server: Plex or Jellyfin
+
+`MOVIENIGHT_MEDIA_SERVER` picks one: `plex` (default) or `jellyfin`. The app never reads both.
+
+**Jellyfin** needs `MOVIENIGHT_JELLYFIN_URL`, `MOVIENIGHT_JELLYFIN_USER` and
+`MOVIENIGHT_JELLYFIN_PASSWORD`. Settings then shows a read-only Jellyfin card (account, film count,
+any problem, "Sync now"); there is no connection form. MovieNight signs in once
+(`POST /Users/AuthenticateByName`), keeps the access token in its database and signs in again only if
+the server rejects it. The password is read from the environment and never stored, logged or returned
+by the API. What the account played in Jellyfin counts as watched (`MOVIENIGHT_JELLYFIN_WATCHED=0`
+turns that off), "Play on Jellyfin" opens the film in the Jellyfin web app, and with
+`MOVIENIGHT_PUSH_SEEN` on, "seen it" marks are set as played there. If the account is shared with
+other people, set `MOVIENIGHT_JELLYFIN_WATCHED=0` and leave `MOVIENIGHT_PUSH_SEEN` off: its played
+state is not only yours. Written against the Jellyfin 12.4 API documentation (the endpoints also exist
+in 10.8-10.11); played/unplayed falls back to the older path of Jellyfin 10.8.
+
+**Switching** an existing database from one type to the other deletes, once at start, the stored
+library, its servers, the films you hid ("not tonight") and the old type's settings (e.g. the stored
+Plex token), plus the image cache. Seen marks, votes, Letterboxd data, tags and TMDB data are keyed by
+TMDB id and stay. Marks already pushed to the old server stay on that server.
+
+The database tables are `media_servers` and `media_items` since schema version 7 (they were
+`plex_servers` and `plex_items`). Older versions of MovieNight cannot open a database after that
+upgrade: back up `data/movienight.db` before deploying, and roll back by restoring that copy together
+with the previous code.
 
 ## Refreshing Letterboxd data
 
@@ -99,13 +134,20 @@ Between exports, new diary entries arrive through RSS automatically (without the
 
 ```sh
 scripts/deploy.sh             # HOST defaults to the ssh alias "homeserver"
+SERVICE=movienight-jf REMOTE_DIR='~/movienight-jf' scripts/deploy.sh   # a second instance
 ```
 
-The script syncs the project and your local `letterboxd/` folder to the server, builds the
-image through the server's main compose file (which needs direnv variables), and waits up to
-two minutes for the container to report healthy.
+The script syncs the committed project to `REMOTE_DIR` (default `~/movienight`) and your local
+`letterboxd/` folder to the shared `~/etc/movienight/letterboxd`, builds `SERVICE` (default
+`movienight`) through the server's main compose file (which needs direnv variables), and waits up to
+two minutes for the container (`CONTAINER`, default `SERVICE`) to report healthy.
 
 ## Login (optional)
+
+With Plex the default is "Sign in with Plex": only the Plex account the app belongs to gets in
+(`MOVIENIGHT_PLEX_OWNER`, or the first sign-in). With Jellyfin there is no Jellyfin login: use OIDC
+(below), or `MOVIENIGHT_LOGIN=none` on a private network. With Jellyfin and neither, the app answers
+503 instead of running open; `MOVIENIGHT_LOGIN=plex` with Jellyfin stops the app at start.
 
 Set `MOVIENIGHT_OIDC_ISSUER`, `MOVIENIGHT_OIDC_CLIENT_ID` and `MOVIENIGHT_PUBLIC_URL` to require a
 login through an OpenID Connect provider (Pocket ID, Authelia, Keycloak…). Create a **public client
@@ -116,7 +158,7 @@ no client id the app answers 503: it never runs open by accident. Sessions last 
 ## AI chat (optional)
 
 An "Ask" tab lets you describe what you feel like watching; an AI model answers with films from your
-Plex library, using tools that search the library, read film details and your taste profile. Two kinds of
+library, using tools that search the library, read film details and your taste profile. Two kinds of
 provider work:
 
 | Variable | Meaning |
@@ -152,9 +194,10 @@ provider's console.
 
 ## Privacy
 
-Your Letterboxd export and the Plex token are stored only in the local data volume
-(`./data`). Nothing is sent anywhere except the Letterboxd RSS feed, plex.tv, TMDB and, if you
-enable the chat, the configured AI provider. Each chat question sends it your taste profile (top
+Your Letterboxd export and the Plex token or Jellyfin access token are stored only in the local data
+volume (`./data`); the Jellyfin password stays in the environment. Nothing is sent anywhere except the
+Letterboxd RSS feed, plex.tv and your Plex servers (with Plex), your Jellyfin server (with Jellyfin),
+TMDB and, if you enable the chat, the configured AI provider. Each chat question sends it your taste profile (top
 genres, directors, cast, your highest-rated and recently watched titles), titles and details from your
 library, and the conversation itself. Free tiers may keep or use that data on their own terms: read the
 provider's data policy before you turn the chat on. Without the optional login, keep the service on a private

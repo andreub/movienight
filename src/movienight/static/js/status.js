@@ -27,8 +27,14 @@ export async function refreshStatus() {
   return current;
 }
 
+// The selected media server (status.media_server): Plex unless the server says Jellyfin.
+export const serverName = (s = current) => (s?.media_server === 'jellyfin' ? 'Jellyfin' : 'Plex');
+// Its status block: { connected, account, movies, last_sync, seen_pushed, ... }.
+export const serverStatus = (s = current) => (s?.media_server === 'jellyfin' ? s?.jellyfin : s?.plex) || {};
+
 export const STAGES = {
   plex: 'Reading your Plex libraries',
+  jellyfin: 'Reading your Jellyfin library',
   letterboxd: 'Reading your Letterboxd history',
   tmdb: 'Fetching film details from TMDB',
   profile: 'Updating your taste profile',

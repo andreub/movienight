@@ -1,4 +1,5 @@
-// Fixture backend for ?mock=1 (ready library) and ?mock=fresh (first-run setup).
+// Fixture backend for ?mock=1 (ready library), ?mock=fresh (first-run setup) and ?mock=jellyfin (Jellyfin
+// as the media server, read-only card in Setup).
 // Posters/backdrops are null on purpose so the generated fallbacks get exercised.
 
 const FILMS = [
@@ -77,6 +78,8 @@ const FRESH = params.get('mock') === 'fresh';
 const NOFB = params.get('mock') === 'nofb'; // no accuracy check or outcomes yet
 const NOCHAT = params.get('mock') === 'nochat'; // AI chat switched off
 const FREECHAT = params.get('mock') === 'free'; // AI chat on a free OpenAI-compatible tier (price 0)
+const JELLYFIN = params.get('mock') === 'jellyfin'; // Jellyfin is the media server
+const JF_BASE = 'https://jellyfin.example.com';
 const votes = new Map(); // id -> -1 | 1 | 2 (love)
 const seenSet = new Set(); // films marked "seen it" in this session
 const seenAt = new Map(); // id -> when it was marked (for the "Already marked" list, newest first)
@@ -120,9 +123,11 @@ const movies = FILMS.map(([title, year, runtime, genres, director, cast, rating,
     match: Math.max(4, Math.round(97 - i * 2.9 - (i % 3) * 2)),
     on_watchlist: i % 4 === 2, watched: false, my_rating: null, liked: false, dismissed_until: null,
     added_at: new Date(Date.now() - i * 86400000 * 3).toISOString(),
-    plex: [{ server: 'Home', server_id: 'home1', resolution: i % 3 === 0 ? '4k' : '1080', url: `https://app.plex.tv/desktop/#!/server/home1/details?key=%2Flibrary%2Fmetadata%2F${id}` }],
+    plex: JELLYFIN
+      ? [{ server: 'Den', server_id: 'jf:f00dcafe', resolution: i % 3 === 0 ? '4k' : '1080', url: `${JF_BASE}/web/#/details?id=item${id}&serverId=f00dcafe` }]
+      : [{ server: 'Home', server_id: 'home1', resolution: i % 3 === 0 ? '4k' : '1080', url: `https://app.plex.tv/desktop/#!/server/home1/details?key=%2Flibrary%2Fmetadata%2F${id}` }],
   };
-  if (i % 5 === 1) m.plex.push({ server: 'Lucía’s Library', server_id: 'shared2', resolution: '720', url: `https://app.plex.tv/desktop/#!/server/shared2/details?key=%2Flibrary%2Fmetadata%2F${id + 5000}` });
+  if (!JELLYFIN && i % 5 === 1) m.plex.push({ server: 'Lucía’s Library', server_id: 'shared2', resolution: '720', url: `https://app.plex.tv/desktop/#!/server/shared2/details?key=%2Flibrary%2Fmetadata%2F${id + 5000}` });
   m.reasons = reasonsFor(m, i);
   return m;
 });
@@ -244,7 +249,19 @@ export async function handle(method, path, p, body) {
     case 'GET /api/status': {
       const sync = syncInfo();
       const lbReady = lbState.watched > 0;
+      if (JELLYFIN) {
+        return ok({
+          media_server: 'jellyfin',
+          letterboxd: { ...lbState, last_sync: lbReady ? new Date(Date.now() - 2 * 3600e3).toISOString() : null },
+          plex: { connected: false, account: null, movies: 1696, last_sync: null, servers: [], seen_pushed: null },
+          jellyfin: { configured: true, connected: true, account: 'movie-fan', movies: 1696, last_sync: synced ? new Date(Date.now() - 2 * 3600e3).toISOString() : null, seen_pushed: null, problem: null },
+          tmdb: { configured: true, enriched: 1400, pending: 12 },
+          sync: sync.running && sync.stage === 'plex' ? { ...sync, stage: 'jellyfin' } : sync,
+          ready: lbReady && synced,
+        });
+      }
       return ok({
+        media_server: 'plex',
         letterboxd: { ...lbState, last_sync: lbReady ? new Date(Date.now() - 2 * 3600e3).toISOString() : null },
         plex: plexState.connected
           ? { connected: true, account: 'movie-fan', movies: 1696, last_sync: synced ? new Date(Date.now() - 2 * 3600e3).toISOString() : null, servers }
