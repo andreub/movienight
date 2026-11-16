@@ -139,7 +139,9 @@ def load_inputs(conn: sqlite3.Connection) -> tuple[list, list]:
         c = rec.Cand(
             id=mid, title=meta["title"], year=meta["year"], tmdb_id=tmdb_id, meta=meta, dkey=rs[0]["dkey"],
             added_at=max(added) if added else None,
-            plex_watched=any(r["owned"] and it.get("view_count", 0) > 0 for r, it in zip(rs, items)),
+            # Shared servers count too: each server reports the watched state of the account
+            # whose token asked, so this is always the user's own.
+            plex_watched=any(it.get("view_count", 0) > 0 for it in items),
             plex=[{"server": r["sname"], "server_id": r["server_id"], "resolution": it.get("resolution"),
                    "url": plex.web_url(r["server_id"], it["rating_key"]), "rating_key": it["rating_key"]}
                   for r, it in zip(rs, items)],

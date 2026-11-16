@@ -148,3 +148,18 @@ def test_seen_candidates(client):
     t2 = [i["title"] for i in client.get("/api/seen-candidates").json()["items"]]
     assert "Drama Three" not in t2 and "Crime Two" not in t2
     assert client.get("/api/seen-candidates", params={"limit": 0}).status_code == 422
+
+
+def test_plex_watched_on_a_shared_server_counts(client):
+    """A shared server reports the watched state of the account that asks: it is the user's."""
+    with db.session(client.cfg.db_path) as c:
+        c.execute("INSERT INTO plex_servers(id,name,owned,reachable,base_url,access_token) VALUES"
+                  "('s2','Friend',0,1,'http://friend.local:32400','SECRET2')")
+        library.store_server_items(c, "s2", [plex_item(91, "Crime Two", 2016, 111, views=1),
+                                             plex_item(92, "Shared Only", 1999, None, views=2)])
+        library.assign_movies(c)
+    client.app.state.engine.invalidate()
+    for title in ("Crime Two", "Shared Only"):
+        m = mv(client, mid(client, title))
+        assert m["watched"] is True and m["seen_here"] is False
+        assert m["id"] not in rec_ids(client)
