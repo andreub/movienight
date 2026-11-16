@@ -11,6 +11,11 @@ export function isSeen(movie) {
 }
 
 // `was` is the state before this change, so listeners can tell a real flip from a repeat.
+// Fired once the server has accepted a change, for views that react only to confirmed marks.
+function saved(movie, seen, source, was) {
+  window.dispatchEvent(new CustomEvent('movienight:seen-saved', { detail: { id: movie.id, movie, seen, was, source } }));
+}
+
 function announce(id, seen, source, was) {
   states.set(id, seen);
   window.dispatchEvent(new CustomEvent('movienight:seen', { detail: { id, seen, was, source } }));
@@ -22,6 +27,7 @@ export async function setSeen(movie, seen, source = '') {
   try {
     await api.seen(movie.id, seen);
     movie.seen_here = seen;
+    saved(movie, seen, source, before);
     return true;
   } catch (err) {
     announce(movie.id, before, source, seen);
@@ -40,6 +46,7 @@ export async function setSeenVote(movie, seen, vote, source = '') {
     await api.seen(movie.id, seen, vote);
     movie.seen_here = seen;
     movie.my_vote = vote || null;
+    saved(movie, seen, source, before.seen);
     return true;
   } catch (err) {
     announce(movie.id, before.seen, source, seen);

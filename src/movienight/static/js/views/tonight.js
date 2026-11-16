@@ -169,10 +169,12 @@ export function mount(root, route) {
     load('shuffle');
   }
 
-  // "Seen it": the film stops being suggested, the next pick comes up, and a quick thumbs-up/down is offered.
+  // "Seen it" (hero, sheet or card): the film leaves the page and a new one takes its slot (see onSeenSaved).
   async function markSeen(m) {
-    if (!(await setSeen(m, true, 'hero'))) return;
-    const previous = data;
+    await setSeen(m, true, 'hero');
+  }
+
+  function seenToast(m, replacementId, undo) {
     const quick = (close) => h('div', { class: 'toast__votes', role: 'group', 'aria-label': 'Did you like it?' },
       [[1, 'thumbup', 'I liked it'], [2, 'heart', 'A favourite'], [-1, 'thumbdown', "I didn't like it"]].map(([vote, name, label]) =>
         h('button', {
@@ -183,20 +185,75 @@ export function mount(root, route) {
             toast(vote > 1 ? 'Noted: a favourite.' : vote > 0 ? 'Noted: more like this.' : 'Noted: less like this.', { timeout: 3000 });
           },
         }, icon(name))));
-    toast('Marked as seen. Did you like it?', {
+    toast(`Marked “${m.title}” as seen. Did you like it?`, {
       timeout: 8000,
       extra: quick,
       action: {
         label: 'Undo',
         run: async () => {
-          if (!(await setSeen(m, false, 'hero'))) return;
-          req++;
-          data = previous;
-          render('shuffle');
+          if (!(await setSeen(m, false, 'undo'))) return;
+          undo();
         },
       },
     });
-    load('shuffle');
+  }
+
+  function renderAlts() {
+    const old = stage.querySelector('.alts');
+    const next = alternativesList(data.alternatives || []);
+    if (old && next) old.replaceWith(next);
+    else if (old) old.remove();
+    else if (next) stage.append(next);
+  }
+
+  function onSeenSaved(e) {
+    const { movie, seen: nowSeen, was } = e.detail;
+    if (!data || !nowSeen || was || e.detail.source === 'undo') return;
+    if (movie.id === data.pick.id) {
+      const previous = data;
+      load('shuffle').then(() => {
+        const next = data?.pick?.id;
+        seenToast(movie, next, () => {
+          if (data && data.pick.id === next) { req++; data = previous; render('shuffle'); } else toast('Unmarked. It can come back in your picks.');
+        });
+      });
+      return;
+    }
+    const idx = data.alternatives.findIndex((a) => a.id === movie.id);
+    if (idx < 0) return;
+    replaceAlt(movie, idx);
+  }
+
+  // Only the marked slot changes: ask for one film that is not on screen and not shown this session.
+  async function replaceAlt(movie, idx) {
+    const token = req;
+    const dataAtStart = data;
+    const onScreen = [dataAtStart.pick.id, ...dataAtStart.alternatives.map((a) => a.id)];
+    let repl = null;
+    try {
+      const res = await api.pick({ ...apiFilters(filters), exclude: [...new Set([...seen, ...onScreen])] });
+      repl = res.pick;
+    } catch { /* no replacement: the slot just closes */ }
+    if (token !== req || data !== dataAtStart) return;
+    const at = data.alternatives.findIndex((a) => a.id === movie.id);
+    if (at < 0) return;
+    if (repl && !onScreen.includes(repl.id)) {
+      data.alternatives[at] = repl;
+      seen = [...new Set([...seen, repl.id])].slice(-60);
+    } else {
+      repl = null;
+      data.alternatives.splice(at, 1);
+    }
+    renderAlts();
+    const replId = repl?.id;
+    seenToast(movie, replId, () => {
+      if (!data || data.pick.id === movie.id) return;
+      const cur = replId ? data.alternatives.findIndex((a) => a.id === replId) : -1;
+      if (cur >= 0) data.alternatives[cur] = movie;
+      else if (!replId && data.alternatives.length < 6) data.alternatives.splice(Math.min(at, data.alternatives.length), 0, movie);
+      else { toast('Unmarked. It can come back in your picks.'); return; }
+      renderAlts();
+    });
   }
 
   // A thumbs-down is feedback, not a hide: the film ranks lower and the next pick comes up.
@@ -259,13 +316,9 @@ export function mount(root, route) {
   update(route);
 
   window.addEventListener('movienight:changed', onChanged);
-  window.addEventListener('movienight:seen', onSeen);
+  window.addEventListener('movienight:seen-saved', onSeenSaved);
   function onChanged(e) {
     if (data && e.detail.id === data.pick.id && e.detail.dismissed) load('shuffle');
-  }
-  // Marked from the detail sheet while this film is the pick: move on (the hero handles its own).
-  function onSeen(e) {
-    if (data && e.detail.id === data.pick.id && e.detail.seen && e.detail.source === 'sheet') load('shuffle');
   }
 
   return {
@@ -275,7 +328,7 @@ export function mount(root, route) {
       req++;
       document.removeEventListener('keydown', onKey);
       window.removeEventListener('movienight:changed', onChanged);
-      window.removeEventListener('movienight:seen', onSeen);
+      window.removeEventListener('movienight:seen-saved', onSeenSaved);
     },
   };
 }

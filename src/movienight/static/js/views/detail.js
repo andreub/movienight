@@ -4,6 +4,7 @@ import { h, icon, poster, hueOf, runtime, stars, matchStub, reasonList, errorBox
 import { playControl } from '../play.js';
 import { voteButtons } from '../vote.js';
 import { setSeen } from '../seen.js';
+import { parse } from '../state.js';
 
 const dialog = document.getElementById('detail');
 const body = dialog.querySelector('.sheet__body');
@@ -72,6 +73,8 @@ async function setDismissed(m, days) {
 
 async function markSeen(m, seen) {
   if (!(await setSeen(m, seen, 'sheet'))) return;
+  // On Tonight the page itself replaces the film and offers the rating toast.
+  if (seen && parse().view === 'tonight') { load(); return; }
   toast(seen ? `Marked “${m.title}” as seen.` : `“${m.title}” is back in your picks.`);
   load();
 }
