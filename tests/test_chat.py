@@ -396,3 +396,13 @@ def test_migration_5_on_existing_v4_db(tmp_path):
     conn = sqlite3.connect(path)
     assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) >= 5
     assert [r[1] for r in conn.execute("PRAGMA table_info(ai_usage)")][:3] == ["month", "model", "input"]
+
+
+def test_shown_films_note_reaches_anthropic_backend_unchanged(chat_client, monkeypatch):
+    note = "[Films shown to the user: 1. Heat (1995) #412; 2. Thief (1981) #88]"
+    hist = [{"role": "user", "content": "tonight?"}, {"role": "assistant", "content": f"Try Heat or Thief.\n{note}"},
+            {"role": "user", "content": "tell me more about the second one"}]
+    fake = script(monkeypatch, [{"text": ["ok"]}])
+    r, ev = post(chat_client, hist)
+    assert r.status_code == 200 and fake.calls[0]["messages"] == hist
+    assert "Films shown to the user" in fake.calls[0]["system"] and "by title" in fake.calls[0]["system"]
