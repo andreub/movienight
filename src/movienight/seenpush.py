@@ -1,9 +1,10 @@
-"""Push local "seen it" marks to Plex as played (MOVIENIGHT_PLEX_PUSH_SEEN).
+"""Push local "seen it" marks to the media server as played (MOVIENIGHT_PUSH_SEEN).
 
 Every item the app marks played is recorded in `seen_pushes`; only those are ever unscrobbled, so
-anything the user watched in Plex on their own is left alone. A `seen_pushes` row whose `seen` mark
-is gone is a pending unscrobble (retried by the sync). Plex errors never propagate: the local mark
-is what matters, and the sync retries. Tokens never reach the logs.
+anything the user watched on the server on their own is left alone. A `seen_pushes` row whose `seen`
+mark is gone is a pending unscrobble (retried by the sync). Server errors never propagate: the local
+mark is what matters, and the sync retries. Tokens never reach the logs. The calls go through the
+selected backend (servers.py): Plex scrobble/unscrobble or Jellyfin played/unplayed.
 """
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ import sqlite3
 
 import httpx
 
-from . import plex
+from . import servers
 from .util import now_iso, safe_error
 
 log = logging.getLogger("movienight.seenpush")
@@ -25,19 +26,19 @@ _ITEMS_OF_SEEN = (
     "SELECT se.key, i.server_id, i.rating_key, i.json, s.name sname, s.reachable, s.base_url, s.access_token"
     " FROM seen se JOIN movies m ON (m.tmdb_id IS NOT NULL AND se.key='tmdb:'||m.tmdb_id)"
     "  OR (m.tmdb_id IS NULL AND se.key=m.dkey)"
-    " JOIN plex_items i ON i.movie_id=m.id JOIN plex_servers s ON s.id=i.server_id"
+    " JOIN media_items i ON i.movie_id=m.id JOIN media_servers s ON s.id=i.server_id"
     " WHERE s.enabled=1"
 )
 
 
 def _set_view_count(conn: sqlite3.Connection, server_id: str, rating_key: str, n: int) -> None:
-    row = conn.execute("SELECT json FROM plex_items WHERE server_id=? AND rating_key=?",
+    row = conn.execute("SELECT json FROM media_items WHERE server_id=? AND rating_key=?",
                        (server_id, rating_key)).fetchone()
     if row is None:
         return
     it = json.loads(row["json"])
     it["view_count"] = n
-    conn.execute("UPDATE plex_items SET json=? WHERE server_id=? AND rating_key=?",
+    conn.execute("UPDATE media_items SET json=? WHERE server_id=? AND rating_key=?",
                  (json.dumps(it), server_id, rating_key))
 
 
@@ -52,7 +53,7 @@ async def _run(calls: list, fn) -> list:
 
 
 async def push(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str,
-               keys: list[str] | None = None) -> dict:
+               keys: list[str] | None = None, backend=None) -> dict:
     """Mark played every not-yet-pushed item of the `seen` films (all, or only `keys`).
 
     Only items on enabled servers with a stored view count of 0 are pushed; items already watched in
@@ -81,16 +82,18 @@ async def push(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str
             todo.append(r)
     if not todo:
         return counts
+    be = backend or servers.PLEX
+    user_id = be.user_id(conn)
 
     async def call(r):
-        await plex.scrobble(http, r["base_url"], client_id, r["access_token"] or "", r["rating_key"])
+        await be.mark_played(http, r["base_url"], client_id, r["access_token"] or "", user_id, r["rating_key"])
 
     for r, res in zip(todo, await _run(todo, call)):
         if isinstance(res, asyncio.CancelledError):
             raise res
         if isinstance(res, BaseException):
             counts["failed"] += 1
-            log.warning("could not mark %s played on Plex server %s: %s", r["key"], r["sname"], safe_error(res))
+            log.warning("could not mark %s played on %s server %s: %s", r["key"], be.label, r["sname"], safe_error(res))
             continue
         conn.execute("INSERT OR IGNORE INTO seen_pushes(key,server_id,rating_key,pushed_at) VALUES(?,?,?,?)",
                      (r["key"], r["server_id"], r["rating_key"], now_iso()))
@@ -101,14 +104,14 @@ async def push(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str
 
 
 async def unpush(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str,
-                 keys: list[str] | None = None) -> dict:
+                 keys: list[str] | None = None, backend=None) -> dict:
     """Unscrobble the items the app pushed for films no longer marked seen (all, or only `keys`).
 
     Records for servers that no longer exist are dropped; unreachable servers and Plex errors leave
     the record in place for the next sync. Returns counts: unpushed, failed, dropped.
     """
     sql = ("SELECT p.key, p.server_id, p.rating_key, s.id sid, s.name sname, s.reachable, s.base_url,"
-           " s.access_token FROM seen_pushes p LEFT JOIN plex_servers s ON s.id=p.server_id"
+           " s.access_token FROM seen_pushes p LEFT JOIN media_servers s ON s.id=p.server_id"
            " WHERE p.key NOT IN (SELECT key FROM seen)")
     params: list = []
     if keys is not None:
@@ -126,15 +129,18 @@ async def unpush(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: s
         else:
             todo.append(r)
 
+    be = backend or servers.PLEX
+    user_id = be.user_id(conn)
+
     async def call(r):
-        await plex.unscrobble(http, r["base_url"], client_id, r["access_token"] or "", r["rating_key"])
+        await be.mark_unplayed(http, r["base_url"], client_id, r["access_token"] or "", user_id, r["rating_key"])
 
     for r, res in zip(todo, await _run(todo, call)):
         if isinstance(res, asyncio.CancelledError):
             raise res
         if isinstance(res, BaseException):
             counts["failed"] += 1
-            log.warning("could not mark %s unplayed on Plex server %s: %s", r["key"], r["sname"], safe_error(res))
+            log.warning("could not mark %s unplayed on %s server %s: %s", r["key"], be.label, r["sname"], safe_error(res))
             continue
         conn.execute("DELETE FROM seen_pushes WHERE key=? AND server_id=? AND rating_key=?",
                      (r["key"], r["server_id"], r["rating_key"]))
@@ -145,5 +151,5 @@ async def unpush(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: s
 
 
 def pushed_count(conn: sqlite3.Connection) -> int:
-    """Seen films the app has marked played on at least one Plex server."""
+    """Seen films the app has marked played on at least one media server."""
     return conn.execute("SELECT COUNT(DISTINCT key) FROM seen_pushes WHERE key IN (SELECT key FROM seen)").fetchone()[0]

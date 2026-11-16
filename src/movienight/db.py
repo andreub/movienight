@@ -148,7 +148,25 @@ MIGRATIONS = [
     );
     CREATE INDEX IF NOT EXISTS lb_tags_family ON lb_tags(family);
     """,
+    # 7: the library tables hold Plex or Jellyfin data (MOVIENIGHT_MEDIA_SERVER): rename only, rows stay.
+    # `rating_key` keeps its name (= the item's id on its server); so do the plex_* meta keys.
+    # Previous code cannot read the database after this step (rollback = restore a copy).
+    """
+    BEGIN;
+    ALTER TABLE plex_servers RENAME TO media_servers;
+    ALTER TABLE plex_items RENAME TO media_items;
+    DROP INDEX IF EXISTS plex_items_movie;
+    CREATE INDEX IF NOT EXISTS media_items_movie ON media_items(movie_id);
+    PRAGMA user_version=7;
+    COMMIT;
+    """,
 ]
+
+# meta keys that belong to one media server type: removed when the app switches to the other one
+SERVER_META = {
+    "plex": ("plex_token", "plex_account", "plex_last_sync", "plex_owner_id"),
+    "jellyfin": ("jellyfin_user_id", "jellyfin_account", "jellyfin_login", "jellyfin_last_sync"),
+}
 
 
 def connect(path: Path | str) -> sqlite3.Connection:
@@ -201,6 +219,32 @@ def set_meta(conn: sqlite3.Connection, key: str, value: str | None) -> None:
             "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, value),
         )
+
+
+def switch_media_server(conn: sqlite3.Connection, media_server: str) -> str | None:
+    """Make the stored library belong to `media_server`. Returns the previous type if it was wiped.
+
+    `meta.media_server` records which type the library tables hold; a database from before it existed
+    holds Plex data. On a change the library (servers, items, movies, dismissals, the pushed-mark
+    records of those servers) and the other type's meta rows are deleted; seen marks, votes and
+    Letterboxd data are keyed by TMDB id and stay.
+    """
+    prev = get_meta(conn, "media_server")
+    if prev is None:
+        has_plex = (conn.execute("SELECT 1 FROM media_servers LIMIT 1").fetchone()
+                    or get_meta(conn, "plex_token"))
+        prev = "plex" if has_plex else media_server
+    wiped = None
+    if prev != media_server:
+        conn.execute("DELETE FROM seen_pushes WHERE server_id IN (SELECT id FROM media_servers)")
+        for t in ("media_items", "media_servers", "dismissals", "movies"):
+            conn.execute(f"DELETE FROM {t}")           # fixed table names
+        for key in SERVER_META.get(prev, ()):
+            set_meta(conn, key, None)
+        wiped = prev
+    set_meta(conn, "media_server", media_server)
+    conn.commit()
+    return wiped
 
 
 def client_id(conn: sqlite3.Connection) -> str:

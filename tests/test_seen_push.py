@@ -35,7 +35,7 @@ class FakePlex:
 
 def make_client(cfg, push: bool):
     fake = FakePlex()
-    app = create_app(replace(cfg, plex_push_seen=push), transport=httpx.MockTransport(fake))
+    app = create_app(replace(cfg, push_seen=push), transport=httpx.MockTransport(fake))
     return app, fake
 
 
@@ -71,7 +71,7 @@ def seen_keys(client):
 
 def view_count(client, server_id, rating_key):
     with db.session(client.cfg.db_path) as c:
-        row = c.execute("SELECT json FROM plex_items WHERE server_id=? AND rating_key=?", (server_id, rating_key)).fetchone()
+        row = c.execute("SELECT json FROM media_items WHERE server_id=? AND rating_key=?", (server_id, rating_key)).fetchone()
         return json.loads(row[0])["view_count"]
 
 
@@ -143,11 +143,11 @@ def test_plex_error_keeps_mark_and_sync_retries(push_client, caplog):
 def test_unreachable_server_is_skipped_until_reachable(push_client):
     c = push_client
     with db.session(c.cfg.db_path) as conn:
-        conn.execute("UPDATE plex_servers SET reachable=0")
+        conn.execute("UPDATE media_servers SET reachable=0")
     mark(c, "Crime Two")
     assert c.fake.calls == [] and pushes(c) == []
     with db.session(c.cfg.db_path) as conn:
-        conn.execute("UPDATE plex_servers SET reachable=1")
+        conn.execute("UPDATE media_servers SET reachable=1")
     assert run_sync_push(c)["pushed"] == 1
 
 
@@ -167,7 +167,7 @@ def test_unmark_unscrobbles_only_pushed_items(push_client):
     c = push_client
     # the same film on a second (shared) server where the user already watched it in Plex
     with db.session(c.cfg.db_path) as conn:
-        conn.execute("INSERT INTO plex_servers(id,name,owned,reachable,base_url,access_token) VALUES"
+        conn.execute("INSERT INTO media_servers(id,name,owned,reachable,base_url,access_token) VALUES"
                      "('s2','Friend',0,1,'http://friend.local:32400','SECRET2')")
         from conftest import plex_item
         library.store_server_items(conn, "s2", [plex_item(91, "Rom Com", 2020, 112, views=1)])
@@ -240,7 +240,7 @@ def test_full_sync_backfills_existing_marks(tmp_path, caplog):
 
     from movienight.config import Config
     cfg = Config(data_dir=tmp_path / "d", letterboxd_dir=FIX / "export", sync_on_start=False,
-                 plex_token="ENV-PLEX-TOKEN", plex_push_seen=True)
+                 plex_token="ENV-PLEX-TOKEN", push_seen=True)
     db.migrate(cfg.db_path)
     with db.session(cfg.db_path) as conn:
         for key in ("imdb:tt9", "tmdb:101", "tmdb:999999"):    # Zeta Noir (unwatched), Alpha Heist (watched), absent
