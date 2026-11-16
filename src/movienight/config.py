@@ -22,6 +22,7 @@ class Config:
     oidc_client_id: str = ""
     oidc_allowed_subs: str = ""
     public_url: str = "http://localhost:8080"
+    plex_push_seen: bool = False     # mark "seen it" films as played on Plex (writes to the account)
 
     @property
     def login_methods(self) -> set[str]:
@@ -62,4 +63,5 @@ class Config:
             oidc_client_id=(env.get("MOVIENIGHT_OIDC_CLIENT_ID") or "").strip(),
             oidc_allowed_subs=(env.get("MOVIENIGHT_OIDC_ALLOWED_SUBS") or "").strip(),
             public_url=(env.get("MOVIENIGHT_PUBLIC_URL") or "http://localhost:8080").strip(),
+            plex_push_seen=(env.get("MOVIENIGHT_PLEX_PUSH_SEEN") or "").strip().lower() in ("1", "true", "yes"),
         )

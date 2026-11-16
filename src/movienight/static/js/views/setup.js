@@ -326,6 +326,7 @@ function syncStep() {
         h('dl', { class: 'facts facts--compact' },
           h('div', null, h('dt', { text: 'Plex' }), h('dd', { text: `read ${ago(st.plex?.last_sync)}` })),
           h('div', null, h('dt', { text: 'Letterboxd' }), h('dd', { text: `read ${ago(st.letterboxd?.last_sync)}` })),
+          st.plex?.seen_pushed != null ? h('div', null, h('dt', { text: 'Seen marks' }), h('dd', { text: `${num(st.plex.seen_pushed)} pushed to Plex` })) : null,
           tmdb.configured ? h('div', null, h('dt', { text: 'TMDB' }), h('dd', { text: `details for ${num(tmdb.enriched)} films${tmdb.pending ? `, ${num(tmdb.pending)} to go` : ''}` })) : null),
         tmdb.configured ? null : h('p', { class: 'note' }, icon('info'),
           h('span', null, 'TMDB is not set up, so recommendations use Plex metadata only and are less precise. Add ',

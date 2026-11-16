@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, chat, db, letterboxd as lb, library, plex, queries
+from . import auth, chat, db, letterboxd as lb, library, plex, queries, seenpush
 from .config import Config
 from .sync import SyncManager, plex_token, tmdb_counts
 from .util import now_iso, safe_error
@@ -306,7 +306,8 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                 "letterboxd": {"username": lb.username(c, cfg.letterboxd_user), **counts,
                                "last_sync": db.get_meta(c, "lb_last_sync")},
                 "plex": {"connected": bool(token), "account": db.get_meta(c, "plex_account") or None,
-                         "movies": movies, "last_sync": db.get_meta(c, "plex_last_sync"), "servers": servers},
+                         "movies": movies, "last_sync": db.get_meta(c, "plex_last_sync"), "servers": servers,
+                         "seen_pushed": seenpush.pushed_count(c) if cfg.plex_push_seen else None},
                 "tmdb": tmdb_counts(c, sync_mgr().tmdb.configured),
                 "sync": dict(sync_mgr().state),
                 "ready": bool(movies) and (counts["watched"] + counts["watchlist"]) > 0,
@@ -493,7 +494,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         return {"ok": True}
 
     @app.post("/api/movies/{movie_id}/seen")
-    def mark_seen(movie_id: int, body: SeenBody):
+    async def mark_seen(movie_id: int, body: SeenBody):
         with db.session(cfg.db_path) as c:
             row = c.execute("SELECT tmdb_id, dkey FROM movies WHERE id=?", (movie_id,)).fetchone()
             if row is None:
@@ -503,6 +504,20 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                 c.execute("INSERT OR IGNORE INTO seen(key, created_at) VALUES(?,?)", (key, now_iso()))
             else:
                 c.execute("DELETE FROM seen WHERE key=?", (key,))
+        if cfg.plex_push_seen:
+            # best effort: the local mark is saved; whatever fails here is retried by the sync
+            c = conn()
+            try:
+                async with sync_mgr().push_lock:
+                    cid = db.client_id(c)
+                    if body.seen:
+                        await seenpush.push(c, app.state.http, cid, [key])
+                    else:
+                        await seenpush.unpush(c, app.state.http, cid, [key])
+            except Exception as e:  # noqa: BLE001
+                log.warning("seen mark not synced to Plex: %s", safe_error(e))
+            finally:
+                c.close()
         engine().invalidate()
         return {"ok": True}
 

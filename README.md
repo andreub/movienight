@@ -43,6 +43,7 @@ The UI can run without a backend in mock mode at http://localhost:8080/?mock=1.
 | `MOVIENIGHT_TMDB_TOKEN` | empty | TMDB v4 bearer token (`eyJ...`) or v3 API key; empty = degraded mode |
 | `MOVIENIGHT_PLEX_TOKEN` | empty | Optional pre-set Plex token (otherwise PIN login in the UI) |
 | `MOVIENIGHT_SYNC_HOURS` | `6` | Background sync interval |
+| `MOVIENIGHT_PLEX_PUSH_SEEN` | off | `1`/`true`/`yes`: marks films you flag "seen it" as played on your Plex servers (writes to your Plex account) |
 | `MOVIENIGHT_PORT` | `8080` | Compose only: host port |
 | `TZ` | `Europe/Madrid` | Compose only: container timezone |
 

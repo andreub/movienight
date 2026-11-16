@@ -107,6 +107,18 @@ MIGRATIONS = [
         created_at TEXT NOT NULL
     );
     """,
+    # 4: Plex items this app itself marked played because of a "seen it" mark (MOVIENIGHT_PLEX_PUSH_SEEN).
+    # Only these are ever unscrobbled; a row whose `seen` mark is gone is a pending unscrobble.
+    """
+    CREATE TABLE IF NOT EXISTS seen_pushes (
+        key TEXT NOT NULL,              -- seen.key
+        server_id TEXT NOT NULL,
+        rating_key TEXT NOT NULL,
+        pushed_at TEXT NOT NULL,
+        PRIMARY KEY (key, server_id, rating_key)
+    );
+    CREATE INDEX IF NOT EXISTS seen_pushes_item ON seen_pushes(server_id, rating_key);
+    """,
 ]
 
 
