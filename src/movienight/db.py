@@ -119,6 +119,20 @@ MIGRATIONS = [
     );
     CREATE INDEX IF NOT EXISTS seen_pushes_item ON seen_pushes(server_id, rating_key);
     """,
+    # 5: AI chat token usage, aggregated per UTC calendar month and served model (spending quota).
+    """
+    CREATE TABLE IF NOT EXISTS ai_usage (
+        month TEXT NOT NULL,            -- YYYY-MM (UTC)
+        model TEXT NOT NULL,
+        input INTEGER NOT NULL DEFAULT 0,
+        output INTEGER NOT NULL DEFAULT 0,
+        cache_write INTEGER NOT NULL DEFAULT 0,
+        cache_read INTEGER NOT NULL DEFAULT 0,
+        requests INTEGER NOT NULL DEFAULT 0,
+        questions INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (month, model)
+    );
+    """,
 ]
 
 

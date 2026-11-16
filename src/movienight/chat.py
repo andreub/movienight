@@ -9,6 +9,8 @@ SSE contract (POST /api/chat, text/event-stream, JSON `data:` payloads):
   movies  {"items": [Movie + "pitch", ...]}   the final recommendation (Movie = /api/recommendations item)
   error   {"detail": str}                     friendly message, never a stack trace or secret
   done    {}                                  always the last event
+A question asked once the monthly budget is spent is answered with a plain `text` event (no API call).
+GET /api/chat/status also carries usage: {month, spent_usd, budget_usd (null = no limit), questions, model, exhausted}.
 """
 from __future__ import annotations
 
@@ -16,7 +18,9 @@ import asyncio
 import json
 import logging
 import os
+import math
 import unicodedata
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
@@ -86,6 +90,100 @@ MAX_MESSAGES = 40
 MAX_CONTENT = 4000
 RESULT_LIMIT = 30
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
+
+# =========================================================================== usage + budget
+
+# List prices in USD per 1M tokens (input, output) as of 2026-11. The figure derived from them is an
+# ESTIMATE of spend, not the invoice. Matched by longest prefix; an unknown model is priced as the most
+# expensive row so spend is never under-counted. Cache writes cost 1.25x input, cache reads 0.1x.
+PRICES: dict[str, tuple[float, float]] = {
+    "claude-fable-5-2": (8.0, 40.0),
+    "claude-opus-5-5": (4.0, 20.0),
+    "claude-opus-5": (5.0, 25.0),
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-sonnet-5-5": (2.0, 10.0),
+    "claude-sonnet-5": (2.0, 10.0),
+    "claude-haiku-5-5": (0.10, 0.50),
+    "claude-haiku-4-5": (1.0, 5.0),
+}
+CACHE_WRITE_MULT = 1.25
+CACHE_READ_MULT = 0.1
+DEFAULT_BUDGET_USD = 2.0
+
+
+def price_for(model: str) -> tuple[float, float]:
+    best = max((k for k in PRICES if (model or "").startswith(k)), key=len, default=None)
+    return PRICES[best] if best else max(PRICES.values())
+
+
+def estimate_cost(model: str, input: int = 0, output: int = 0, cache_write: int = 0, cache_read: int = 0) -> float:
+    pin, pout = price_for(model)
+    return (input * pin + output * pout + cache_write * pin * CACHE_WRITE_MULT
+            + cache_read * pin * CACHE_READ_MULT) / 1_000_000
+
+
+def monthly_budget() -> float:
+    """USD per month; 0 = no limit. Unset, blank or invalid (non-number, negative, inf) = default."""
+    raw = (os.environ.get("MOVIENIGHT_AI_MONTHLY_BUDGET_USD") or "").strip()
+    if not raw:
+        return DEFAULT_BUDGET_USD
+    try:
+        v = float(raw)
+    except ValueError:
+        return DEFAULT_BUDGET_USD
+    return v if math.isfinite(v) and v >= 0 else DEFAULT_BUDGET_USD
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)       # patched in tests
+
+
+def current_month() -> str:
+    return _now().strftime("%Y-%m")
+
+
+def record_usage(conn, model: str, usage: Any, *, new_question: bool) -> None:
+    def n(name):
+        v = getattr(usage, name, 0)
+        return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else 0
+
+    conn.execute(
+        "INSERT INTO ai_usage(month,model,input,output,cache_write,cache_read,requests,questions) "
+        "VALUES(?,?,?,?,?,?,1,?) ON CONFLICT(month,model) DO UPDATE SET "
+        "input=input+excluded.input, output=output+excluded.output, cache_write=cache_write+excluded.cache_write, "
+        "cache_read=cache_read+excluded.cache_read, requests=requests+1, questions=questions+excluded.questions",
+        (current_month(), model or "unknown", n("input_tokens"), n("output_tokens"),
+         n("cache_creation_input_tokens"), n("cache_read_input_tokens"), 1 if new_question else 0))
+    conn.commit()
+
+
+def month_usage(conn) -> dict:
+    month = current_month()
+    spent, questions = 0.0, 0
+    for r in conn.execute("SELECT * FROM ai_usage WHERE month=?", (month,)):
+        spent += estimate_cost(r["model"], r["input"], r["output"], r["cache_write"], r["cache_read"])
+        questions += r["questions"]
+    budget = monthly_budget()
+    return {"month": month, "spent_usd": round(spent, 4), "budget_usd": round(budget, 2) if budget else None,
+            "questions": questions, "model": model_name(), "exhausted": bool(budget) and spent >= budget}
+
+
+def budget_message(budget: float) -> str:
+    return (f"The chat has used its budget for this month (${budget:.2f}). It comes back on the 1st, "
+            "or raise MOVIENIGHT_AI_MONTHLY_BUDGET_USD.")
+
+
+def _usage_conn(request: Request):
+    return request.app.state.engine._connect()
+
+
+def _db_call(request: Request, fn):
+    conn = _usage_conn(request)
+    try:
+        return fn(conn)
+    finally:
+        conn.close()
 
 
 def model_name() -> str:
@@ -430,8 +528,19 @@ async def agent_events(request: Request, history: list[dict]) -> AsyncIterator[t
 
 async def _loop(request: Request, history: list[dict]) -> AsyncIterator[tuple[str, dict]]:
     model = model_name()
+    budget = monthly_budget()
+    if budget:
+        try:
+            state = await asyncio.to_thread(_db_call, request, month_usage)
+        except Exception as e:  # noqa: BLE001 - a broken meter must not take the chat down
+            log.warning("usage lookup failed: %s", type(e).__name__)
+            state = {"exhausted": False}
+        if state["exhausted"]:
+            yield "text", {"delta": budget_message(budget)}
+            return
     client = make_client()
     messages: list = list(history)
+    counted = False
     st, dismissed = await asyncio.to_thread(_load_context, request)
     json_failures = 0
     try:
@@ -445,6 +554,14 @@ async def _loop(request: Request, history: list[dict]) -> AsyncIterator[tuple[st
                             yield "text", {"delta": event.text}
                     msg = await stream.get_final_message()
                 json_failures = 0
+                try:
+                    served = getattr(msg, "model", None)
+                    await asyncio.to_thread(_db_call, request, lambda c: record_usage(
+                        c, served if isinstance(served, str) and served else model,
+                        getattr(msg, "usage", None), new_question=not counted))
+                    counted = True
+                except Exception as e:  # noqa: BLE001
+                    log.warning("usage record failed: %s", type(e).__name__)
             except ValueError:
                 # tool input JSON the SDK could not parse at all: re-issue the turn (bounded)
                 json_failures += 1
@@ -502,8 +619,12 @@ def _sse(event: str, data: dict) -> bytes:
 
 
 @router.get("/api/chat/status")
-def chat_status():
-    return {"enabled": chat_enabled(), "model": model_name()}
+def chat_status(request: Request):
+    try:
+        usage = _db_call(request, month_usage)
+    except Exception:  # noqa: BLE001
+        usage = None
+    return {"enabled": chat_enabled(), "model": model_name(), "usage": usage}
 
 
 def _validate(body: Any) -> list[dict]:

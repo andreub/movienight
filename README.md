@@ -94,6 +94,11 @@ With `ANTHROPIC_API_KEY` set, an "Ask" tab lets you describe what you feel like 
 answers with films from your Plex library. Only film metadata, your ratings and the chat text are
 sent to the Anthropic API. `MOVIENIGHT_AI_MODEL` changes the model.
 
+A monthly spending quota protects your tokens: `MOVIENIGHT_AI_MONTHLY_BUDGET_USD` (default `2.00`, `0` = no
+limit). Usage is counted per UTC month and priced from list prices, so it is an estimate, not the invoice.
+Once it is reached, new questions get a short "budget used" reply (no API call) until the 1st. A hard cap
+can also be set on the Anthropic Console side.
+
 ## Privacy
 
 Your Letterboxd export and the Plex token are stored only in the local data volume

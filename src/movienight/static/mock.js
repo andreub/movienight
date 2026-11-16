@@ -281,7 +281,12 @@ export async function handle(method, path, p, body) {
     case 'GET /api/me':
       return ok({ auth: false, name: null });
     case 'GET /api/chat/status':
-      return ok({ enabled: !NOCHAT, model: 'claude-sonnet-5' });
+      return ok({
+        enabled: !NOCHAT, model: 'claude-sonnet-5',
+        usage: params.get('mock') === 'budget'
+          ? { month: '2026-11', spent_usd: 2.01, budget_usd: 2, questions: 61, model: 'claude-sonnet-5', exhausted: true }
+          : { month: '2026-11', spent_usd: 0.0123, budget_usd: 2, questions: 14, model: 'claude-sonnet-5', exhausted: false },
+      });
     case 'GET /api/profile':
       return lbState.watched ? ok(profile()) : err(409, 'Import your Letterboxd history first.');
     case 'POST /api/plex/pin':

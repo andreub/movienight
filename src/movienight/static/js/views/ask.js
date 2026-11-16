@@ -53,6 +53,7 @@ export function mount(root) {
   let live = null; // refs for the assistant message currently streaming
 
   const newChat = h('button', { type: 'button', class: 'btn btn--ghost btn--sm', onclick: () => { clearChat(); input.focus(); } }, icon('plus'), 'New chat');
+  const usageLine = h('p', { class: 'ask__usage', hidden: true });
   const lede = h('div', { class: 'ask__empty' });
   const thread = h('div', { class: 'thread', role: 'log', 'aria-label': 'Conversation', 'aria-live': 'polite' });
   const input = h('textarea', {
@@ -65,7 +66,7 @@ export function mount(root) {
     h('div', { class: 'composer__inner' }, input, sendBtn, stopBtn));
   const page = h('div', { class: 'ask' },
     h('div', { class: 'ask__top' }, h('h1', { class: 'page-title', text: 'Ask' }), newChat),
-    lede, thread, composer);
+    usageLine, lede, thread, composer);
   root.append(page);
 
   // ---- composer ----
@@ -205,6 +206,7 @@ export function mount(root) {
       const wasFocused = document.activeElement === document.body;
       renderAll();
       follow();
+      refreshUsage();
       if (wasFocused && matchMedia('(pointer: fine)').matches) input.focus();
     }
   });
@@ -214,6 +216,19 @@ export function mount(root) {
     h('p', { class: 'ask__lede', text: 'What kind of night is it?' }),
     h('p', { class: 'help', text: 'Describe the mood, the time you have or who is watching. I will pick from what is on your Plex servers.' }),
     h('div', { class: 'starters' }, STARTERS.map((s) => h('button', { type: 'button', class: 'chip', onclick: () => send(s) }, s))));
+
+  // ---- usage (this month's estimated spend) ----
+  const money = (n) => `$${Number(n).toFixed(2)}`;
+  function paintUsage(u) {
+    if (!alive || !u) return;
+    const q = `${u.questions} question${u.questions === 1 ? '' : 's'}`;
+    usageLine.hidden = false;
+    usageLine.classList.toggle('is-exhausted', Boolean(u.exhausted));
+    usageLine.textContent = u.exhausted
+      ? `Monthly budget used (${money(u.spent_usd)} of ${money(u.budget_usd)}). Ask comes back on the 1st.`
+      : `This month: ${money(u.spent_usd)}${u.budget_usd ? ` of ${money(u.budget_usd)}` : ''} \u00b7 ${q}`;
+  }
+  const refreshUsage = () => getChatStatus().then((c) => paintUsage(c.usage)).catch(() => {});
 
   // ---- availability ----
   page.classList.add('is-loading');
@@ -231,6 +246,7 @@ export function mount(root) {
       return;
     }
     composer.hidden = false;
+    paintUsage(c.usage);
     renderAll();
     if (chat.messages.length) requestAnimationFrame(() => window.scrollTo(0, document.documentElement.scrollHeight));
   });
