@@ -142,7 +142,9 @@ function becauseItem(b) {
       h('p', { class: 'because__title' }, b.title, b.year ? h('span', { class: 'because__year', text: ` ${b.year}` }) : null),
       h('p', { class: 'because__rating' },
         stars(b.my_rating),
-        b.liked ? h('span', { class: 'liked', title: 'Liked' }, icon('heart'), h('span', { class: 'sr-only', text: 'Liked' })) : null),
+        b.liked ? h('span', { class: 'liked', title: 'Liked' }, icon('heart'), h('span', { class: 'sr-only', text: 'Liked' })) : null,
+        b.my_vote === 2 ? h('span', { class: 'because__vote' }, h('span', { class: 'liked' }, icon('heart')), 'You loved it') : null,
+        b.my_vote === 1 ? h('span', { class: 'because__vote' }, icon('thumbup'), 'You liked it') : null),
       b.why ? h('p', { class: 'because__why', text: b.why }) : null));
 }
 

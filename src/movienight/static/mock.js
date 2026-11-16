@@ -51,8 +51,9 @@ const params = new URLSearchParams(location.search);
 const FRESH = params.get('mock') === 'fresh';
 const NOFB = params.get('mock') === 'nofb'; // no accuracy check or outcomes yet
 const NOCHAT = params.get('mock') === 'nochat'; // AI chat switched off
-const votes = new Map();
+const votes = new Map(); // id -> -1 | 1 | 2 (love)
 const seenSet = new Set(); // films marked "seen it" in this session
+const seenAt = new Map(); // id -> when it was marked (for the "Already marked" list, newest first)
 
 // Extra well-known films, only for the "Seen these?" triage screen (not part of Browse or Tonight).
 const CLASSICS = ['The Matrix', 'Fargo', 'The Fellowship of the Ring', 'Pulp Fiction', 'Jurassic Park', 'Forrest Gump', 'Goodfellas', 'Alien', 'Back to the Future', 'The Shining',
@@ -66,6 +67,9 @@ const triage = Array.from({ length: 84 }, (_, i) => {
     on_watchlist: false, watched: false, my_rating: null, liked: false, dismissed_until: null, plex: [],
   };
 }).filter((m) => m.year <= new Date().getFullYear() - 3);
+// A few films marked seen earlier (no verdict yet, one thumb up), for the "Already marked" list.
+if (!FRESH) triage.slice(40, 46).forEach((m, i) => { seenSet.add(m.id); seenAt.set(m.id, Date.now() - (i + 1) * 86400e3); });
+if (!FRESH) votes.set(triage[41].id, 1);
 
 function reasonsFor(m, i) {
   const r = [];
@@ -151,6 +155,7 @@ function because(m) {
     { title: 'Heat', year: 1995, my_rating: 4.5, liked: true, poster_url: null, why: 'Similar crime drama you loved' },
     { title: m.directors[0] === 'Denis Villeneuve' ? 'Sicario' : 'Collateral', year: 2004, my_rating: 4, liked: false, poster_url: null, why: m.directors[0] === 'Denis Villeneuve' ? 'Same director' : 'Same mood and pacing' },
     { title: 'Memories of Murder', year: 2003, my_rating: 5, liked: true, poster_url: null, why: 'Fans of both overlap a lot' },
+    { title: 'Thief', year: 1981, my_rating: null, liked: false, my_vote: 2, poster_url: null, why: 'Same director (Michael Mann)' },
   ];
 }
 
@@ -179,6 +184,7 @@ function profile() {
 function feedback() {
   const up = [...votes.values()].filter((v) => v === 1).length;
   const down = [...votes.values()].filter((v) => v === -1).length;
+  const love = [...votes.values()].filter((v) => v === 2).length;
   const outcomes = NOFB ? [] : [
     ['Prisoners', 2013, 87, 4.5, true, '2026-11-06', 'hit'],
     ['Annihilation', 2018, 74, 2.5, false, '2026-11-03', 'miss'],
@@ -190,7 +196,7 @@ function feedback() {
     outcomes,
     summary: NOFB ? { count: 0, rated: 0, hits: 0, misses: 0, mean_rating_of_picks: null, user_mean_rating: 3.4 }
       : { count: 5, rated: 4, hits: 2, misses: 1, mean_rating_of_picks: 3.6, user_mean_rating: 3.4 },
-    votes: { up: up + (NOFB ? 0 : 5), down: down + (NOFB ? 0 : 2) },
+    votes: { up: up + (NOFB ? 0 : 5), down: down + (NOFB ? 0 : 2), love: love + (NOFB ? 0 : 1) },
     backtest: NOFB ? { films: 0, spearman: null, top_quintile_hit_rate: null, base_rate: null, weights: {}, default_weights: {}, tuned: false, computed_at: null }
       : { films: 230, spearman: 0.31, top_quintile_hit_rate: 0.55, base_rate: 0.3, weights: { genre: 1.2, director: 0.9, cast: 1 }, default_weights: { genre: 1, director: 1, cast: 1 }, tuned: true, computed_at: new Date(Date.now() - 3 * 86400e3).toISOString() },
   };
@@ -251,12 +257,20 @@ export async function handle(method, path, p, body) {
       dismissed.delete(id);
       return ok({ ok: true });
     case 'POST /api/movies/:id/feedback':
+      if (![-1, 0, 1, 2].includes(body.vote)) return err(422, 'Invalid vote');
       if (body.vote) votes.set(id, body.vote); else votes.delete(id);
       return ok({ ok: true });
     case 'POST /api/movies/:id/seen':
       if (!movies.some((x) => x.id === id) && !triage.some((x) => x.id === id)) return err(404, 'Movie not found.');
-      if (body.seen) seenSet.add(id); else seenSet.delete(id);
+      if (body.vote !== undefined && body.vote !== null && ![-1, 0, 1, 2].includes(body.vote)) return err(422, 'Invalid vote');
+      if (body.seen) { if (!seenSet.has(id)) seenAt.set(id, Date.now()); seenSet.add(id); } else { seenSet.delete(id); seenAt.delete(id); }
+      if (body.vote !== undefined && body.vote !== null) { if (body.vote) votes.set(id, body.vote); else votes.delete(id); }
       return ok({ ok: true });
+    case 'GET /api/seen-marked': {
+      const list = [...movies, ...triage].filter((m) => seenSet.has(m.id)).sort((a, b) => seenAt.get(b.id) - seenAt.get(a.id));
+      const offset = Number(p.offset) || 0, limit = Number(p.limit) || 60;
+      return ok({ items: list.slice(offset, offset + limit).map(view), total: list.length });
+    }
     case 'GET /api/seen-candidates': {
       const list = triage.filter((m) => !seenSet.has(m.id)).sort((a, b) => b.tmdb_votes - a.tmdb_votes);
       const offset = Number(p.offset) || 0, limit = Number(p.limit) || 60;

@@ -262,3 +262,44 @@ def test_full_sync_backfills_existing_marks(tmp_path, caplog):
         by = {m["title"]: m for m in c.get("/api/recommendations", params={"include_watched": True}).json()["items"]}
         assert by["Zeta Noir"]["seen_here"] is True and by["Alpha Heist"]["seen_here"] is False
     assert "SERVER-SECRET" not in caplog.text and "ENV-PLEX-TOKEN" not in caplog.text
+
+
+def votes(client):
+    with db.session(client.cfg.db_path) as c:
+        return {r[0]: r[1] for r in c.execute("SELECT key, vote FROM votes")}
+
+
+def test_seen_with_vote_pushes_and_undo_unscrobbles(push_client):
+    c = push_client
+    cid = mid(c, "Crime Two")
+    assert c.post(f"/api/movies/{cid}/seen", json={"seen": True, "vote": 2}).json() == {"ok": True}
+    [req] = c.fake.scrobbles()
+    assert dict(req.url.params)["key"] == "11"
+    assert pushes(c) == [("tmdb:111", "m1", "11")] and votes(c) == {"tmdb:111": 2}
+    c.post(f"/api/movies/{cid}/seen", json={"seen": True, "vote": -1})     # re-rating: nothing new to push
+    assert len(c.fake.scrobbles()) == 1 and votes(c) == {"tmdb:111": -1}
+    c.post(f"/api/movies/{cid}/seen", json={"seen": False, "vote": 0})
+    assert len(c.fake.scrobbles("/:/unscrobble")) == 1
+    assert pushes(c) == [] and seen_keys(c) == set() and votes(c) == {}
+
+
+def test_seen_with_vote_survives_plex_error(push_client):
+    c = push_client
+    c.fake.down = True
+    r = c.post(f"/api/movies/{mid(c, 'Rom Com')}/seen", json={"seen": True, "vote": 1})
+    assert r.status_code == 200
+    assert seen_keys(c) == {"tmdb:112"} and votes(c) == {"tmdb:112": 1} and pushes(c) == []
+
+
+def test_seen_with_vote_flag_off_makes_no_plex_call(cfg):
+    app, fake = make_client(cfg, False)
+    with TestClient(app) as c:
+        seed(cfg.db_path)
+        app.state.engine.invalidate()
+        c.cfg = cfg
+        cid = mid(c, "Crime Two")
+        c.post(f"/api/movies/{cid}/seen", json={"seen": True, "vote": 2})
+        c.post(f"/api/movies/{cid}/seen", json={"seen": False, "vote": 0})
+        c.post(f"/api/movies/{mid(c, 'Rom Com')}/seen", json={"seen": True, "vote": -1})
+        assert fake.calls == [] and pushes(c) == []
+        assert seen_keys(c) == {"tmdb:112"} and votes(c) == {"tmdb:112": -1}

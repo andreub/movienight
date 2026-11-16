@@ -13,9 +13,10 @@ Model in short
 * A candidate's score is a weighted sum of: feature affinities (idf-weighted so that "Drama"
   does not swamp rarer features), a collaborative signal (TMDB recommendations of loved
   films), a quality prior (Bayesian average), a watchlist boost and a small freshness boost.
-* Thumbs (a vote per film, see `Cand.vote`) are weaker evidence than a Letterboxd rating: a voted
-  film that has no real rating enters the profile as a synthetic history entry with a fixed
-  signal of +/-`VOTE_SIGNAL`, and gets a direct boost / strong penalty. Once the film has a
+* Votes (one per film, see `Cand.vote`: -1 thumb down, 1 thumb up, 2 "love" / a favourite) are
+  weaker evidence than a Letterboxd rating: a voted film that has no real rating enters the
+  profile as a synthetic history entry with a fixed signal (+/-`VOTE_SIGNAL`, `LOVE_SIGNAL` for a
+  love, about a 5-star liked film), and gets a direct boost / strong penalty. Once the film has a
   rating, the vote is ignored by the model.
 * `backtest()` validates and tunes the component weights with a leave-one-out evaluation over
   the rated films (see its docstring).
@@ -46,6 +47,9 @@ DEFAULT_WEIGHTS = {**{t: WEIGHT[t] * GAIN[t] for t in FEATURE_TYPES}, "similar":
 VOTE_SIGNAL = 0.6        # |signal| of a thumb for the profile (a 5-star film is ~0.8, a liked unrated one 0.65)
 VOTE_UP_BOOST = 0.25     # direct raw-score boost of a thumbs-up film
 VOTE_DOWN_PENALTY = 0.7  # direct raw-score penalty of a thumbs-down film
+LOVE = 2                 # vote value of a "love" (a favourite): stronger than a thumb up
+LOVE_SIGNAL = 0.95       # |signal| of a love (a liked 5-star film at a 3.6 mean is ~1.0)
+VOTE_LOVE_BOOST = 0.4    # direct raw-score boost of a loved film
 FRESH_DAYS = 45
 CAST_TOP = 8
 LOVED = 0.25            # signal above which a film counts as "loved" for collaborative reasoning
@@ -67,7 +71,7 @@ class Hist:
     recs: list = field(default_factory=list)
     poster: str | None = None
     runtime: int | None = None
-    vote: int = 0                       # thumb (+1/-1); only meaningful on synthetic entries
+    vote: int = 0                       # vote (-1/1/2); only meaningful on synthetic entries
     synthetic: bool = False             # built from a thumb, not from Letterboxd
 
 
@@ -88,7 +92,7 @@ class Cand:
     my_rating: float | None = None
     liked: bool = False
     on_watchlist: bool = False
-    vote: int | None = None             # thumb: 1, -1 or None
+    vote: int | None = None             # -1 thumb down, 1 thumb up, 2 love, or None
     seen_local: bool = False            # marked "seen it" in this app (neutral: not a taste signal)
     dkey: str = ""                      # stable library key (movies.dkey)
     # computed
@@ -114,7 +118,7 @@ class FeatStat:
     n: int = 0
     rn: int = 0             # rated films
     rsum: float = 0.0
-    best: tuple | None = None   # (signal, title, rating, liked)
+    best: tuple | None = None   # (signal, title, rating, liked, vote)
     aff: float = 0.0
 
 
@@ -127,7 +131,7 @@ class Profile:
     signals: list = field(default_factory=list)        # (Hist, signal, weight)
     stats: dict = field(default_factory=lambda: {t: {} for t in FEATURE_TYPES})
     rank: dict = field(default_factory=dict)            # type -> feature -> rank by affinity (0 = best)
-    vote_hists: list = field(default_factory=list)      # synthetic entries built from thumbs
+    vote_hists: list = field(default_factory=list)      # synthetic entries built from votes
 
 
 # --------------------------------------------------------------------------- features
@@ -151,7 +155,7 @@ def features(meta: dict | None) -> dict:
 def film_signal(h: Hist, mean: float, now: datetime) -> tuple[float, float]:
     """Return (signal in [-1, 1], recency weight in [0.7, 1])."""
     if h.synthetic:
-        s = VOTE_SIGNAL * (1 if h.vote > 0 else -1)
+        s = LOVE_SIGNAL if h.vote >= LOVE else VOTE_SIGNAL * (1 if h.vote > 0 else -1)
     elif h.rating is not None:
         s = max(-1.0, min(1.0, (h.rating - mean) / 2.0))
         if h.liked:
@@ -192,7 +196,7 @@ def build_profile(history: list[Hist], now: datetime | None = None) -> Profile:
                     st.rn += 1
                     st.rsum += h.rating
                 if st.best is None or s > st.best[0]:
-                    st.best = (s, h.title, h.rating, h.liked)
+                    st.best = (s, h.title, h.rating, h.liked, h.vote if h.synthetic else 0)
     for t, table in p.stats.items():
         for st in table.values():
             st.aff = st.ssum / (st.w + SHRINK[t])
@@ -280,7 +284,7 @@ def collab_index(history: list[Hist], prof: Profile) -> dict:
 
 
 def vote_hists(history: list[Hist], cands: list[Cand]) -> list[Hist]:
-    """Synthetic history entries for thumbed candidates that have no real Letterboxd rating.
+    """Synthetic history entries for voted candidates that have no real Letterboxd rating.
 
     A film with a rating (on the candidate or in the history) is skipped: the rating wins.
     """
@@ -290,8 +294,19 @@ def vote_hists(history: list[Hist], cands: list[Cand]) -> list[Hist]:
         if not c.vote or c.my_rating is not None or (c.tmdb_id and c.tmdb_id in rated):
             continue
         out.append(Hist(key=-c.id, title=c.title, year=c.year, tmdb_id=c.tmdb_id, watched=True,
-                        meta=c.meta, vote=1 if c.vote > 0 else -1, synthetic=True))
+                        meta=c.meta, vote=_vote_value(c.vote), synthetic=True))
     return out
+
+
+def _vote_value(v: int) -> int:
+    return LOVE if v >= LOVE else 1 if v > 0 else -1
+
+
+def vote_boost(v: int | None) -> float:
+    """Direct raw-score effect of a vote on the voted film itself."""
+    if not v:
+        return 0.0
+    return VOTE_LOVE_BOOST if v >= LOVE else VOTE_UP_BOOST if v > 0 else -VOTE_DOWN_PENALTY
 
 
 def component_values(feats: dict, meta: dict, tmdb_id: int | None, table_of, idf: dict, loved_by: list):
@@ -338,7 +353,7 @@ def score_candidates(history: list[Hist], cands: list[Cand], prof: Profile | Non
         comps["fresh"] = (fresh, None)
         vote = 0.0
         if c.vote and c.my_rating is None:
-            vote = VOTE_UP_BOOST if c.vote > 0 else -VOTE_DOWN_PENALTY
+            vote = vote_boost(c.vote)
         comps["vote"] = (vote, None)
         c.comps = comps
         c.raw = sum(v for v, _ in comps.values())
@@ -421,8 +436,9 @@ def reasons_for(c: Cand, prof: Profile, limit: int = 4) -> list[dict]:
         elif st.n >= 2:
             add(v, "director", f"You've watched {st.n} films by {name}")
         elif st.best:
-            _, title, rating, liked = st.best
-            tail = f" (you gave it {stars(rating)})" if rating is not None else " (you liked it)" if liked else ""
+            _, title, rating, liked, vote = st.best
+            tail = (f" (you gave it {stars(rating)})" if rating is not None else " (you loved it)" if vote >= LOVE
+                    else " (you liked it)" if liked or vote > 0 else "")
             add(v, "director", f"From {name}, who directed {title}{tail}")
 
     v, detail = comps.get("cast", (0, []))
@@ -432,7 +448,7 @@ def reasons_for(c: Cand, prof: Profile, limit: int = 4) -> list[dict]:
         if st.n >= 2:
             add(v, "cast", f"You've enjoyed {st.n} films with {name}")
         elif st.best:
-            add(v, "cast", f"Stars {name}, who you liked in {st.best[1]}")
+            add(v, "cast", f"Stars {name}, who you {'loved' if st.best[4] >= LOVE else 'liked'} in {st.best[1]}")
 
     v, detail = comps.get("genre", (0, []))
     if v > MIN_REASON and detail:
@@ -468,7 +484,9 @@ def reasons_for(c: Cand, prof: Profile, limit: int = 4) -> list[dict]:
 
     if c.vote is None:
         liked_vote = _similar_vote(c, prof)
-        if liked_vote:
+        if liked_vote and liked_vote.vote >= LOVE:
+            add(0.06, "similar", f"Similar to {liked_vote.title}, which you loved")
+        elif liked_vote:
             add(0.04, "similar", f"Similar to {liked_vote.title}, which you gave a \U0001F44D")
 
     items.sort(key=lambda x: -x[0])
@@ -483,9 +501,9 @@ def reasons_for(c: Cand, prof: Profile, limit: int = 4) -> list[dict]:
 
 
 def _similar_vote(c: Cand, prof: Profile) -> Hist | None:
-    """A thumbs-up film that shares a director, two cast members or three keywords with `c`."""
+    """A liked or loved film (loved first) sharing a director, two cast members or three keywords with `c`."""
     cf = c.feats or features(c.meta)
-    for h in prof.vote_hists:
+    for h in sorted(prof.vote_hists, key=lambda h: -h.vote):
         if h.vote <= 0 or (c.tmdb_id and h.tmdb_id == c.tmdb_id):
             continue
         hf = features(h.meta)
@@ -502,12 +520,16 @@ def _short_count(n: int) -> str:
 # --------------------------------------------------------------------------- "because"
 
 def because(c: Cand, history: list[Hist], prof: Profile, limit: int = 6) -> list[dict]:
-    """Films from the user's history that explain this recommendation."""
+    """Films from the user's history (and liked / loved library films) that explain this recommendation."""
     out = []
     cfeat = c.feats or features(c.meta)
     cdirs, ccast, ckw = set(cfeat["director"]), set(cfeat["cast"]), set(cfeat["keyword"])
     sig = {h.key: s * w for h, s, w in prof.signals}
-    for h in history:
+    voted = [h for h in prof.vote_hists
+             if h.vote > 0 and h.key != -c.id and not (c.tmdb_id and h.tmdb_id == c.tmdb_id)]
+    for h in voted:
+        sig[h.key] = film_signal(h, prof.mean_rating, datetime.now(timezone.utc))[0]
+    for h in list(history) + voted:
         if not h.watched or h.key not in sig or sig[h.key] <= 0.1:
             continue
         hf = features(h.meta)
@@ -526,7 +548,7 @@ def because(c: Cand, history: list[Hist], prof: Profile, limit: int = 6) -> list
         if why:
             out.append((strength * sig[h.key], {
                 "title": h.title, "year": h.year, "my_rating": h.rating, "liked": h.liked,
-                "poster_url": h.poster, "why": why,
+                "my_vote": h.vote if h.synthetic else None, "poster_url": h.poster, "why": why,
             }))
     out.sort(key=lambda x: -x[0])
     return [o for _, o in out[:limit]]

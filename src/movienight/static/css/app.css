@@ -495,6 +495,7 @@ main > .tonight { max-width: none; }
 .because__rating { display: flex; align-items: center; gap: 8px; }
 .because__why { color: var(--muted); font-size: .875rem; }
 .liked { color: var(--curtain); display: inline-flex; }
+.because__vote { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: .875rem; }
 
 .facts { display: grid; gap: 12px; padding: 16px; border-radius: var(--r-m); background: var(--ink); }
 .facts > div { display: grid; grid-template-columns: 9.5em 1fr; gap: 12px; }
@@ -673,6 +674,11 @@ button.menu__item { width: 100%; background: none; border: 0; text-align: left; 
 .votes__btn--up[aria-pressed="true"] { background: var(--bulb); border-color: var(--bulb); }
 .votes__btn--down[aria-pressed="true"] { background: var(--curtain); border-color: var(--curtain); }
 .votes__btn[aria-pressed="true"] svg { fill: currentColor; }
+/* love (a favourite): the heart keeps the app's "liked" red; chosen, it gets the amber-to-curtain fill */
+.votes__btn--love[aria-pressed="false"] { color: var(--curtain); }
+.votes__btn--love[aria-pressed="true"], .rate__btn--love[aria-pressed="true"] {
+  background: linear-gradient(135deg, var(--bulb), var(--curtain)); border-color: transparent; color: var(--bulb-ink);
+}
 .pick__tail { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; }
 .pick__tail .btn--quiet { margin-right: auto; }
 @media (min-width: 600px) { .pick__tail .btn--quiet { margin-right: 0; } }
@@ -685,6 +691,7 @@ button.menu__item { width: 100%; background: none; border: 0; text-align: left; 
 .votes--compact .votes__btn .icon { width: 18px; height: 18px; }
 .votes--compact .votes__btn--up[aria-pressed="true"] { background: var(--bulb); }
 .votes--compact .votes__btn--down[aria-pressed="true"] { background: var(--curtain); }
+.votes--compact .votes__btn--love[aria-pressed="true"] { background: linear-gradient(135deg, var(--bulb), var(--curtain)); }
 
 .btn--sm { min-height: 44px; padding: 0 16px; font-size: .9375rem; }
 
@@ -899,24 +906,61 @@ html.kb-open .composer { bottom: var(--kb); padding-bottom: 8px; }
   padding: 10px 0; background: var(--ink);
 }
 .triage__count { font-weight: 700; color: var(--bulb); }
-.triage__grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 8px; margin-top: 8px; }
-@media (min-width: 600px) { .triage__grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 16px 12px; } }
-@media (min-width: 1100px) { .triage__grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); } }
-.tile {
-  position: relative; display: grid; gap: 2px; width: 100%; padding: 0; text-align: left; align-content: start;
-  background: none; border: 0; color: inherit; border-radius: var(--r-s);
-}
+.triage__tabs { margin-top: 4px; flex-wrap: wrap; }
+/* phones: two columns, so each of the four verdict buttons stays at least 40px wide (360px screens) */
+.triage__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 8px; margin-top: 8px; }
+@media (min-width: 600px) { .triage__grid { grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 20px 12px; } }
+@media (min-width: 1100px) { .triage__grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); } }
+.tile { position: relative; display: grid; gap: 2px; align-content: start; }
+.tile__poster { position: relative; }
 .tile .poster { transition: opacity .15s, outline-color .15s; outline: 3px solid transparent; outline-offset: -3px; }
-.tile:hover .poster { box-shadow: 0 10px 24px rgb(0 0 0 / .45); }
 .tile__title { font-size: .8125rem; font-weight: 700; line-height: 1.2; margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .tile__year { font-size: .75rem; color: var(--muted); }
-.tile__check {
-  position: absolute; top: 6px; right: 6px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
-  background: rgb(27 21 48 / .75); color: transparent; border: 2px solid rgb(244 238 227 / .7);
-  transition: background-color .15s, color .15s, border-color .15s;
+.tile__lb .stars { color: var(--bulb); }
+.tile__verdict { font-weight: 700; }
+.tile__badge {
+  position: absolute; top: 6px; right: 6px; display: none; place-items: center; width: 30px; height: 30px; border-radius: 50%;
+  color: var(--ink); box-shadow: 0 2px 8px rgb(0 0 0 / .4);
 }
-.tile__check .icon { width: 16px; height: 16px; }
-.tile[aria-pressed="true"] .poster { opacity: .55; outline-color: var(--ok); }
-.tile[aria-pressed="true"] .tile__check { background: var(--ok); color: var(--ink); border-color: var(--ok); }
-.tile[aria-pressed="true"] .tile__title { color: var(--ok); }
+.tile__badge .icon { width: 16px; height: 16px; }
+.tile__badge svg { fill: currentColor; }
+.tile:not([data-outcome=""]) .poster { opacity: .55; }
+.tile:not([data-outcome=""]) .tile__badge { display: grid; }
+.tile[data-outcome="down"] .poster { outline-color: var(--curtain); }
+.tile[data-outcome="down"] .tile__badge { background: var(--curtain); color: var(--bulb-ink); }
+.tile[data-outcome="down"] .tile__verdict { color: var(--curtain); }
+.tile[data-outcome="seen"] .poster { outline-color: var(--ok); }
+.tile[data-outcome="seen"] .tile__badge { background: var(--ok); }
+.tile[data-outcome="seen"] .tile__badge svg { fill: none; }
+.tile[data-outcome="seen"] .tile__verdict { color: var(--ok); }
+.tile[data-outcome="up"] .poster { outline-color: var(--bulb); }
+.tile[data-outcome="up"] .tile__badge { background: var(--bulb); color: var(--bulb-ink); }
+.tile[data-outcome="up"] .tile__verdict { color: var(--bulb); }
+.tile[data-outcome="love"] .poster { outline-color: var(--bulb-hi); }
+.tile[data-outcome="love"] .tile__badge { background: linear-gradient(135deg, var(--bulb), var(--curtain)); color: var(--bulb-ink); }
+.tile[data-outcome="love"] .tile__verdict { color: var(--bulb-hi); }
+
+/* the four verdicts: one segmented bar under the poster (dividers are shadows, so they take no width) */
+.rate {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 6px;
+  border-radius: var(--r-s); overflow: hidden; background: var(--ink-2); box-shadow: inset 0 0 0 1px var(--line);
+}
+.rate__btn {
+  position: relative; display: grid; place-items: center; min-height: 44px; padding: 0; border: 0;
+  background: none; color: var(--paper); transition: background-color .15s, color .15s;
+}
+.rate__btn + .rate__btn { box-shadow: inset 1px 0 0 var(--line); }
+.rate__btn .icon { width: 20px; height: 20px; }
+.rate__btn:not([aria-pressed="true"]):hover { background: rgb(255 255 255 / .1); }
+.rate__btn:active .icon { transform: scale(.9); }
+.rate__btn:focus-visible { outline-offset: -3px; border-radius: var(--r-s); }
+.rate__btn--love { color: var(--curtain); }
+.rate__btn[aria-pressed="true"] { box-shadow: none; }
+.rate__btn[aria-pressed="true"] svg { fill: currentColor; }
+.rate__btn--down[aria-pressed="true"] { background: var(--curtain); color: var(--bulb-ink); }
+.rate__btn--seen[aria-pressed="true"] { background: var(--ok); color: var(--ink); }
+.rate__btn--seen[aria-pressed="true"] svg { fill: none; }
+.rate__btn--up[aria-pressed="true"] { background: var(--bulb); color: var(--bulb-ink); }
+/* very narrow phones: two rows of two */
+@media (max-width: 359px) { .rate { grid-template-columns: repeat(2, minmax(0, 1fr)); } .rate__btn:nth-child(3) { box-shadow: inset 0 1px 0 var(--line); } .rate__btn:nth-child(4) { box-shadow: inset 1px 1px 0 var(--line); } }
 .triage__end { display: flex; justify-content: center; padding: 24px 0 8px; }

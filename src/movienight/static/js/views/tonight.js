@@ -174,13 +174,13 @@ export function mount(root, route) {
     if (!(await setSeen(m, true, 'hero'))) return;
     const previous = data;
     const quick = (close) => h('div', { class: 'toast__votes', role: 'group', 'aria-label': 'Did you like it?' },
-      [[1, 'thumbup', 'I liked it'], [-1, 'thumbdown', "I didn't like it"]].map(([vote, name, label]) =>
+      [[1, 'thumbup', 'I liked it'], [2, 'heart', 'A favourite'], [-1, 'thumbdown', "I didn't like it"]].map(([vote, name, label]) =>
         h('button', {
           type: 'button', class: 'toast__vote', title: label, 'aria-label': label,
           onclick: async () => {
             if (!(await setVote(m, vote))) return;
             close();
-            toast(vote > 0 ? 'Noted: more like this.' : 'Noted: less like this.', { timeout: 3000 });
+            toast(vote > 1 ? 'Noted: a favourite.' : vote > 0 ? 'Noted: more like this.' : 'Noted: less like this.', { timeout: 3000 });
           },
         }, icon(name))));
     toast('Marked as seen. Did you like it?', {
