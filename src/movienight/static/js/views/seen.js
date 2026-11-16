@@ -58,7 +58,7 @@ export function mount(root) {
       h('h1', { class: 'page-title', text: 'Seen these?' }),
       lede,
       h('div', { class: 'chips triage__tabs', role: 'group', 'aria-label': 'Which films' }, tabBtns),
-      h('div', { class: 'triage__bar' }, count, h('a', { class: 'btn btn--primary btn--sm', href: '#/tonight' }, 'Done'))),
+      h('div', { class: 'triage__bar' }, count)),
     status, grid,
     h('div', { class: 'triage__end' }, more)));
 
