@@ -13,6 +13,28 @@ function sessionEnded(status) {
   return true;
 }
 
+// The page's own version is embedded in index.html (server-rendered). The server stamps /api responses with its
+// current one; the first different value means a deploy happened since this page loaded. Missing/unfilled
+// values (old server, proxy, mock mode, static preview) disable the check.
+const PAGE_VERSION = (() => {
+  const v = document.querySelector('meta[name="movienight-version"]')?.content || '';
+  return v && !v.startsWith('__') ? v : '';
+})();
+let announcedVersion = null;
+
+export function checkVersion(headerValue, announce = announceNewVersion) {
+  if (MOCK || !PAGE_VERSION || !headerValue || headerValue === PAGE_VERSION || headerValue === announcedVersion) return;
+  announcedVersion = headerValue;
+  announce();
+}
+
+function announceNewVersion() {
+  import('/static/js/dom.js').then(({ toast }) => toast('A new version is available.', {
+    timeout: 0,
+    action: { label: 'Reload', run: () => location.reload() },
+  })).catch(() => {});
+}
+
 export class ApiError extends Error {
   constructor(status, detail) {
     super(detail);
@@ -57,6 +79,7 @@ async function request(method, path, { params, json, form } = {}) {
   } catch {
     throw new ApiError(0, 'Could not reach MovieNight. Check that the server is running and you are online.');
   }
+  checkVersion(res.headers.get('X-MovieNight-Version'));
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     sessionEnded(res.status);
@@ -141,6 +164,7 @@ export async function* chatStream(messages, signal) {
     if (e.name === 'AbortError') throw e;
     throw new ApiError(0, 'Could not reach MovieNight. Check that the server is running and you are online.');
   }
+  checkVersion(res.headers.get('X-MovieNight-Version'));
   if (!res.ok) {
     sessionEnded(res.status);
     const data = await res.json().catch(() => null);

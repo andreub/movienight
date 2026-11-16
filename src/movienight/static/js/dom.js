@@ -195,7 +195,7 @@ export function toast(message, { action = null, timeout = 6000, extra = null } =
     ? h('div', { class: 'toast toast--rich' }, text, close, extras, actionBtn)
     : h('div', { class: 'toast' }, text, actionBtn, close);
   host.append(el);
-  setTimeout(remove, timeout);
+  if (timeout) setTimeout(remove, timeout); // 0 = stays until dismissed
 }
 
 export function isTyping(e) {
