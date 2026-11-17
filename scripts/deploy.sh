@@ -45,7 +45,7 @@ echo "==> Released version: $VERSION"
 
 # 3. ask Watchtower to pull now (POST /v1/update?image=..., Bearer token read on the server, never printed)
 echo "==> Asking Watchtower on $HOST to update $IMAGE"
-ssh "$HOST" "$REMOTE_PATH"'; cd ~/etc && eval "$(direnv export bash)" && test -n "$ACME_DOMAIN" && test -n "$WATCHTOWER_HTTP_API_TOKEN" && curl -fsS --max-time 600 -X POST -H "Authorization: Bearer $WATCHTOWER_HTTP_API_TOKEN" "https://watchtower.$ACME_DOMAIN/v1/update?image='"$IMAGE"'"'
+ssh "$HOST" "$REMOTE_PATH"'; cd ~/etc && eval "$(DIRENV_LOG_FORMAT= direnv export bash)" && test -n "$ACME_DOMAIN" && test -n "$WATCHTOWER_HTTP_API_TOKEN" && curl -fsS --max-time 600 -X POST -H "Authorization: Bearer $WATCHTOWER_HTTP_API_TOKEN" "https://watchtower.$ACME_DOMAIN/v1/update?image='"$IMAGE"'"'
 echo
 
 # 4. wait until the container is healthy and runs the released version
