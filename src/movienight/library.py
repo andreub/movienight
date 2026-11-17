@@ -96,6 +96,7 @@ def _merge_meta(items: list[dict], det: dict | None) -> dict:
         "title": first["title"],
         "original_title": det.get("original_title") or first.get("original_title") or first["title"],
         "year": first.get("year") or det.get("year"),
+        "release_date": det.get("release_date") or None,
         "runtime": det.get("runtime") or pick("duration_min"),
         "tagline": det.get("tagline") or pick("tagline") or "",
         "overview": det.get("overview") or pick("summary") or "",

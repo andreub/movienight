@@ -66,6 +66,8 @@ def test_tmdb_compact_and_search_pick():
            "original_language": "en", "vote_average": 7.6, "vote_count": 10}
     d = tmdb.compact_details(raw)
     assert d["year"] == 2011 and d["cast"] == ["A", "B"] and d["directors"] == ["D"] and d["keywords"] == ["k"]
+    assert d["release_date"] == "2011-09-16"
+    assert tmdb.compact_details({"id": 2, "title": "N"})["release_date"] == ""
     assert tmdb.pick_search_result({"results": [{"id": 1, "title": "Other"}, {"id": 2, "title": "Drive!"}]}, "drive") == 2
 
 
