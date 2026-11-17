@@ -45,7 +45,7 @@ const MOODS = [
   { id: 'heartfelt', label: 'Heartfelt', emoji: '💛', description: 'Drama and romance', test: (m) => hasAny(m, ['Romance', 'Drama']) },
   { id: 'short', label: 'Short one', emoji: '⏱️', description: 'Under 95 minutes', test: (m) => m.runtime && m.runtime < 100 },
   { id: 'classic', label: 'A classic', emoji: '🎞️', description: 'Before 1980', test: (m) => m.year < 1980 },
-  { id: 'recent', label: 'Something recent', emoji: '🆕', description: 'Released in the last 18 months', test: (m) => m.year >= new Date().getFullYear() - 1 },
+  { id: 'recent', label: 'Something recent', emoji: '🆕', description: 'Released in the last 18 months', test: (m) => { const c = new Date(); c.setMonth(c.getMonth() - 18); return m.release_date ? new Date(m.release_date) >= c : m.year >= c.getFullYear(); } },
 ];
 
 // Letterboxd diary tags (GET /api/tags): a festival with editions, and a tag without a year.

@@ -63,6 +63,21 @@ def moods_public() -> list[dict]:
     return [{k: m[k] for k in ("id", "label", "emoji", "description")} for m in MOODS]
 
 
+def _release_date(c: Cand) -> date | None:
+    try:
+        return date.fromisoformat(str(c.meta.get("release_date") or ""))
+    except ValueError:
+        return None
+
+
+def _is_recent(c: Cand, year) -> bool:
+    # exact TMDB release date when known; otherwise only the year: year >= year of the cutoff date
+    d = _release_date(c)
+    if d:
+        return d >= recent_cutoff()
+    return bool(year and year >= recent_cutoff().year)
+
+
 def mood_matches(mood: dict, c: Cand) -> bool:
     genres = set(c.meta.get("genres") or [])
     kws = {k.lower() for k in c.meta.get("keywords") or []}
@@ -75,8 +90,8 @@ def mood_matches(mood: dict, c: Cand) -> bool:
         return False
     if "max_year" in mood and not (year and year <= mood["max_year"]):
         return False
-    if mood.get("recent") and not (year and year >= recent_cutoff().year):
-        return False   # only the release year is stored: year >= year of the cutoff date
+    if mood.get("recent") and not _is_recent(c, year):
+        return False
     if "min_year" in mood and not (year and year >= mood["min_year"]):
         return False
     content = ("genres" in mood) or ("keywords" in mood) or ("genre_sets" in mood)

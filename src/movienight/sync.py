@@ -341,6 +341,12 @@ class SyncManager:
             "SELECT tmdb_id FROM lb_films WHERE tmdb_id IS NOT NULL AND (watched=1 OR liked=1)"
             " UNION SELECT tmdb_id FROM movies WHERE tmdb_id IS NOT NULL"
         ) if not conn.execute("SELECT 1 FROM tmdb_details WHERE tmdb_id=?", (r[0],)).fetchone()]
+        # backfill: library films whose stored details predate release_date
+        have = set(ids)
+        ids += [r[0] for r in conn.execute(
+            "SELECT m.tmdb_id FROM movies m JOIN tmdb_details d ON d.tmdb_id=m.tmdb_id"
+            " WHERE d.json != '{}' AND json_extract(d.json,'$.release_date') IS NULL"
+        ) if r[0] not in have]
         if not ids:
             return
 
