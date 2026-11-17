@@ -64,16 +64,6 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Releasing v$version (previous: ${last:-none})"
 
-      - name: Tag
-        env:
-          VERSION: ${{ steps.ver.outputs.version }}
-          PR_TITLE: ${{ steps.pr.outputs.title }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${VERSION}" -m "v${VERSION}: ${PR_TITLE}" "$GITHUB_SHA"
-          git push origin "v${VERSION}"
-
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
@@ -102,6 +92,16 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Tag
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" -m "v${VERSION}: ${PR_TITLE}" "$GITHUB_SHA"
+          git push origin "v${VERSION}"
 
       - name: GitHub Release
         env:
