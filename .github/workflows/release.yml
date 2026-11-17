@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+  pull-requests: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - run: uv sync --frozen
+      - run: uv run pytest -q
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Find the merged PR (or fall back to the commit)
+        id: pr
+        run: |
+          pr=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+            --jq '[.[] | select(.base.ref == "main" and .merged_at != null)] | first // empty')
+          if [ -n "$pr" ]; then
+            title=$(jq -r .title <<<"$pr")
+            body=$(jq -r '.body // ""' <<<"$pr")
+            url=$(jq -r .html_url <<<"$pr")
+          else
+            title=$(git log -1 --format=%s "$GITHUB_SHA")
+            body=$(git log -1 --format=%b "$GITHUB_SHA")
+            url=""
+          fi
+          {
+            echo "title<<EOF_TITLE"; echo "$title"; echo "EOF_TITLE"
+            echo "body<<EOF_BODY"; echo "$body"; echo "EOF_BODY"
+            echo "url=$url"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Compute the next version
+        id: ver
+        env:
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+          PR_BODY: ${{ steps.pr.outputs.body }}
+        run: |
+          last=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          version=$(python3 .github/scripts/next_version.py --last-tag "$last" --title "$PR_TITLE" --body "$PR_BODY")
+          echo "last=$last" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing v$version (previous: ${last:-none})"
+
+      - name: Tag
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" -m "v${VERSION}: ${PR_TITLE}" "$GITHUB_SHA"
+          git push origin "v${VERSION}"
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/andreub/movienight
+          tags: |
+            type=semver,pattern={{version}},value=v${{ steps.ver.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ steps.ver.outputs.version }}
+            type=semver,pattern={{major}},value=v${{ steps.ver.outputs.version }}
+            type=raw,value=latest
+            type=sha,prefix=sha-,format=short
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: GitHub Release
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          LAST: ${{ steps.ver.outputs.last }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+        run: |
+          args=(--title "v${VERSION}: ${PR_TITLE}" --generate-notes --verify-tag)
+          if [ -n "$LAST" ]; then args+=(--notes-start-tag "$LAST"); fi
+          if [ -n "$PR_URL" ]; then args+=(--notes "Pull request: ${PR_URL}"); fi
+          gh release create "v${VERSION}" "${args[@]}"
