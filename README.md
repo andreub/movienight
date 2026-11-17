@@ -148,19 +148,26 @@ The version comes from the title of the merged PR, which must follow Conventiona
 | anything else (`fix`, `perf`, `refactor`, `docs`, `chore`, `ci`, `test`, `build`, `style`, `revert`) | patch |
 
 The bump applies to the latest `vX.Y.Z` tag; with no tag yet the first release is `v1.0.0`. Tests
-must pass before a release is cut. `scripts/deploy.sh` is unaffected (it still builds on the server).
+must pass before a release is cut.
 
 ## Deploy
 
+Merging a PR to `main` runs the Release workflow (see Releases), which pushes
+`ghcr.io/andreub/movienight:latest`. The home server runs that image and Watchtower pulls it on its
+own schedule, so nothing else is needed.
+
+To get it immediately, from a checkout at `origin/main`:
+
 ```sh
-scripts/deploy.sh             # HOST defaults to the ssh alias "homeserver"
-SERVICE=movienight-jf REMOTE_DIR='~/movienight-jf' scripts/deploy.sh   # a second instance
+scripts/deploy.sh                       # HOST defaults to the ssh alias "homeserver"
+CONTAINER=movienight-jf scripts/deploy.sh   # another instance running the same image
+SKIP_WAIT=1 scripts/deploy.sh           # do not wait for the Release workflow
 ```
 
-The script syncs the committed project to `REMOTE_DIR` (default `~/movienight`) and your local
-`letterboxd/` folder to the shared `~/etc/movienight/letterboxd`, builds `SERVICE` (default
-`movienight`) through the server's main compose file (which needs direnv variables), and waits up to
-two minutes for the container (`CONTAINER`, default `SERVICE`) to report healthy.
+The script checks that `HEAD` is `origin/main`, waits for that commit's Release run, asks Watchtower
+on the server to update the image (HTTP API `POST /v1/update?image=...`, token read on the server),
+and waits up to five minutes until the container is healthy and its
+`org.opencontainers.image.version` label matches the released version.
 
 ## Login
 
