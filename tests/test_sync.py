@@ -128,3 +128,32 @@ async def test_tmdb_stage_progress_never_exceeds_total(tmp_path):
         await mgr.stage_tmdb()
     assert snaps and all(d <= t for d, t in snaps), snaps
     assert mgr.state["total"] == 36 and mgr.state["done"] == mgr.state["total"]
+
+
+async def test_details_backfills_release_date_for_library_films_only(tmp_path):
+    from movienight import db, library
+    from movienight.sync import SyncManager
+
+    cfg = Config(data_dir=tmp_path / "d", letterboxd_dir=tmp_path / "nolb", tmdb_token="eyJtest", sync_on_start=False)
+    cfg.data_dir.mkdir(parents=True, exist_ok=True)
+    db.migrate(cfg.db_path)
+    old, new = json.dumps({"id": 1, "year": 2020}), json.dumps({"id": 2, "year": 2020, "release_date": ""})
+    with db.session(cfg.db_path) as c:
+        for tid in (1, 2, 3, 4):
+            c.execute("INSERT INTO movies(dkey,tmdb_id) VALUES(?,?)", (f"k{tid}", tid))
+        c.execute("INSERT INTO lb_films(name,year,norm_title,tmdb_id,resolve_state,watched) VALUES('L',2020,'l',5,1,1)")
+        for tid, js in ((1, old), (2, new), (3, "{}"), (4, json.dumps({"release_date": "2020-01-01"})), (5, old)):
+            c.execute("INSERT INTO tmdb_details(tmdb_id,json,fetched_at) VALUES(?,?,'x')", (tid, js))
+    fetched = []
+
+    def tmdb_handler(request: httpx.Request) -> httpx.Response:
+        tid = int(request.url.path.split("/")[3])
+        fetched.append(tid)
+        return httpx.Response(200, json={"id": tid, "title": "T", "release_date": "2020-05-05"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(tmdb_handler)) as http:
+        mgr = SyncManager(cfg, http, library.Engine(lambda: db.connect(cfg.db_path), None))
+        mgr._stage("tmdb")
+        with db.session(cfg.db_path) as c:
+            await mgr._details(c)
+    assert fetched == [1]

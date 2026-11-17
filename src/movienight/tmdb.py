@@ -125,6 +125,7 @@ def compact_details(raw: dict) -> dict:
         "title": raw.get("title") or "",
         "original_title": raw.get("original_title") or raw.get("title") or "",
         "year": int(date[:4]) if date[:4].isdigit() else None,
+        "release_date": date,
         "runtime": raw.get("runtime") or None,
         "tagline": raw.get("tagline") or "",
         "overview": raw.get("overview") or "",

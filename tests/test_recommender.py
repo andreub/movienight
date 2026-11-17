@@ -172,3 +172,23 @@ def test_recent_mood_window_and_year_fallback(monkeypatch):
     assert queries.recent_cutoff() == date(2025, 5, 16)
     monkeypatch.setattr(queries, "today", lambda: date(2026, 8, 31))
     assert queries.recent_cutoff() == date(2025, 2, 28)
+
+
+def test_recent_mood_uses_release_date_when_known(monkeypatch):
+    from datetime import date
+    hist, cands = world()
+    rec.score_candidates(hist, cands, now=NOW)
+    c = {c.id: c for c in cands}[26]
+    monkeypatch.setattr(queries, "today", lambda: date(2026, 11, 17))   # cutoff 2025-05-17
+    mood = queries.MOOD_BY_ID["recent"]
+    c.year = 2025
+    for rd, expected in [("2025-01-10", False), ("2025-06-01", True), ("2025-05-17", True), ("2025-05-16", False)]:
+        c.meta["release_date"] = rd
+        assert queries.mood_matches(mood, c) is expected, rd
+    for bad in ("", None, "2025", "not-a-date", "2025-13-40"):   # year rule: 2025 >= 2025
+        c.meta["release_date"] = bad
+        assert queries.mood_matches(mood, c) is True, bad
+    c.year = 2024
+    for bad in ("", "garbage"):
+        c.meta["release_date"] = bad
+        assert queries.mood_matches(mood, c) is False
