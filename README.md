@@ -132,6 +132,24 @@ with the previous code.
 
 Between exports, new diary entries arrive through RSS automatically (without their tags).
 
+## Releases
+
+Every push to `main` publishes a new version: a `vX.Y.Z` git tag, a GitHub Release and a Docker
+image (linux/amd64 and linux/arm64) at `ghcr.io/andreub/movienight`, tagged `X.Y.Z`, `X.Y`, `X`,
+`latest` and `sha-<short>`. The GHCR package is private, like the repo.
+
+The version comes from the title of the merged PR, which must follow Conventional Commits
+(`type(scope): subject`; a PR check enforces it). If the push has no PR, the commit subject is used.
+
+| Title | Bump |
+| --- | --- |
+| `type!: ...` or `BREAKING CHANGE:` in the PR body | major |
+| `feat: ...` | minor |
+| anything else (`fix`, `perf`, `refactor`, `docs`, `chore`, `ci`, `test`, `build`, `style`, `revert`) | patch |
+
+The bump applies to the latest `vX.Y.Z` tag; with no tag yet the first release is `v1.0.0`. Tests
+must pass before a release is cut. `scripts/deploy.sh` is unaffected (it still builds on the server).
+
 ## Deploy
 
 ```sh
