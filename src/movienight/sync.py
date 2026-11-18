@@ -140,7 +140,7 @@ class SyncManager:
             set_meta(conn, "plex_last_sync", now_iso())
             conn.commit()
             try:
-                await self._slugs(conn, cid)
+                await self._slugs(conn, cid, token)
             except Exception as e:  # noqa: BLE001 - play links just fall back to the web URL
                 self._fail("plex slugs", e)
             if self.cfg.push_seen:
@@ -152,7 +152,7 @@ class SyncManager:
             conn.close()
         self.engine.invalidate()
 
-    async def _slugs(self, conn, cid: str) -> None:
+    async def _slugs(self, conn, cid: str, token: str) -> None:
         """Resolve watch.plex.tv slugs for guids not yet looked up (misses are retried after a week)."""
         week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
         rows = conn.execute(
@@ -164,7 +164,7 @@ class SyncManager:
 
         async def one(g):
             async with sem:
-                return g, await plex.resolve_slug(self.http, cid, g)
+                return g, await plex.resolve_slug(self.http, cid, g, token)
 
         for start in range(0, len(guids), 100):
             for g, slug in await asyncio.gather(*(one(g) for g in guids[start:start + 100])):

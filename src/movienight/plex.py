@@ -277,13 +277,14 @@ WATCH_URL = "https://watch.plex.tv/movie/"
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
-async def resolve_slug(client: httpx.AsyncClient, client_id: str, guid: str) -> str | None:
-    """watch.plex.tv slug of a `plex://movie/<id>` guid, from Plex's public Discover metadata (no token needed).
+async def resolve_slug(client: httpx.AsyncClient, client_id: str, guid: str, token: str | None = None) -> str | None:
+    """watch.plex.tv slug of a `plex://movie/<id>` guid, from Plex's Discover metadata. Some titles answer
+    anonymously, others (401) need the account token, so it is sent when there is one.
 
     Returns "" when Plex has no slug for it (cache that), None on a transient failure (try again later)."""
     try:
         r = await client.get(f"{DISCOVER}/library/metadata/{guid.rsplit('/', 1)[-1]}",
-                             headers=base_headers(client_id), timeout=SLUG_TIMEOUT)
+                             headers=base_headers(client_id, token), timeout=SLUG_TIMEOUT)
         if r.status_code in (400, 404):
             return ""
         r.raise_for_status()

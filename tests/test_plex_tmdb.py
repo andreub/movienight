@@ -111,9 +111,11 @@ def test_parse_plex_guid():
 
 async def test_resolve_slug():
     def handler(req):
-        assert req.url.host == "discover.provider.plex.tv" and "x-plex-token" not in req.headers
+        assert req.url.host == "discover.provider.plex.tv"
+        if req.headers.get("x-plex-token") != "TOK" and req.url.path.endswith("/anon401"):
+            return httpx.Response(401)
         key = req.url.path.rsplit("/", 1)[-1]
-        if key == "ok":
+        if key in ("ok", "anon401"):
             return httpx.Response(200, json={"MediaContainer": {"Metadata": [{"slug": "the-secret-world-of-arrietty-2010"}]}})
         if key == "bad":
             return httpx.Response(200, json={"MediaContainer": {"Metadata": [{"slug": "../evil"}]}})
@@ -129,4 +131,6 @@ async def test_resolve_slug():
         assert await plex.resolve_slug(c, "cid", "plex://movie/gone") == ""
         assert await plex.resolve_slug(c, "cid", "plex://movie/down") is None
         assert await plex.resolve_slug(c, "cid", "plex://movie/boom") is None
+        assert await plex.resolve_slug(c, "cid", "plex://movie/anon401") is None          # needs the token
+        assert await plex.resolve_slug(c, "cid", "plex://movie/anon401", "TOK") == "the-secret-world-of-arrietty-2010"
     assert plex.mobile_url("x-2010") == "https://watch.plex.tv/movie/x-2010"
