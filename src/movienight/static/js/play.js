@@ -5,19 +5,33 @@ import { serverName } from './status.js';
 
 const RES = { '4k': '4K', 1080: '1080p', 720: '720p', sd: 'SD' };
 
+const MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+  || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
+
+// On mobile, try the native app first; if the page is still visible shortly after, fall back to the web URL.
+function openInApp(s, e) {
+  if (!MOBILE || !s.app_url) return;
+  e.preventDefault();
+  const cancel = () => { clearTimeout(timer); document.removeEventListener('visibilitychange', cancel); removeEventListener('pagehide', cancel); };
+  const timer = setTimeout(() => { cancel(); if (document.visibilityState === 'visible') location.href = s.url; }, 1500);
+  document.addEventListener('visibilitychange', cancel);
+  addEventListener('pagehide', cancel);
+  location.href = s.app_url;
+}
+
 export function playControl(movie, cls = '') {
   const sources = movie.plex || [];
   if (!sources.length) {
     return h('button', { type: 'button', class: `btn btn--primary ${cls}`, disabled: true }, icon('play'), `Not on ${serverName()} right now`);
   }
   if (sources.length === 1) {
-    return h('a', { class: `btn btn--primary ${cls}`, href: sources[0].url, target: '_blank', rel: 'noopener' },
+    return h('a', { class: `btn btn--primary ${cls}`, href: sources[0].url, target: '_blank', rel: 'noopener', onclick: (e) => openInApp(sources[0], e) },
       icon('play'), `Play on ${serverName()}`);
   }
 
   const menuId = `play-${movie.id}-${Math.random().toString(36).slice(2, 7)}`;
   const menu = h('ul', { class: 'menu', id: menuId, hidden: true },
-    sources.map((s) => h('li', null, h('a', { class: 'menu__item', href: s.url, target: '_blank', rel: 'noopener', onclick: () => toggle(false) },
+    sources.map((s) => h('li', null, h('a', { class: 'menu__item', href: s.url, target: '_blank', rel: 'noopener', onclick: (e) => { openInApp(s, e); toggle(false); } },
       h('span', { text: s.server }),
       s.resolution ? h('span', { class: 'badge', text: RES[s.resolution] || s.resolution }) : null))));
   const button = h('button', {

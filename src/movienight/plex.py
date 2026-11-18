@@ -261,6 +261,12 @@ def web_url(machine_id: str, rating_key: str) -> str:
     return f"https://app.plex.tv/desktop/#!/server/{machine_id}/details?key={key}"
 
 
+def app_url(machine_id: str, rating_key: str) -> str:
+    """Deep link into the native Plex app (undocumented scheme; mobile only)."""
+    key = quote(f"/library/metadata/{rating_key}", safe="")
+    return f"plex://preplay/?metadataKey={key}&metadataType=1&server={machine_id}"
+
+
 async def fetch_image(client: httpx.AsyncClient, base: str, token: str, client_id: str,
                       path: str, width: int, height: int) -> tuple[bytes, str] | None:
     """Fetch a (transcoded when possible) image. The token travels in a header only."""

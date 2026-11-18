@@ -159,7 +159,8 @@ def load_inputs(conn: sqlite3.Connection, media=None) -> tuple[list, list]:
             # `plex` holds the active media server's entries (Plex or Jellyfin); the name stays for the API
             plex=[{"server": r["sname"], "server_id": r["server_id"], "resolution": it.get("resolution"),
                    "url": media.web_url(r["server_id"], r["base_url"], it["rating_key"]),
-                   "rating_key": it["rating_key"]}
+                   "rating_key": it["rating_key"],
+                   **({"app_url": u} if (u := media.app_url(r["server_id"], it["rating_key"])) else {})}
                   for r, it in zip(rs, items)],
         )
         cands.append(c)
@@ -463,7 +464,7 @@ def movie_json(c: rec.Cand, st: State, dismissed: dict, with_reasons: bool = Tru
         "my_vote": c.vote,
         "dismissed_until": dismissed.get(c.id),
         "added_at": c.added_at.strftime("%Y-%m-%dT%H:%M:%SZ") if c.added_at else None,
-        "plex": [{k: p[k] for k in ("server", "server_id", "resolution", "url")} for p in c.plex],
+        "plex": [{k: p[k] for k in ("server", "server_id", "resolution", "url", "app_url") if k in p} for p in c.plex],
     }
 
 

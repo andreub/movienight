@@ -33,6 +33,7 @@ def test_recommendations_shape_and_ranking(client):
         assert k in m, k
     assert m["poster_url"].startswith("https://image.tmdb.org/t/p/w500/")
     assert m["plex"][0]["url"].startswith("https://app.plex.tv/desktop/#!/server/m1/details?key=")
+    assert m["plex"][0]["app_url"] == "plex://preplay/?metadataKey=%2Flibrary%2Fmetadata%2F" + m["plex"][0]["url"].split("%2F")[-1] + "&metadataType=1&server=m1"
     assert any("Fans of Alpha Heist" in x["text"] for x in m["reasons"])
     assert r["facets"]["genres"] and r["facets"]["min_year"] == 1975
 
@@ -130,3 +131,8 @@ def test_static_code_revalidates_but_images_do_not(client):
         assert r.status_code == 200 and r.headers["cache-control"] == "no-cache" and r.headers.get("etag")
     assert client.get("/static/favicon.svg").headers.get("cache-control") != "no-cache"
     assert client.get("/").headers["cache-control"] == "no-cache"
+
+
+def test_plex_app_url():
+    from movienight import plex
+    assert plex.app_url("m1", "42") == "plex://preplay/?metadataKey=%2Flibrary%2Fmetadata%2F42&metadataType=1&server=m1"

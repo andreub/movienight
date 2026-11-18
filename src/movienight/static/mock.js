@@ -125,9 +125,9 @@ const movies = FILMS.map(([title, year, runtime, genres, director, cast, rating,
     added_at: new Date(Date.now() - i * 86400000 * 3).toISOString(),
     plex: JELLYFIN
       ? [{ server: 'Den', server_id: 'jf:f00dcafe', resolution: i % 3 === 0 ? '4k' : '1080', url: `${JF_BASE}/web/#/details?id=item${id}&serverId=f00dcafe` }]
-      : [{ server: 'Home', server_id: 'home1', resolution: i % 3 === 0 ? '4k' : '1080', url: `https://app.plex.tv/desktop/#!/server/home1/details?key=%2Flibrary%2Fmetadata%2F${id}` }],
+      : [{ server: 'Home', server_id: 'home1', resolution: i % 3 === 0 ? '4k' : '1080', url: `https://app.plex.tv/desktop/#!/server/home1/details?key=%2Flibrary%2Fmetadata%2F${id}`, app_url: `plex://preplay/?metadataKey=%2Flibrary%2Fmetadata%2F${id}&metadataType=1&server=home1` }],
   };
-  if (!JELLYFIN && i % 5 === 1) m.plex.push({ server: 'Lucía’s Library', server_id: 'shared2', resolution: '720', url: `https://app.plex.tv/desktop/#!/server/shared2/details?key=%2Flibrary%2Fmetadata%2F${id + 5000}` });
+  if (!JELLYFIN && i % 5 === 1) m.plex.push({ server: 'Lucía’s Library', server_id: 'shared2', resolution: '720', url: `https://app.plex.tv/desktop/#!/server/shared2/details?key=%2Flibrary%2Fmetadata%2F${id + 5000}`, app_url: `plex://preplay/?metadataKey=%2Flibrary%2Fmetadata%2F${id + 5000}&metadataType=1&server=shared2` });
   m.reasons = reasonsFor(m, i);
   return m;
 });

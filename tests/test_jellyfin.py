@@ -221,6 +221,7 @@ def test_full_sync(jf, caplog):
     assert "Played One" not in by                                             # played in Jellyfin = watched
     assert by["Crime Two"]["plex"] == [{"server": "Den", "server_id": "jf:f00dcafe", "resolution": "1080",
                                         "url": f"{BASE}/web/#/details?id=a1&serverId=f00dcafe"}]
+    assert "app_url" not in by["Crime Two"]["plex"][0]                        # Plex-only deep link
     assert by["Crime Two"]["poster_url"]                                      # TMDB poster
     assert by["No Ids Movie"]["poster_url"] == f"/api/image/{by['No Ids Movie']['id']}/poster"
     watched = items_by_title(c, include_watched=True)["Played One"]
