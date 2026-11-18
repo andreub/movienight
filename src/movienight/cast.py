@@ -26,7 +26,10 @@ log = logging.getLogger("movienight.cast")
 PROBE_TIMEOUT = 5.0
 MDNS_SECONDS = 2.0
 CONNECT_TIMEOUT = 8.0
-PLAY_TIMEOUT = 15.0
+PLAY_TIMEOUT = 20.0
+QUIT_WAIT = 8.0
+POLL = 0.5
+PLEX_APP_ID = "9AC194DC"
 CAST_PORT = 8009
 
 
@@ -136,14 +139,28 @@ def _play_blocking(device: dict, server_url: str, server_token: str, rating_key:
     try:
         stage = "cast connect"
         cc.wait(timeout=CONNECT_TIMEOUT)
+        stage = "cast relaunch"
+        # A Plex receiver left running by an earlier cast ignores/drops a new LOAD (pychromecast skips the
+        # launch when the app is already up), so close it and start from a clean receiver.
+        if cc.app_id == PLEX_APP_ID:
+            cc.quit_app()
+            deadline = time.monotonic() + QUIT_WAIT
+            while cc.app_id == PLEX_APP_ID and time.monotonic() < deadline:
+                time.sleep(POLL)
         stage = "cast play"
         pc = PlexController()
         cc.register_handler(pc)
         pc.play_media(item)
-        if not pc.play_media_event.wait(PLAY_TIMEOUT):
-            log.warning("cast play on %s: receiver did not confirm within %ss", device.get("name"), PLAY_TIMEOUT)
-            return False
-        return True
+        # play_media_event only means "LOAD sent": confirm via the media status the receiver publishes.
+        deadline = time.monotonic() + PLAY_TIMEOUT
+        state = None
+        while time.monotonic() < deadline:
+            state = getattr(cc.media_controller.status, "player_state", None)
+            if state in ("PLAYING", "BUFFERING"):
+                return True
+            time.sleep(POLL)
+        log.warning("cast play: receiver did not start playback (state=%s)", state)
+        return False
     except Exception as e:  # noqa: BLE001
         raise _Stage(stage, e) from None
     finally:

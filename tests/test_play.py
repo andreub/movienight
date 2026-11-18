@@ -153,3 +153,69 @@ def test_no_reachable_connection_falls_back_to_stored_base_url(tmp_path, monkeyp
     with db.session(tmp_path / "d" / "movienight.db") as c:
         stored = c.execute("SELECT base_url FROM media_servers WHERE id='m1'").fetchone()["base_url"]
     assert url == stored
+
+
+# --------------------------------------------------------------------------- _play_blocking (fake pychromecast)
+
+class _FakeCC:
+    def __init__(self, app_id, states, quits_ok=True):
+        self.app_id, self.states, self.quits_ok = app_id, list(states), quits_ok
+        self.quit_called = self.disconnected = False
+        self.events = []
+        outer = self
+
+        class _MC:
+            @property
+            def status(self_inner):
+                st = outer.states.pop(0) if len(outer.states) > 1 else outer.states[0]
+                return SimpleNamespace(player_state=st)
+        self.media_controller = _MC()
+
+    def wait(self, timeout=None): self.events.append("wait")
+
+    def quit_app(self):
+        self.quit_called = True
+        self.events.append("quit")
+        if self.quits_ok:
+            self.app_id = None
+
+    def register_handler(self, h): self.events.append("register")
+    def disconnect(self, timeout=None): self.disconnected = True
+
+
+def _patch_play(monkeypatch, cc):
+    class _PC:
+        def play_media(self_, item): cc.events.append("play")
+    class _Server:
+        def __init__(self, *a, **k): pass
+        def fetchItem(self, k): return object()
+    monkeypatch.setattr(cast, "PlexServer", _Server)
+    monkeypatch.setattr(cast, "Chromecast", lambda *a, **k: cc)
+    monkeypatch.setattr(cast, "PlexController", _PC)
+    monkeypatch.setattr(cast, "POLL", 0.0)
+    monkeypatch.setattr(cast, "PLAY_TIMEOUT", 0.05)
+    monkeypatch.setattr(cast, "QUIT_WAIT", 0.05)
+
+
+def _run():
+    return cast._play_blocking(DEVICE, "http://x", "tok", "1")
+
+
+def test_running_plex_app_is_quit_before_loading(monkeypatch):
+    cc = _FakeCC(cast.PLEX_APP_ID, ["IDLE", "BUFFERING"])
+    _patch_play(monkeypatch, cc)
+    assert _run() is True
+    assert cc.quit_called and cc.events.index("quit") < cc.events.index("play") and cc.disconnected
+
+
+def test_other_app_is_not_quit(monkeypatch):
+    cc = _FakeCC("OTHERAPP", ["PLAYING"])
+    _patch_play(monkeypatch, cc)
+    assert _run() is True and not cc.quit_called
+
+
+def test_playback_never_starting_returns_false(monkeypatch):
+    cc = _FakeCC(None, ["IDLE"])
+    _patch_play(monkeypatch, cc)
+    assert _run() is False and cc.disconnected
+    assert asyncio.run(cast.play(DEVICE, "http://x", "tok", "1")) is False
