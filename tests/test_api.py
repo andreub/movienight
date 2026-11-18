@@ -33,6 +33,10 @@ def test_recommendations_shape_and_ranking(client):
         assert k in m, k
     assert m["poster_url"].startswith("https://image.tmdb.org/t/p/w500/")
     assert m["plex"][0]["url"].startswith("https://app.plex.tv/desktop/#!/server/m1/details?key=")
+    by = {x["title"]: x for x in r["items"]}
+    assert by["Crime Two"]["plex"][0]["mobile_url"] == "https://watch.plex.tv/movie/crime-two-2016"
+    assert "mobile_url" not in by["Rom Com"]["plex"][0]           # slug lookup found nothing
+    assert "mobile_url" not in by["Drama Three"]["plex"][0]       # no Plex guid
     assert any("Fans of Alpha Heist" in x["text"] for x in m["reasons"])
     assert r["facets"]["genres"] and r["facets"]["min_year"] == 1975
 
@@ -130,3 +134,4 @@ def test_static_code_revalidates_but_images_do_not(client):
         assert r.status_code == 200 and r.headers["cache-control"] == "no-cache" and r.headers.get("etag")
     assert client.get("/static/favicon.svg").headers.get("cache-control") != "no-cache"
     assert client.get("/").headers["cache-control"] == "no-cache"
+

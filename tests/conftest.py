@@ -24,7 +24,7 @@ def plex_item(key, title, year, tmdb, views=0, thumb=True, **kw):
             "imdb_id": None, "summary": "", "tagline": "", "duration_min": 100, "rating": 7.0,
             "view_count": views, "added_at": "2020-01-01T00:00:00Z", "thumb": "/t" if thumb else None,
             "art": "/a" if thumb else None, "genres": kw.get("genres", []), "directors": [], "roles": [],
-            "countries": [], "resolution": "1080"}
+            "countries": [], "resolution": "1080", "guid": kw.get("guid")}
 
 
 HISTORY = [  # name, year, tmdb, rating, liked, watchlist
@@ -49,6 +49,9 @@ LIBRARY = [(11, "Crime Two", 2016, 111, 0), (12, "Rom Com", 2020, 112, 0), (13, 
            (17, "Sci Epic", 2021, 116, 0), (18, "Plex Watched", 2005, None, 3)]
 
 
+GUIDS = {11: "plex://movie/aaa", 12: "plex://movie/bbb"}   # 11 has a slug, 12 a cached miss, the rest no guid
+
+
 def seed(db_path):
     with db.session(db_path) as c:
         for name, year, tid, rating, liked, wl in HISTORY:
@@ -61,7 +64,10 @@ def seed(db_path):
         c.execute("INSERT INTO tmdb_recs(tmdb_id,json) VALUES(101,?)", (json.dumps([111, 113]),))
         c.execute("INSERT INTO media_servers(id,name,owned,reachable,base_url,access_token) VALUES"
                   "('m1','Home',1,1,'http://plex.local:32400','SECRET')")
-        library.store_server_items(c, "m1", [plex_item(k, t, y, tid, views=v) for k, t, y, tid, v in LIBRARY])
+        library.store_server_items(c, "m1", [plex_item(k, t, y, tid, views=v, guid=GUIDS.get(k))
+                                             for k, t, y, tid, v in LIBRARY])
+        c.executemany("INSERT INTO plex_slugs(guid,slug,checked_at) VALUES(?,?,'2026-01-01T00:00:00Z')",
+                      [("plex://movie/aaa", "crime-two-2016"), ("plex://movie/bbb", "")])
         library.assign_movies(c)
 
 

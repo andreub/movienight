@@ -25,6 +25,8 @@ def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"MediaContainer": {"Directory": [{"key": "1", "type": "movie"}, {"key": "2", "type": "show"}]}})
         if path == "/library/sections/1/all":
             return httpx.Response(200, content=(FIX / "plex_all.json").read_bytes())
+    if h == "discover.provider.plex.tv":
+        return httpx.Response(200, json={"MediaContainer": {"Metadata": [{"slug": "alpha-heist-2015"}]}})
     if h == "letterboxd.com":
         return httpx.Response(200, content=(FIX / "rss.xml").read_bytes())
     if h == "api.themoviedb.org":
@@ -59,6 +61,8 @@ def test_full_sync_end_to_end(tmp_path):
         r = c.get("/api/recommendations", params={"include_watched": "true"}).json()
         assert r["total"] == 3
         by = {m["title"]: m for m in r["items"]}
+        assert by["Alpha Heist"]["plex"][0]["mobile_url"] == "https://watch.plex.tv/movie/alpha-heist-2015"
+        assert "mobile_url" not in by["Zeta Noir"]["plex"][0]                 # no guid
         assert by["Alpha Heist"]["watched"] is True                          # Plex viewCount > 0
         assert by["No Ids Movie"]["poster_url"] is None                       # degraded: no thumb, no TMDB
         assert by["Zeta Noir"]["poster_url"].startswith("/api/image/")
