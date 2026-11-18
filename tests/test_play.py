@@ -1,4 +1,4 @@
-"""Play on a TV via Google Cast: host list, device merge, LAN server address, endpoints. No network."""
+"""Play on a TV via Google Cast: host list, device merge, LAN reachable server address, endpoints. No network."""
 import asyncio
 from types import SimpleNamespace
 from uuid import UUID
@@ -35,14 +35,6 @@ def test_candidate_hosts_merge_env_and_plex_hints_deduped():
     assert cast.candidate_hosts("", []) == []
 
 
-def test_lan_connection_chosen_over_plex_direct_wan():
-    server = plex.parse_resources(RESOURCES)[0]
-    assert cast.lan_server_url(server) == "http://192.168.1.10:32400"
-    assert cast.lan_server_url({"connections": [{"uri": "https://x.plex.direct:1/", "local": False, "relay": False}]}) is None
-    no_addr = {"connections": [{"uri": "https://lan.example:32400/", "local": True, "relay": False}]}
-    assert cast.lan_server_url(no_addr) == "https://lan.example:32400"
-
-
 def test_discover_takes_name_from_device_and_merges_by_uuid(monkeypatch):
     info = SimpleNamespace(uuid=UUID(TV_UUID), friendly_name="Whatever The Device Says", model_name="Chromecast",
                            cast_type="cast")
@@ -66,12 +58,20 @@ def test_discover_ignores_groups_and_unreachable(monkeypatch):
 
 # --------------------------------------------------------------------------- endpoints
 
-def make_client(tmp_path, monkeypatch, play_ok=True, **over):
+LOCAL_HOST = "192-168-1-10.abc.plex.direct"
+PUBLIC_HOST = "80-1-2-3.abc.plex.direct"
+
+
+def make_client(tmp_path, monkeypatch, play_ok=True, reachable=(LOCAL_HOST,), **over):
     calls, plays, discovered = [], [], []
 
     def handler(req):
         calls.append(req)
-        return httpx.Response(200, json=RESOURCES) if req.url.host == "plex.tv" else httpx.Response(404)
+        if req.url.host == "plex.tv":
+            return httpx.Response(200, json=RESOURCES)
+        if req.url.path == "/identity" and req.url.host in reachable:
+            return httpx.Response(200, json={})
+        return httpx.Response(404)
 
     async def fake_discover(hosts):
         discovered.append(hosts)
@@ -99,7 +99,7 @@ def test_players_and_play_endpoints(tmp_path, monkeypatch):
 
         ok = client.post("/api/play", json={"player_id": TV_UUID, "server_id": "m1", "rating_key": "11"})
         assert ok.status_code == 204
-        assert plays == [(TV_UUID, "http://192.168.1.10:32400", "SRV-TOKEN", "11")]    # LAN, not plex.direct/WAN
+        assert plays == [(TV_UUID, f"https://{LOCAL_HOST}:32400", "SRV-TOKEN", "11")]    # reachable local preferred
 
         bad = client.post("/api/play", json={"player_id": TV_UUID, "server_id": "m1", "rating_key": "999"})
         assert bad.status_code == 404 and len(plays) == 1                    # not an open proxy
@@ -123,3 +123,33 @@ def test_players_empty_and_play_400_for_jellyfin(tmp_path, monkeypatch):
         assert client.get("/api/players").json() == []
         assert client.post("/api/play", json={"player_id": TV_UUID, "server_id": "m1", "rating_key": "11"}).status_code == 400
         assert not calls and not discovered and not plays
+
+
+def _play_url(tmp_path, monkeypatch, reachable):
+    client, cfg, calls, plays, _ = make_client(tmp_path, monkeypatch, reachable=reachable)
+    with client:
+        seed(cfg.db_path)
+        with db.session(cfg.db_path) as c:
+            db.set_meta(c, "plex_token", "USER-TOKEN")
+        r = client.post("/api/play", json={"player_id": TV_UUID, "server_id": "m1", "rating_key": "11"})
+        assert r.status_code == 204
+    return plays[0][1]
+
+
+def test_shared_server_with_unreachable_local_uses_public_plex_direct(tmp_path, monkeypatch):
+    assert _play_url(tmp_path, monkeypatch, (PUBLIC_HOST,)) == f"https://{PUBLIC_HOST}:32400"
+
+
+def test_remote_direct_preferred_over_relay(tmp_path, monkeypatch):
+    assert _play_url(tmp_path, monkeypatch, ("relay.example", PUBLIC_HOST)) == f"https://{PUBLIC_HOST}:32400"
+
+
+def test_relay_used_when_only_it_answers(tmp_path, monkeypatch):
+    assert _play_url(tmp_path, monkeypatch, ("relay.example",)) == "https://relay.example"
+
+
+def test_no_reachable_connection_falls_back_to_stored_base_url(tmp_path, monkeypatch):
+    url = _play_url(tmp_path, monkeypatch, ())
+    with db.session(tmp_path / "d" / "movienight.db") as c:
+        stored = c.execute("SELECT base_url FROM media_servers WHERE id='m1'").fetchone()["base_url"]
+    assert url == stored

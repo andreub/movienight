@@ -525,7 +525,8 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         if row is None:
             raise HTTPException(404, "Movie not found on that server")
         server_token = row["access_token"] or token
-        # The TV must reach the server by its LAN address, not the stored plex.direct / WAN one.
+        # Send the TV a connection that actually answers from here (local first, then remote, relay last):
+        # a shared server's "local" address belongs to its own network and may be unreachable.
         server_url = row["base_url"]
         try:
             srv = next((s for s in await plex.get_servers(app.state.http, cid, token)
@@ -534,7 +535,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             log.warning("plex servers lookup failed: %s", safe_error(e))
             srv = None
         if srv:
-            server_url = cast.lan_server_url(srv) or server_url
+            server_url = await plex.pick_connection(app.state.http, srv, cid) or server_url
             server_token = srv["access_token"] or server_token
         ok = await cast.play(player, server_url, server_token, body.rating_key)
         if not ok:

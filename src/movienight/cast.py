@@ -45,16 +45,6 @@ def candidate_hosts(env_hosts: str, players: list[dict]) -> list[str]:
     return seen
 
 
-def lan_server_url(server: dict) -> str | None:
-    """The address a TV on the LAN can reach: a local, non-relay connection as plain http://ip:port
-    (not the plex.direct name that resolves to the public IP). Falls back to the connection's uri."""
-    conns = [c for c in server.get("connections") or [] if c.get("local") and not c.get("relay")]
-    for c in conns:
-        if c.get("address") and c.get("port"):
-            return f"http://{c['address']}:{c['port']}"
-    return conns[0]["uri"].rstrip("/") if conns else None
-
-
 # --------------------------------------------------------------------------- discovery (blocking)
 
 def _device_info(host: str):
@@ -117,6 +107,13 @@ async def discover(hosts: list[str]) -> list[dict]:
 
 # --------------------------------------------------------------------------- playing (blocking)
 
+class _Stage(Exception):
+    """A play failure tagged with the stage it happened in (only the stage and exception type are logged)."""
+    def __init__(self, stage: str, cause: Exception):
+        super().__init__(stage)
+        self.stage, self.cause_type = stage, type(cause).__name__
+
+
 def _play_blocking(device: dict, server_url: str, server_token: str, rating_key: str) -> bool:
     from pychromecast import Chromecast
     from pychromecast.controllers.plex import PlexController
@@ -124,19 +121,30 @@ def _play_blocking(device: dict, server_url: str, server_token: str, rating_key:
     from plexapi.server import PlexServer
 
     # PlexController copies address/port/protocol/token from the plexapi server's base URL, so that
-    # URL is what the TV will use: build it with the LAN address, not the stored plex.direct name.
-    server = PlexServer(server_url, server_token, timeout=PROBE_TIMEOUT)
-    item = server.fetchItem(int(rating_key))
+    # URL is what the TV will use: pass a connection that is reachable (local first, then remote).
+    stage = "plex server lookup"
+    try:
+        server = PlexServer(server_url, server_token, timeout=PROBE_TIMEOUT)
+        item = server.fetchItem(int(rating_key))
+    except Exception as e:  # noqa: BLE001
+        raise _Stage(stage, e) from None
     host, port = device["host"], device.get("port") or CAST_PORT
     info = CastInfo({HostServiceInfo(host, port)}, UUID(device["id"]), device.get("product"),
                     device.get("name"), host, port, "cast", None)
     cc = Chromecast(info, tries=1, timeout=CONNECT_TIMEOUT)
     try:
+        stage = "cast connect"
         cc.wait(timeout=CONNECT_TIMEOUT)
+        stage = "cast play"
         pc = PlexController()
         cc.register_handler(pc)
         pc.play_media(item)
-        return pc.play_media_event.wait(PLAY_TIMEOUT)
+        if not pc.play_media_event.wait(PLAY_TIMEOUT):
+            log.warning("cast play on %s: receiver did not confirm within %ss", device.get("name"), PLAY_TIMEOUT)
+            return False
+        return True
+    except Exception as e:  # noqa: BLE001
+        raise _Stage(stage, e) from None
     finally:
         try:
             cc.disconnect(timeout=3)
@@ -145,9 +153,13 @@ def _play_blocking(device: dict, server_url: str, server_token: str, rating_key:
 
 
 async def play(device: dict, server_url: str, server_token: str, rating_key: str) -> bool:
-    """Launch the Plex receiver on the device and load the movie. False on any failure."""
+    """Launch the Plex receiver on the device and load the movie from `server_url` (a connection the TV can
+    reach). False on any failure."""
     try:
         return bool(await asyncio.to_thread(_play_blocking, device, server_url, server_token, rating_key))
-    except Exception as e:  # noqa: BLE001 - network, timeouts, plexapi errors; never include URLs/tokens
+    except _Stage as e:  # never include URLs/tokens: only the stage and the exception type
+        log.warning("cast play failed on %s at %s: %s", device.get("name"), e.stage, e.cause_type)
+        return False
+    except Exception as e:  # noqa: BLE001
         log.warning("cast play failed on %s: %s", device.get("name"), type(e).__name__)
         return False
