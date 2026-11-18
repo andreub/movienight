@@ -6,6 +6,7 @@ import html
 import logging
 import random
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, chat, db, letterboxd as lb, library, plex, queries, seenpush, servers, tags as lbtags, version
+from . import auth, cast, chat, db, letterboxd as lb, library, plex, queries, seenpush, servers, tags as lbtags, version
 from .config import Config
 from .sync import SyncManager, plex_token, tmdb_counts
 from .util import now_iso, safe_error
@@ -40,6 +41,12 @@ MAX_UPLOAD = lb.MAX_ZIP_BYTES
 
 class SyncBody(BaseModel):
     what: Literal["all", "plex", "jellyfin", "letterboxd", "tmdb"] = "all"   # plex/jellyfin = the selected server
+
+
+class PlayBody(BaseModel):
+    player_id: str = Field(min_length=1, max_length=200)
+    server_id: str = Field(min_length=1, max_length=200)
+    rating_key: str = Field(min_length=1, max_length=40)
 
 
 class DismissBody(BaseModel):
@@ -114,6 +121,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             yield
         finally:
             task.cancel()
+            await asyncio.to_thread(cast.close_all)
             if sync._task:
                 sync._task.cancel()
             await http.aclose()
@@ -469,6 +477,71 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         except lbtags.UnknownTag as e:
             raise HTTPException(400, str(e)) from None
         return lbtags.group_cands(st, kind, name, grp)
+
+    # ---- play on a TV: Google Cast (Chromecast / Android TV) running the Plex receiver; Plex only
+    players_cache: dict = {"at": 0.0, "items": []}
+
+    async def cast_players() -> list[dict]:
+        if cfg.media_server != "plex":
+            return []
+        now = time.monotonic()
+        if players_cache["at"] and now - players_cache["at"] < 60:
+            return players_cache["items"]
+        c = conn()
+        try:
+            token, cid = plex_token(c, cfg), db.client_id(c)
+        finally:
+            c.close()
+        if not token:
+            return []
+        hints: list[dict] = []
+        try:
+            hints = await plex.get_players(app.state.http, cid, token)   # plex.tv knows the TVs' LAN IPs
+        except (httpx.HTTPError, ValueError) as e:
+            log.warning("plex players lookup failed: %s", safe_error(e))
+        items = await cast.discover(cast.candidate_hosts(cfg.cast_hosts, hints))
+        players_cache.update(at=now, items=items)
+        return items
+
+    @app.get("/api/players")
+    async def players():
+        return [{"id": p["id"], "name": p["name"], "product": p["product"]} for p in await cast_players()]
+
+    @app.post("/api/play", status_code=204)
+    async def play(body: PlayBody):
+        if cfg.media_server != "plex":
+            raise HTTPException(400, "Playing on a player is only available with Plex")
+        player = next((p for p in await cast_players() if p["id"] == body.player_id), None)
+        if player is None:
+            raise HTTPException(404, "Player not found")
+        c = conn()
+        try:
+            row = c.execute(
+                "SELECT s.base_url, s.access_token FROM media_items i JOIN media_servers s ON s.id=i.server_id"
+                " WHERE i.server_id=? AND i.rating_key=? AND s.base_url IS NOT NULL",
+                (body.server_id, body.rating_key)).fetchone()
+            token, cid = plex_token(c, cfg), db.client_id(c)
+        finally:
+            c.close()
+        if row is None:
+            raise HTTPException(404, "Movie not found on that server")
+        server_token = row["access_token"] or token
+        # Send the TV a connection that actually answers from here (local first, then remote, relay last):
+        # a shared server's "local" address belongs to its own network and may be unreachable.
+        server_url = row["base_url"]
+        try:
+            srv = next((s for s in await plex.get_servers(app.state.http, cid, token)
+                        if s["id"] == body.server_id), None)
+        except (httpx.HTTPError, ValueError) as e:
+            log.warning("plex servers lookup failed: %s", safe_error(e))
+            srv = None
+        if srv:
+            server_url = await plex.pick_connection(app.state.http, srv, cid) or server_url
+            server_token = srv["access_token"] or server_token
+        ok = await cast.play(player, server_url, server_token, body.rating_key)
+        if not ok:
+            raise HTTPException(502, f"Could not reach {player['name']}. Is it on and on the same network?")
+        return Response(status_code=204)
 
     @app.get("/api/moods")
     def moods():

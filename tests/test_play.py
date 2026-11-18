@@ -1,0 +1,258 @@
+"""Play on a TV via Google Cast: host list, device merge, LAN reachable server address, endpoints. No network."""
+import asyncio
+import threading
+from types import SimpleNamespace
+from uuid import UUID
+
+import httpx
+from fastapi.testclient import TestClient
+
+from conftest import seed
+from movienight import cast, db, plex
+from movienight.app import create_app
+from movienight.config import Config
+
+TV_UUID = "11111111-2222-3333-4444-555555555555"
+RESOURCES = [
+    {"name": "Home", "clientIdentifier": "m1", "provides": "server", "accessToken": "SRV-TOKEN", "connections": [
+        {"uri": "https://192-168-1-10.abc.plex.direct:32400", "local": True, "relay": False,
+         "address": "192.168.1.10", "port": 32400, "protocol": "https"},
+        {"uri": "https://80-1-2-3.abc.plex.direct:32400", "local": False, "relay": False,
+         "address": "80.1.2.3", "port": 32400, "protocol": "https"},
+        {"uri": "https://relay.example", "local": False, "relay": True, "address": "r", "port": 443}]},
+    {"name": "Old name", "clientIdentifier": "tv1", "provides": "client,player", "product": "Plex for Android (TV)",
+     "connections": [{"uri": "https://relay.example/tv", "local": False, "relay": True},
+                     {"uri": "http://192.168.1.50:32500", "local": True, "relay": False}]},
+]
+DEVICE = {"id": TV_UUID, "name": "Living Room TV", "product": "Chromecast", "host": "192.168.1.50", "port": 8009}
+
+
+# --------------------------------------------------------------------------- pure pieces
+
+def test_candidate_hosts_merge_env_and_plex_hints_deduped():
+    hints = plex.parse_players(RESOURCES)
+    assert cast.plex_hint_hosts(hints) == ["192.168.1.50"]                       # relay dropped
+    assert cast.candidate_hosts("10.0.0.7, 192.168.1.50 ,", hints) == ["10.0.0.7", "192.168.1.50"]
+    assert cast.candidate_hosts("", []) == []
+
+
+def test_discover_takes_name_from_device_and_merges_by_uuid(monkeypatch):
+    info = SimpleNamespace(uuid=UUID(TV_UUID), friendly_name="Whatever The Device Says", model_name="Chromecast",
+                           cast_type="cast")
+    monkeypatch.setattr(cast, "_device_info", lambda host: info if host == "192.168.1.50" else None)
+    monkeypatch.setattr(cast, "_mdns", lambda: [
+        {"id": TV_UUID, "name": "mDNS dup", "product": "x", "host": "192.168.1.50", "port": 8009},
+        {"id": "99999999-0000-0000-0000-000000000000", "name": "Kitchen", "product": "Nest", "host": "192.168.1.60",
+         "port": 8009}])
+    found = asyncio.run(cast.discover(["192.168.1.50", "192.168.1.99"]))
+    assert [(d["name"], d["id"]) for d in found] == [("Kitchen", "99999999-0000-0000-0000-000000000000"),
+                                                     ("Whatever The Device Says", TV_UUID)]
+    assert found[1]["product"] == "Chromecast" and found[1]["host"] == "192.168.1.50"
+
+
+def test_discover_ignores_groups_and_unreachable(monkeypatch):
+    group = SimpleNamespace(uuid=UUID(TV_UUID), friendly_name="Group", model_name="Group", cast_type="group")
+    monkeypatch.setattr(cast, "_device_info", lambda host: group)
+    monkeypatch.setattr(cast, "_mdns", lambda: [])
+    assert asyncio.run(cast.discover(["1.2.3.4"])) == []
+
+
+# --------------------------------------------------------------------------- endpoints
+
+LOCAL_HOST = "192-168-1-10.abc.plex.direct"
+PUBLIC_HOST = "80-1-2-3.abc.plex.direct"
+
+
+def make_client(tmp_path, monkeypatch, play_ok=True, reachable=(LOCAL_HOST,), **over):
+    calls, plays, discovered = [], [], []
+
+    def handler(req):
+        calls.append(req)
+        if req.url.host == "plex.tv":
+            return httpx.Response(200, json=RESOURCES)
+        if req.url.path == "/identity" and req.url.host in reachable:
+            return httpx.Response(200, json={})
+        return httpx.Response(404)
+
+    async def fake_discover(hosts):
+        discovered.append(hosts)
+        return [dict(DEVICE)]
+
+    async def fake_play(device, url, token, rating_key):
+        plays.append((device["id"], url, token, rating_key))
+        return play_ok
+
+    monkeypatch.setattr(cast, "discover", fake_discover)
+    monkeypatch.setattr(cast, "play", fake_play)
+    cfg = Config(data_dir=tmp_path / "d", letterboxd_dir=tmp_path / "nolb", sync_on_start=False, login="none", **over)
+    return TestClient(create_app(cfg, transport=httpx.MockTransport(handler))), cfg, calls, plays, discovered
+
+
+def test_players_and_play_endpoints(tmp_path, monkeypatch):
+    client, cfg, calls, plays, discovered = make_client(tmp_path, monkeypatch, cast_hosts="10.0.0.7")
+    with client:
+        seed(cfg.db_path)
+        with db.session(cfg.db_path) as c:
+            db.set_meta(c, "plex_token", "USER-TOKEN")
+        assert client.get("/api/players").json() == [{"id": TV_UUID, "name": "Living Room TV", "product": "Chromecast"}]
+        client.get("/api/players")
+        assert discovered == [["10.0.0.7", "192.168.1.50"]]                  # env + plex hint, cached 60s
+
+        ok = client.post("/api/play", json={"player_id": TV_UUID, "server_id": "m1", "rating_key": "11"})
+        assert ok.status_code == 204
+        assert plays == [(TV_UUID, f"https://{LOCAL_HOST}:32400", "SRV-TOKEN", "11")]    # reachable local preferred
+
+        bad = client.post("/api/play", json={"player_id": TV_UUID, "server_id": "m1", "rating_key": "999"})
+        assert bad.status_code == 404 and len(plays) == 1                    # not an open proxy
+        nope = client.post("/api/play", json={"player_id": "nope", "server_id": "m1", "rating_key": "11"})
+        assert nope.status_code == 404
+
+
+def test_play_reports_502_when_cast_fails(tmp_path, monkeypatch):
+    client, cfg, *_ = make_client(tmp_path, monkeypatch, play_ok=False)
+    with client:
+        seed(cfg.db_path)
+        with db.session(cfg.db_path) as c:
+            db.set_meta(c, "plex_token", "USER-TOKEN")
+        r = client.post("/api/play", json={"player_id": TV_UUID, "server_id": "m1", "rating_key": "11"})
+        assert r.status_code == 502 and "Living Room TV" in r.json()["detail"]
+
+
+def test_players_empty_and_play_400_for_jellyfin(tmp_path, monkeypatch):
+    client, cfg, calls, plays, discovered = make_client(tmp_path, monkeypatch, media_server="jellyfin")
+    with client:
+        assert client.get("/api/players").json() == []
+        assert client.post("/api/play", json={"player_id": TV_UUID, "server_id": "m1", "rating_key": "11"}).status_code == 400
+        assert not calls and not discovered and not plays
+
+
+def _play_url(tmp_path, monkeypatch, reachable):
+    client, cfg, calls, plays, _ = make_client(tmp_path, monkeypatch, reachable=reachable)
+    with client:
+        seed(cfg.db_path)
+        with db.session(cfg.db_path) as c:
+            db.set_meta(c, "plex_token", "USER-TOKEN")
+        r = client.post("/api/play", json={"player_id": TV_UUID, "server_id": "m1", "rating_key": "11"})
+        assert r.status_code == 204
+    return plays[0][1]
+
+
+def test_shared_server_with_unreachable_local_uses_public_plex_direct(tmp_path, monkeypatch):
+    assert _play_url(tmp_path, monkeypatch, (PUBLIC_HOST,)) == f"https://{PUBLIC_HOST}:32400"
+
+
+def test_remote_direct_preferred_over_relay(tmp_path, monkeypatch):
+    assert _play_url(tmp_path, monkeypatch, ("relay.example", PUBLIC_HOST)) == f"https://{PUBLIC_HOST}:32400"
+
+
+def test_relay_used_when_only_it_answers(tmp_path, monkeypatch):
+    assert _play_url(tmp_path, monkeypatch, ("relay.example",)) == "https://relay.example"
+
+
+def test_no_reachable_connection_falls_back_to_stored_base_url(tmp_path, monkeypatch):
+    url = _play_url(tmp_path, monkeypatch, ())
+    with db.session(tmp_path / "d" / "movienight.db") as c:
+        stored = c.execute("SELECT base_url FROM media_servers WHERE id='m1'").fetchone()["base_url"]
+    assert url == stored
+
+
+# --------------------------------------------------------------------------- _play_blocking (fake pychromecast)
+
+class _FakeCC:
+    def __init__(self, app_id, states, quits_ok=True):
+        self.app_id, self.states, self.quits_ok = app_id, list(states), quits_ok
+        self.quit_called = self.disconnected = False
+        self.events = []
+        self.socket_client = SimpleNamespace(is_connected=True, stop=threading.Event())
+        outer = self
+
+        class _MC:
+            @property
+            def status(self_inner):
+                st = outer.states.pop(0) if len(outer.states) > 1 else outer.states[0]
+                return SimpleNamespace(player_state=st)
+        self.media_controller = _MC()
+
+    def wait(self, timeout=None): self.events.append("wait")
+
+    def quit_app(self):
+        self.quit_called = True
+        self.events.append("quit")
+        if self.quits_ok:
+            self.app_id = None
+
+    def register_handler(self, h): self.events.append("register")
+    def disconnect(self, timeout=None): self.disconnected = True
+
+
+def _patch_play(monkeypatch, cc):
+    ccs = cc if isinstance(cc, list) else [cc]
+    made = []
+
+    def factory(*a, **k):
+        made.append(1)
+        return ccs[min(len(made), len(ccs)) - 1]
+
+    class _PC:
+        def play_media(self_, item): ccs[min(len(made), len(ccs)) - 1].events.append("play")
+    class _Server:
+        def __init__(self, *a, **k): pass
+        def fetchItem(self, k): return object()
+    monkeypatch.setattr(cast, "PlexServer", _Server)
+    monkeypatch.setattr(cast, "Chromecast", factory)
+    monkeypatch.setattr(cast, "PlexController", _PC)
+    monkeypatch.setattr(cast, "POLL", 0.0)
+    monkeypatch.setattr(cast, "PLAY_TIMEOUT", 0.05)
+    monkeypatch.setattr(cast, "QUIT_WAIT", 0.05)
+    monkeypatch.setattr(cast, "_conns", {})
+    return made
+
+
+def _run():
+    return cast._play_blocking(DEVICE, "http://x", "tok", "1")
+
+
+def test_running_plex_app_is_quit_before_loading(monkeypatch):
+    cc = _FakeCC(cast.PLEX_APP_ID, ["IDLE", "BUFFERING"])
+    _patch_play(monkeypatch, cc)
+    assert _run() is True
+    assert cc.quit_called and cc.events.index("quit") < cc.events.index("play")
+
+
+def test_other_app_is_not_quit(monkeypatch):
+    cc = _FakeCC("OTHERAPP", ["PLAYING"])
+    _patch_play(monkeypatch, cc)
+    assert _run() is True and not cc.quit_called
+
+
+def test_connection_not_closed_after_play_and_reused(monkeypatch):
+    cc = _FakeCC(None, ["PLAYING"])
+    made = _patch_play(monkeypatch, cc)
+    assert _run() is True and not cc.disconnected          # closing would stop the Plex receiver
+    assert _run() is True and not cc.disconnected
+    assert len(made) == 1 and cc.events.count("wait") == 1 and cc.events.count("register") == 1
+    assert cc.events.count("play") == 2
+
+
+def test_dead_connection_is_replaced(monkeypatch):
+    old, new = _FakeCC(None, ["PLAYING"]), _FakeCC(None, ["PLAYING"])
+    made = _patch_play(monkeypatch, [old, new])
+    assert _run() is True
+    old.socket_client.is_connected = False
+    assert _run() is True
+    assert len(made) == 2 and old.disconnected and not new.disconnected and "play" in new.events
+
+
+def test_close_all_disconnects_cached_connections(monkeypatch):
+    cc = _FakeCC(None, ["PLAYING"])
+    _patch_play(monkeypatch, cc)
+    _run()
+    cast.close_all()
+    assert cc.disconnected and cast._conns == {}
+
+
+def test_playback_never_starting_returns_false_and_keeps_connection(monkeypatch):
+    cc = _FakeCC(None, ["IDLE"])
+    _patch_play(monkeypatch, cc)
+    assert _run() is False and not cc.disconnected
+    assert asyncio.run(cast.play(DEVICE, "http://x", "tok", "1")) is False

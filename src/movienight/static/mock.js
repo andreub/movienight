@@ -356,6 +356,10 @@ export async function handle(method, path, p, body) {
       if (s) s.enabled = body.enabled;
       return ok({ ok: true });
     }
+    case 'GET /api/players':
+      return ok(JELLYFIN ? [] : [{ id: 'tv1', name: 'Living Room TV', product: 'Chromecast' }]);
+    case 'POST /api/play':
+      return ok(null, 204);
     case 'POST /api/sync':
       if (syncInfo().running) return err(409, 'A sync is already running.');
       syncStarted = Date.now();

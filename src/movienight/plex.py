@@ -92,7 +92,8 @@ def parse_resources(payload) -> list[dict]:
         if "server" not in (res.get("provides") or ""):
             continue
         conns = [
-            {"uri": c["uri"], "local": bool(c.get("local")), "relay": bool(c.get("relay"))}
+            {"uri": c["uri"], "local": bool(c.get("local")), "relay": bool(c.get("relay")),
+             "address": c.get("address") or "", "port": c.get("port") or 0}
             for c in res.get("connections") or [] if c.get("uri")
         ]
         servers.append({
@@ -132,6 +133,38 @@ async def pick_connection(client: httpx.AsyncClient, server: dict, client_id: st
         if c:
             return c["uri"].rstrip("/")
     return None
+
+
+# --------------------------------------------------------------------------- players (LAN hints for Cast)
+
+def parse_players(payload) -> list[dict]:
+    """Resources that can play (`provides` has "player"), with direct connections first."""
+    players = []
+    for res in payload or []:
+        if "player" not in (res.get("provides") or "") or not res.get("clientIdentifier"):
+            continue
+        conns = [
+            {"uri": c["uri"], "local": bool(c.get("local")), "relay": bool(c.get("relay"))}
+            for c in res.get("connections") or [] if c.get("uri")
+        ]
+        players.append({
+            "id": res["clientIdentifier"],
+            "name": res.get("name") or res.get("product") or "Player",
+            "product": res.get("product") or "",
+            "platform": res.get("platform") or "",
+            "connections": [c for c in connection_order(conns) if not c["relay"]],
+        })
+    return players
+
+
+async def get_players(client: httpx.AsyncClient, client_id: str, token: str) -> list[dict]:
+    r = await client.get(
+        f"{PLEX_TV}/api/v2/resources",
+        params={"includeHttps": 1, "includeRelay": 1},
+        headers=base_headers(client_id, token), timeout=API_TIMEOUT,
+    )
+    r.raise_for_status()
+    return parse_players(r.json())
 
 
 # --------------------------------------------------------------------------- library

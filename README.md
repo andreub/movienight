@@ -92,11 +92,25 @@ The UI can run without a backend in mock mode at http://localhost:8080/?mock=1.
 | `MOVIENIGHT_JELLYFIN_USER` / `_PASSWORD` | empty | Jellyfin only: the account MovieNight signs in with |
 | `MOVIENIGHT_JELLYFIN_WATCHED` | on | `0`: ignore what was played in Jellyfin (use it when the account is shared with other people) |
 | `MOVIENIGHT_SYNC_HOURS` | `6` | Background sync interval |
+| `MOVIENIGHT_CAST_HOSTS` | empty | Plex only: IPs/hostnames (comma-separated) of Chromecasts / Android TVs to offer under Play on, for when they are not found automatically (see Play on your TV) |
 | `MOVIENIGHT_PUSH_SEEN` | off | `1`/`true`/`yes`: marks films you flag "seen it" as played on the media server (writes to that account). `MOVIENIGHT_PLEX_PUSH_SEEN` is the older name and still works |
 | `MOVIENIGHT_LOGIN` | `plex` (Plex), empty (Jellyfin) | Login methods, comma-separated: `plex`, `oidc`, or `none`. See [Login](#login) |
 | `MOVIENIGHT_PLEX_OWNER` | empty | Plex login only: the account id, username or email allowed in; empty = the first sign-in (or the account of the stored token) |
 | `MOVIENIGHT_PORT` | `8080` | Compose only: host port |
 | `TZ` | `Europe/Madrid` | Compose only: container timezone |
+
+## Play on your TV
+
+With Plex, the play button also lists the Chromecasts and Android TVs (anything with Google Cast built in) on
+your network as "Play on <name>", so one click starts the movie there; "Open in Plex Web" stays in the menu.
+MovieNight uses Google Cast, the same way the Plex phone app casts, because Plex removed remote control
+("Advertise as player", Plex Companion) from its new apps.
+
+- The container must reach the TV on TCP 8008 and 8009, and the TV must reach your Plex server on its LAN address.
+- Devices are found over mDNS when the container has host networking (Linux). Docker Desktop on macOS cannot do
+  multicast, so there the TVs are found through the device list of your Plex account (LAN IPs of your Plex
+  players) or the `MOVIENIGHT_CAST_HOSTS` variable (comma-separated IPs or hostnames).
+- The device name shown is the one the TV reports. Plex only.
 
 ## Media server: Plex or Jellyfin
 

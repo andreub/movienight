@@ -466,7 +466,7 @@ def movie_json(c: rec.Cand, st: State, dismissed: dict, with_reasons: bool = Tru
         "my_vote": c.vote,
         "dismissed_until": dismissed.get(c.id),
         "added_at": c.added_at.strftime("%Y-%m-%dT%H:%M:%SZ") if c.added_at else None,
-        "plex": [{k: p[k] for k in ("server", "server_id", "resolution", "url", "mobile_url") if k in p} for p in c.plex],
+        "plex": [{k: p[k] for k in ("server", "server_id", "resolution", "url", "rating_key", "mobile_url") if k in p} for p in c.plex],
     }
 
 

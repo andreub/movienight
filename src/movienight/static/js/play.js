@@ -1,9 +1,19 @@
 // "Play on Plex" (or Jellyfin): a plain link for one server, a small chooser for several.
-// `movie.plex` holds the selected media server's entries, whichever it is.
+// With Plex players on the account (e.g. a TV), the control becomes a menu: "Play on <player>" starts the
+// movie there, "Open in Plex Web" keeps the old link. `movie.plex` holds the selected media server's entries.
 import { h, icon } from './dom.js';
+import { api, getPlayers } from './api.js';
 import { serverName } from './status.js';
 
 const RES = { '4k': '4K', 1080: '1080p', 720: '720p', sd: 'SD' };
+const LAST_KEY = 'movienight.lastPlayer';
+
+function lastPlayer() {
+  try { return localStorage.getItem(LAST_KEY) || ''; } catch { return ''; }
+}
+function rememberPlayer(id) {
+  try { localStorage.setItem(LAST_KEY, id); } catch { /* storage unavailable */ }
+}
 
 const MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
   || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
@@ -18,20 +28,77 @@ export function playControl(movie, cls = '') {
   if (!sources.length) {
     return h('button', { type: 'button', class: `btn btn--primary ${cls}`, disabled: true }, icon('play'), `Not on ${serverName()} right now`);
   }
+  const holder = h('div', { class: 'play-control', style: { display: 'contents' } }, linkControl(sources, cls));
+  // Players are looked up lazily, once per page load; until (or unless) some exist the plain control stays.
+  getPlayers().then((players) => {
+    if (players.length && sources.some((s) => s.rating_key)) holder.replaceChildren(playerMenu(movie, sources, players, cls));
+  });
+  return holder;
+}
+
+function linkControl(sources, cls) {
   if (sources.length === 1) {
     return h('a', { class: `btn btn--primary ${cls}`, href: href(sources[0]), target: '_blank', rel: 'noopener' },
       icon('play'), `Play on ${serverName()}`);
   }
+  return menuControl(sources, cls, (toggle) => sources.map((s) => webItem(s, toggle, true)),
+    [icon('play'), `Play on ${serverName()}`, icon('chevron', 'icon--end')]);
+}
 
-  const menuId = `play-${movie.id}-${Math.random().toString(36).slice(2, 7)}`;
-  const menu = h('ul', { class: 'menu', id: menuId, hidden: true },
-    sources.map((s) => h('li', null, h('a', { class: 'menu__item', href: href(s), target: '_blank', rel: 'noopener', onclick: () => toggle(false) },
-      h('span', { text: s.server }),
-      s.resolution ? h('span', { class: 'badge', text: RES[s.resolution] || s.resolution }) : null))));
+function webItem(s, toggle, withServerName) {
+  return h('li', null, h('a', { class: 'menu__item', href: href(s), target: '_blank', rel: 'noopener', onclick: () => toggle(false) },
+    h('span', { text: withServerName ? s.server : `Open in ${serverName()} Web` }),
+    s.resolution ? h('span', { class: 'badge', text: RES[s.resolution] || s.resolution }) : null));
+}
+
+function playerMenu(movie, sources, players, cls) {
+  const last = lastPlayer();
+  const ordered = [...players].sort((a, b) => (b.id === last) - (a.id === last));
+  const playable = sources.filter((s) => s.rating_key);
+  const several = sources.length > 1;
+  let busy = false;
+  let button;
+
+  const label = () => [icon('play'), `Play on ${serverName()}`, icon('chevron', 'icon--end')];
+  const say = (text) => { button.replaceChildren(icon('play'), text); };
+
+  async function start(player, source, toggle) {
+    toggle(false);
+    if (busy) return;
+    busy = true;
+    say(`Starting on ${player.name}…`);
+    try {
+      await api.play(player.id, source.server_id, source.rating_key);
+      rememberPlayer(player.id);
+      say(`Playing on ${player.name}`);
+    } catch (e) {
+      say(e.status === 502 ? `Could not reach ${player.name}` : `Could not start on ${player.name}`);
+    }
+    setTimeout(() => { busy = false; button.replaceChildren(...label()); }, 4000);
+  }
+
+  const wrapAndButton = menuControl(sources, cls, (toggle) => [
+    ...ordered.flatMap((p) => playable.map((s) => h('li', null,
+      h('button', { type: 'button', class: 'menu__item', onclick: () => start(p, s, toggle) },
+        h('span', { text: `Play on ${p.name}${several ? ` (${s.server})` : ''}` }),
+        s.resolution ? h('span', { class: 'badge', text: RES[s.resolution] || s.resolution }) : null)))),
+    ...sources.map((s) => webItem(s, toggle, false)).map((li, i) => {
+      if (several) li.querySelector('span').textContent = `Open in ${serverName()} Web (${sources[i].server})`;
+      return li;
+    }),
+  ], label());
+  button = wrapAndButton.querySelector('button.btn');
+  return wrapAndButton;
+}
+
+// A button that opens a menu (the existing pattern: Escape / outside click close it, focus moves in).
+function menuControl(sources, cls, items, content) {
+  const menuId = `play-${Math.random().toString(36).slice(2, 9)}`;
+  const menu = h('ul', { class: 'menu', id: menuId, hidden: true }, items((open) => toggle(open)));
   const button = h('button', {
     type: 'button', class: `btn btn--primary ${cls}`, 'aria-expanded': 'false', 'aria-controls': menuId,
     onclick: () => toggle(menu.hidden),
-  }, icon('play'), `Play on ${serverName()}`, icon('chevron', 'icon--end'));
+  }, content);
   const wrap = h('div', { class: `menu-wrap ${cls}` }, button, menu);
 
   function onOutside(e) { if (!wrap.contains(e.target)) toggle(false); }
@@ -42,7 +109,7 @@ export function playControl(movie, cls = '') {
     if (open) {
       document.addEventListener('pointerdown', onOutside);
       wrap.addEventListener('keydown', onKey);
-      menu.querySelector('a')?.focus();
+      menu.querySelector('a, button')?.focus();
     } else {
       document.removeEventListener('pointerdown', onOutside);
       wrap.removeEventListener('keydown', onKey);
