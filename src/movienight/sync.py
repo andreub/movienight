@@ -159,19 +159,27 @@ class SyncManager:
             "SELECT DISTINCT json_extract(i.json, '$.guid') g FROM media_items i"
             " LEFT JOIN plex_slugs p ON p.guid = json_extract(i.json, '$.guid')"
             " WHERE g IS NOT NULL AND (p.guid IS NULL OR (p.slug = '' AND p.checked_at < ?))", (week_ago,)).fetchall()
-        guids = [r["g"] for r in rows]
-        sem = asyncio.Semaphore(8)
+        pending = [r["g"] for r in rows]
+        sem = asyncio.Semaphore(4)          # Discover throttles bursts (answers 401/429): stay gentle, retry misses
 
         async def one(g):
             async with sem:
                 return g, await plex.resolve_slug(self.http, cid, g, token)
 
-        for start in range(0, len(guids), 100):
-            for g, slug in await asyncio.gather(*(one(g) for g in guids[start:start + 100])):
-                if slug is not None:
-                    conn.execute("INSERT OR REPLACE INTO plex_slugs(guid,slug,checked_at) VALUES(?,?,?)",
-                                 (g, slug, now_iso()))
-            conn.commit()
+        for attempt in range(3):
+            failed: list[str] = []
+            for start in range(0, len(pending), 100):
+                for g, slug in await asyncio.gather(*(one(g) for g in pending[start:start + 100])):
+                    if slug is None:
+                        failed.append(g)
+                    else:
+                        conn.execute("INSERT OR REPLACE INTO plex_slugs(guid,slug,checked_at) VALUES(?,?,?)",
+                                     (g, slug, now_iso()))
+                conn.commit()
+            pending = failed
+            if not pending:
+                break
+            await asyncio.sleep(5)
 
     async def stage_jellyfin(self) -> None:
         """Sign in (or reuse the stored token), read the movie library, push seen marks if enabled."""
