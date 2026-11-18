@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import datetime, timezone
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -132,6 +132,80 @@ async def pick_connection(client: httpx.AsyncClient, server: dict, client_id: st
         if c:
             return c["uri"].rstrip("/")
     return None
+
+
+# --------------------------------------------------------------------------- players (remote control)
+
+def parse_players(payload) -> list[dict]:
+    """Resources that can play (`provides` has "player"), with direct connections first."""
+    players = []
+    for res in payload or []:
+        if "player" not in (res.get("provides") or "") or not res.get("clientIdentifier"):
+            continue
+        conns = [
+            {"uri": c["uri"], "local": bool(c.get("local")), "relay": bool(c.get("relay"))}
+            for c in res.get("connections") or [] if c.get("uri")
+        ]
+        players.append({
+            "id": res["clientIdentifier"],
+            "name": res.get("name") or res.get("product") or "Player",
+            "product": res.get("product") or "",
+            "platform": res.get("platform") or "",
+            "connections": [c for c in connection_order(conns) if not c["relay"]],
+        })
+    return players
+
+
+async def get_players(client: httpx.AsyncClient, client_id: str, token: str) -> list[dict]:
+    r = await client.get(
+        f"{PLEX_TV}/api/v2/resources",
+        params={"includeHttps": 1, "includeRelay": 1},
+        headers=base_headers(client_id, token), timeout=API_TIMEOUT,
+    )
+    r.raise_for_status()
+    return parse_players(r.json())
+
+
+_command_id = 0
+
+
+def _next_command_id() -> int:
+    global _command_id
+    _command_id += 1
+    return _command_id
+
+
+async def play_media(client: httpx.AsyncClient, player: dict, server_id: str, server_base_url: str,
+                     server_token: str, rating_key: str, client_id: str, token: str) -> bool:
+    """Ask a Plex player to start a movie (Plex Companion). Tries the player's direct connections, then
+    the server as a proxy. True when one accepted. The server token travels in the query, as Plex
+    clients do it; never log these URLs."""
+    srv = urlparse(server_base_url)
+    params = {
+        "key": f"/library/metadata/{rating_key}",
+        "machineIdentifier": server_id,
+        "address": srv.hostname or "",
+        "port": srv.port or (443 if srv.scheme == "https" else 80),
+        "protocol": srv.scheme or "http",
+        "offset": 0,
+        "type": "video",
+        "commandID": _next_command_id(),
+        "providerIdentifier": LIBRARY_IDENTIFIER,
+        "token": server_token,
+    }
+    headers = base_headers(client_id, token)
+    headers["X-Plex-Target-Client-Identifier"] = player["id"]
+    path = "/player/playback/playMedia"
+    bases = [c["uri"].rstrip("/") for c in player.get("connections") or [] if not c.get("relay")]
+    bases.append(server_base_url.rstrip("/"))      # proxy through the server
+    for base in bases:
+        try:
+            r = await client.get(base + path, params=params, headers=headers, timeout=PROBE_TIMEOUT)
+            if r.status_code < 300:
+                return True
+        except (httpx.HTTPError, ValueError):
+            continue
+    return False
 
 
 # --------------------------------------------------------------------------- library

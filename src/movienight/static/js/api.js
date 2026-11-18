@@ -110,6 +110,8 @@ export const api = {
   plexPinCheck: (id) => request('GET', `/api/plex/pin/${id}`),
   plexLogout: () => request('POST', '/api/plex/logout'),
   plexServer: (id, enabled) => request('PUT', `/api/plex/servers/${encodeURIComponent(id)}`, { json: { enabled } }),
+  players: () => request('GET', '/api/players'),
+  play: (player_id, server_id, rating_key) => request('POST', '/api/play', { json: { player_id, server_id, rating_key } }),
   sync: (what = 'all') => request('POST', '/api/sync', { json: { what } }),
   letterboxdUser: (username) => request('PUT', '/api/letterboxd/user', { json: { username } }),
   letterboxdImport: (file) => {
@@ -130,6 +132,13 @@ let tagsPromise = null;
 export function getTags() {
   tagsPromise ??= api.tags().then((r) => r?.families || []).catch(() => { tagsPromise = null; return []; });
   return tagsPromise;
+}
+
+// Plex players that can be remote-controlled, fetched once per page load. Any failure means "none".
+let playersPromise = null;
+export function getPlayers() {
+  playersPromise ??= api.players().then((r) => (Array.isArray(r) ? r : [])).catch(() => []);
+  return playersPromise;
 }
 
 // AI chat availability, fetched once. Any failure (old backend, network) counts as "off".

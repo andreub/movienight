@@ -98,6 +98,14 @@ The UI can run without a backend in mock mode at http://localhost:8080/?mock=1.
 | `MOVIENIGHT_PORT` | `8080` | Compose only: host port |
 | `TZ` | `Europe/Madrid` | Compose only: container timezone |
 
+## Play on your TV
+
+With Plex, the play button also lists your Plex players (a TV, a streamer) as "Play on <name>", so one click
+starts the movie there; "Open in Plex Web" stays in the menu. The player's Plex app must be signed into the
+same Plex account and have remote control on ("Advertise as player" in Settings → Advanced on Android TV).
+MovieNight talks to the player directly on the LAN (port 32500), so the container must be able to reach the TV;
+if it cannot, the request is relayed through your Plex server instead.
+
 ## Media server: Plex or Jellyfin
 
 `MOVIENIGHT_MEDIA_SERVER` picks one: `plex` (default) or `jellyfin`. The app never reads both.
