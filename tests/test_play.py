@@ -1,126 +1,125 @@
-"""Play on a Plex player (Plex Companion): parsing, request shape, fallback, endpoints."""
+"""Play on a TV via Google Cast: host list, device merge, LAN server address, endpoints. No network."""
 import asyncio
-from urllib.parse import parse_qs
+from types import SimpleNamespace
+from uuid import UUID
 
 import httpx
 from fastapi.testclient import TestClient
 
 from conftest import seed
-from movienight import db, plex
+from movienight import cast, db, plex
 from movienight.app import create_app
 from movienight.config import Config
 
+TV_UUID = "11111111-2222-3333-4444-555555555555"
 RESOURCES = [
-    {"name": "Home", "clientIdentifier": "mach1", "provides": "server", "connections": []},
-    {"name": "Living Room TV", "clientIdentifier": "tv1", "provides": "client,player", "product": "Plex for Android (TV)",
-     "platform": "Android", "connections": [
-         {"uri": "https://relay.example/tv", "local": False, "relay": True},
-         {"uri": "http://192.168.1.50:32500", "local": True, "relay": False}]},
-    {"name": "Phone", "clientIdentifier": "ph1", "provides": "client", "connections": []},
+    {"name": "Home", "clientIdentifier": "m1", "provides": "server", "accessToken": "SRV-TOKEN", "connections": [
+        {"uri": "https://192-168-1-10.abc.plex.direct:32400", "local": True, "relay": False,
+         "address": "192.168.1.10", "port": 32400, "protocol": "https"},
+        {"uri": "https://80-1-2-3.abc.plex.direct:32400", "local": False, "relay": False,
+         "address": "80.1.2.3", "port": 32400, "protocol": "https"},
+        {"uri": "https://relay.example", "local": False, "relay": True, "address": "r", "port": 443}]},
+    {"name": "Old name", "clientIdentifier": "tv1", "provides": "client,player", "product": "Plex for Android (TV)",
+     "connections": [{"uri": "https://relay.example/tv", "local": False, "relay": True},
+                     {"uri": "http://192.168.1.50:32500", "local": True, "relay": False}]},
 ]
-TV = {"id": "tv1", "name": "Living Room TV", "connections": [{"uri": "http://192.168.1.50:32500", "local": True, "relay": False}]}
+DEVICE = {"id": TV_UUID, "name": "Living Room TV", "product": "Chromecast", "host": "192.168.1.50", "port": 8009}
 
 
-def test_parse_players_keeps_players_and_drops_relay():
-    players = plex.parse_players(RESOURCES)
-    assert [p["id"] for p in players] == ["tv1"]
-    p = players[0]
-    assert p["name"] == "Living Room TV" and p["product"] == "Plex for Android (TV)"
-    assert [c["uri"] for c in p["connections"]] == ["http://192.168.1.50:32500"]
+# --------------------------------------------------------------------------- pure pieces
+
+def test_candidate_hosts_merge_env_and_plex_hints_deduped():
+    hints = plex.parse_players(RESOURCES)
+    assert cast.plex_hint_hosts(hints) == ["192.168.1.50"]                       # relay dropped
+    assert cast.candidate_hosts("10.0.0.7, 192.168.1.50 ,", hints) == ["10.0.0.7", "192.168.1.50"]
+    assert cast.candidate_hosts("", []) == []
 
 
-def run_play(handler, player=TV):
-    async def go():
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
-            return await plex.play_media(c, player, "m1", "http://plex.local:32400", "SRV-TOKEN", "11",
-                                         "cid", "USER-TOKEN")
-    return asyncio.run(go())
+def test_lan_connection_chosen_over_plex_direct_wan():
+    server = plex.parse_resources(RESOURCES)[0]
+    assert cast.lan_server_url(server) == "http://192.168.1.10:32400"
+    assert cast.lan_server_url({"connections": [{"uri": "https://x.plex.direct:1/", "local": False, "relay": False}]}) is None
+    no_addr = {"connections": [{"uri": "https://lan.example:32400/", "local": True, "relay": False}]}
+    assert cast.lan_server_url(no_addr) == "https://lan.example:32400"
 
 
-def test_play_media_request_shape():
-    seen = []
-
-    def handler(req):
-        seen.append(req)
-        return httpx.Response(200)
-
-    assert run_play(handler)
-    assert len(seen) == 1
-    r = seen[0]
-    assert r.url.host == "192.168.1.50" and r.url.port == 32500 and r.url.path == "/player/playback/playMedia"
-    q = {k: v[0] for k, v in parse_qs(r.url.query.decode()).items()}
-    assert q["key"] == "/library/metadata/11" and q["machineIdentifier"] == "m1"
-    assert (q["address"], q["port"], q["protocol"]) == ("plex.local", "32400", "http")
-    assert q["token"] == "SRV-TOKEN" and q["type"] == "video" and q["offset"] == "0"
-    assert q["providerIdentifier"] == "com.plexapp.plugins.library" and q["commandID"].isdigit()
-    assert r.headers["X-Plex-Target-Client-Identifier"] == "tv1"
-    assert r.headers["X-Plex-Token"] == "USER-TOKEN"
+def test_discover_takes_name_from_device_and_merges_by_uuid(monkeypatch):
+    info = SimpleNamespace(uuid=UUID(TV_UUID), friendly_name="Whatever The Device Says", model_name="Chromecast",
+                           cast_type="cast")
+    monkeypatch.setattr(cast, "_device_info", lambda host: info if host == "192.168.1.50" else None)
+    monkeypatch.setattr(cast, "_mdns", lambda: [
+        {"id": TV_UUID, "name": "mDNS dup", "product": "x", "host": "192.168.1.50", "port": 8009},
+        {"id": "99999999-0000-0000-0000-000000000000", "name": "Kitchen", "product": "Nest", "host": "192.168.1.60",
+         "port": 8009}])
+    found = asyncio.run(cast.discover(["192.168.1.50", "192.168.1.99"]))
+    assert [(d["name"], d["id"]) for d in found] == [("Kitchen", "99999999-0000-0000-0000-000000000000"),
+                                                     ("Whatever The Device Says", TV_UUID)]
+    assert found[1]["product"] == "Chromecast" and found[1]["host"] == "192.168.1.50"
 
 
-def test_play_media_falls_back_to_server_proxy():
-    hosts = []
-
-    def handler(req):
-        hosts.append(req.url.host)
-        if req.url.host == "192.168.1.50":
-            raise httpx.ConnectError("unreachable")
-        return httpx.Response(200)
-
-    assert run_play(handler)
-    assert hosts == ["192.168.1.50", "plex.local"]
+def test_discover_ignores_groups_and_unreachable(monkeypatch):
+    group = SimpleNamespace(uuid=UUID(TV_UUID), friendly_name="Group", model_name="Group", cast_type="group")
+    monkeypatch.setattr(cast, "_device_info", lambda host: group)
+    monkeypatch.setattr(cast, "_mdns", lambda: [])
+    assert asyncio.run(cast.discover(["1.2.3.4"])) == []
 
 
-def test_play_media_fails_when_nothing_answers():
-    assert run_play(lambda req: httpx.Response(500)) is False
+# --------------------------------------------------------------------------- endpoints
 
-
-def make_client(tmp_path, player_status=200, **over):
-    calls = []
+def make_client(tmp_path, monkeypatch, play_ok=True, **over):
+    calls, plays, discovered = [], [], []
 
     def handler(req):
         calls.append(req)
-        if req.url.host == "plex.tv":
-            return httpx.Response(200, json=RESOURCES)
-        return httpx.Response(player_status)
+        return httpx.Response(200, json=RESOURCES) if req.url.host == "plex.tv" else httpx.Response(404)
 
+    async def fake_discover(hosts):
+        discovered.append(hosts)
+        return [dict(DEVICE)]
+
+    async def fake_play(device, url, token, rating_key):
+        plays.append((device["id"], url, token, rating_key))
+        return play_ok
+
+    monkeypatch.setattr(cast, "discover", fake_discover)
+    monkeypatch.setattr(cast, "play", fake_play)
     cfg = Config(data_dir=tmp_path / "d", letterboxd_dir=tmp_path / "nolb", sync_on_start=False, login="none", **over)
-    return TestClient(create_app(cfg, transport=httpx.MockTransport(handler))), cfg, calls
+    return TestClient(create_app(cfg, transport=httpx.MockTransport(handler))), cfg, calls, plays, discovered
 
 
-def test_players_and_play_endpoints(tmp_path):
-    client, cfg, calls = make_client(tmp_path)
+def test_players_and_play_endpoints(tmp_path, monkeypatch):
+    client, cfg, calls, plays, discovered = make_client(tmp_path, monkeypatch, cast_hosts="10.0.0.7")
     with client:
         seed(cfg.db_path)
         with db.session(cfg.db_path) as c:
             db.set_meta(c, "plex_token", "USER-TOKEN")
-        assert client.get("/api/players").json() == [{"id": "tv1", "name": "Living Room TV", "product": "Plex for Android (TV)"}]
+        assert client.get("/api/players").json() == [{"id": TV_UUID, "name": "Living Room TV", "product": "Chromecast"}]
         client.get("/api/players")
-        assert sum(r.url.host == "plex.tv" for r in calls) == 1            # cached
+        assert discovered == [["10.0.0.7", "192.168.1.50"]]                  # env + plex hint, cached 60s
 
-        ok = client.post("/api/play", json={"player_id": "tv1", "server_id": "m1", "rating_key": "11"})
+        ok = client.post("/api/play", json={"player_id": TV_UUID, "server_id": "m1", "rating_key": "11"})
         assert ok.status_code == 204
-        assert calls[-1].url.path == "/player/playback/playMedia"
-        assert "token=SECRET" in calls[-1].url.query.decode()
+        assert plays == [(TV_UUID, "http://192.168.1.10:32400", "SRV-TOKEN", "11")]    # LAN, not plex.direct/WAN
 
-        n = len(calls)
-        bad = client.post("/api/play", json={"player_id": "tv1", "server_id": "m1", "rating_key": "999"})
-        assert bad.status_code == 404 and len(calls) == n                   # not an open proxy
+        bad = client.post("/api/play", json={"player_id": TV_UUID, "server_id": "m1", "rating_key": "999"})
+        assert bad.status_code == 404 and len(plays) == 1                    # not an open proxy
         nope = client.post("/api/play", json={"player_id": "nope", "server_id": "m1", "rating_key": "11"})
         assert nope.status_code == 404
 
 
-def test_play_reports_502_when_player_unreachable(tmp_path):
-    client, cfg, _ = make_client(tmp_path, player_status=500)
+def test_play_reports_502_when_cast_fails(tmp_path, monkeypatch):
+    client, cfg, *_ = make_client(tmp_path, monkeypatch, play_ok=False)
     with client:
         seed(cfg.db_path)
         with db.session(cfg.db_path) as c:
             db.set_meta(c, "plex_token", "USER-TOKEN")
-        r = client.post("/api/play", json={"player_id": "tv1", "server_id": "m1", "rating_key": "11"})
+        r = client.post("/api/play", json={"player_id": TV_UUID, "server_id": "m1", "rating_key": "11"})
         assert r.status_code == 502 and "Living Room TV" in r.json()["detail"]
 
 
-def test_players_empty_for_jellyfin(tmp_path):
-    client, cfg, calls = make_client(tmp_path, media_server="jellyfin")
+def test_players_empty_and_play_400_for_jellyfin(tmp_path, monkeypatch):
+    client, cfg, calls, plays, discovered = make_client(tmp_path, monkeypatch, media_server="jellyfin")
     with client:
         assert client.get("/api/players").json() == []
-        assert not calls
+        assert client.post("/api/play", json={"player_id": TV_UUID, "server_id": "m1", "rating_key": "11"}).status_code == 400
+        assert not calls and not discovered and not plays

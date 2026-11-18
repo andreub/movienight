@@ -34,6 +34,7 @@ class Config:
     jellyfin_user: str = ""
     jellyfin_password: str = field(default="", repr=False)
     jellyfin_watched: bool = True    # films played in Jellyfin count as watched
+    cast_hosts: str = ""             # comma-separated IPs/hostnames of Cast devices (TVs) to look for
 
     def __post_init__(self):
         if self.media_server not in MEDIA_SERVERS:
@@ -110,4 +111,5 @@ class Config:
             jellyfin_user=(env.get("MOVIENIGHT_JELLYFIN_USER") or "").strip(),
             jellyfin_password=env.get("MOVIENIGHT_JELLYFIN_PASSWORD") or "",
             jellyfin_watched=jf_watched not in ("0", "false", "no"),
+            cast_hosts=(env.get("MOVIENIGHT_CAST_HOSTS") or "").strip(),
         )

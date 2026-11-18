@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, chat, db, letterboxd as lb, library, plex, queries, seenpush, servers, tags as lbtags, version
+from . import auth, cast, chat, db, letterboxd as lb, library, plex, queries, seenpush, servers, tags as lbtags, version
 from .config import Config
 from .sync import SyncManager, plex_token, tmdb_counts
 from .util import now_iso, safe_error
@@ -477,10 +477,10 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             raise HTTPException(400, str(e)) from None
         return lbtags.group_cands(st, kind, name, grp)
 
-    # ---- play on a Plex player (Plex Companion); Plex only
+    # ---- play on a TV: Google Cast (Chromecast / Android TV) running the Plex receiver; Plex only
     players_cache: dict = {"at": 0.0, "items": []}
 
-    async def plex_players() -> list[dict]:
+    async def cast_players() -> list[dict]:
         if cfg.media_server != "plex":
             return []
         now = time.monotonic()
@@ -493,23 +493,24 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             c.close()
         if not token:
             return []
+        hints: list[dict] = []
         try:
-            items = await plex.get_players(app.state.http, cid, token)
+            hints = await plex.get_players(app.state.http, cid, token)   # plex.tv knows the TVs' LAN IPs
         except (httpx.HTTPError, ValueError) as e:
             log.warning("plex players lookup failed: %s", safe_error(e))
-            return players_cache["items"]
+        items = await cast.discover(cast.candidate_hosts(cfg.cast_hosts, hints))
         players_cache.update(at=now, items=items)
         return items
 
     @app.get("/api/players")
     async def players():
-        return [{"id": p["id"], "name": p["name"], "product": p["product"]} for p in await plex_players()]
+        return [{"id": p["id"], "name": p["name"], "product": p["product"]} for p in await cast_players()]
 
     @app.post("/api/play", status_code=204)
     async def play(body: PlayBody):
         if cfg.media_server != "plex":
             raise HTTPException(400, "Playing on a player is only available with Plex")
-        player = next((p for p in await plex_players() if p["id"] == body.player_id), None)
+        player = next((p for p in await cast_players() if p["id"] == body.player_id), None)
         if player is None:
             raise HTTPException(404, "Player not found")
         c = conn()
@@ -523,10 +524,21 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             c.close()
         if row is None:
             raise HTTPException(404, "Movie not found on that server")
-        ok = await plex.play_media(app.state.http, player, body.server_id, row["base_url"],
-                                   row["access_token"] or token, body.rating_key, cid, token)
+        server_token = row["access_token"] or token
+        # The TV must reach the server by its LAN address, not the stored plex.direct / WAN one.
+        server_url = row["base_url"]
+        try:
+            srv = next((s for s in await plex.get_servers(app.state.http, cid, token)
+                        if s["id"] == body.server_id), None)
+        except (httpx.HTTPError, ValueError) as e:
+            log.warning("plex servers lookup failed: %s", safe_error(e))
+            srv = None
+        if srv:
+            server_url = cast.lan_server_url(srv) or server_url
+            server_token = srv["access_token"] or server_token
+        ok = await cast.play(player, server_url, server_token, body.rating_key)
         if not ok:
-            raise HTTPException(502, f"Could not reach {player['name']}. Is Plex open on it?")
+            raise HTTPException(502, f"Could not reach {player['name']}. Is it on and on the same network?")
         return Response(status_code=204)
 
     @app.get("/api/moods")

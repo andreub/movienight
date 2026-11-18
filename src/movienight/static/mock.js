@@ -357,7 +357,7 @@ export async function handle(method, path, p, body) {
       return ok({ ok: true });
     }
     case 'GET /api/players':
-      return ok(JELLYFIN ? [] : [{ id: 'mitv', name: 'Living Room TV', product: 'Plex for Android (TV)' }]);
+      return ok(JELLYFIN ? [] : [{ id: 'tv1', name: 'Living Room TV', product: 'Chromecast' }]);
     case 'POST /api/play':
       return ok(null, 204);
     case 'POST /api/sync':
