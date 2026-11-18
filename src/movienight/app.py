@@ -121,6 +121,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             yield
         finally:
             task.cancel()
+            await asyncio.to_thread(cast.close_all)
             if sync._task:
                 sync._task.cancel()
             await http.aclose()

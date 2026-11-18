@@ -1,5 +1,6 @@
 """Play on a TV via Google Cast: host list, device merge, LAN reachable server address, endpoints. No network."""
 import asyncio
+import threading
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -162,6 +163,7 @@ class _FakeCC:
         self.app_id, self.states, self.quits_ok = app_id, list(states), quits_ok
         self.quit_called = self.disconnected = False
         self.events = []
+        self.socket_client = SimpleNamespace(is_connected=True, stop=threading.Event())
         outer = self
 
         class _MC:
@@ -184,17 +186,26 @@ class _FakeCC:
 
 
 def _patch_play(monkeypatch, cc):
+    ccs = cc if isinstance(cc, list) else [cc]
+    made = []
+
+    def factory(*a, **k):
+        made.append(1)
+        return ccs[min(len(made), len(ccs)) - 1]
+
     class _PC:
-        def play_media(self_, item): cc.events.append("play")
+        def play_media(self_, item): ccs[min(len(made), len(ccs)) - 1].events.append("play")
     class _Server:
         def __init__(self, *a, **k): pass
         def fetchItem(self, k): return object()
     monkeypatch.setattr(cast, "PlexServer", _Server)
-    monkeypatch.setattr(cast, "Chromecast", lambda *a, **k: cc)
+    monkeypatch.setattr(cast, "Chromecast", factory)
     monkeypatch.setattr(cast, "PlexController", _PC)
     monkeypatch.setattr(cast, "POLL", 0.0)
     monkeypatch.setattr(cast, "PLAY_TIMEOUT", 0.05)
     monkeypatch.setattr(cast, "QUIT_WAIT", 0.05)
+    monkeypatch.setattr(cast, "_conns", {})
+    return made
 
 
 def _run():
@@ -205,7 +216,7 @@ def test_running_plex_app_is_quit_before_loading(monkeypatch):
     cc = _FakeCC(cast.PLEX_APP_ID, ["IDLE", "BUFFERING"])
     _patch_play(monkeypatch, cc)
     assert _run() is True
-    assert cc.quit_called and cc.events.index("quit") < cc.events.index("play") and cc.disconnected
+    assert cc.quit_called and cc.events.index("quit") < cc.events.index("play")
 
 
 def test_other_app_is_not_quit(monkeypatch):
@@ -214,8 +225,34 @@ def test_other_app_is_not_quit(monkeypatch):
     assert _run() is True and not cc.quit_called
 
 
-def test_playback_never_starting_returns_false(monkeypatch):
+def test_connection_not_closed_after_play_and_reused(monkeypatch):
+    cc = _FakeCC(None, ["PLAYING"])
+    made = _patch_play(monkeypatch, cc)
+    assert _run() is True and not cc.disconnected          # closing would stop the Plex receiver
+    assert _run() is True and not cc.disconnected
+    assert len(made) == 1 and cc.events.count("wait") == 1 and cc.events.count("register") == 1
+    assert cc.events.count("play") == 2
+
+
+def test_dead_connection_is_replaced(monkeypatch):
+    old, new = _FakeCC(None, ["PLAYING"]), _FakeCC(None, ["PLAYING"])
+    made = _patch_play(monkeypatch, [old, new])
+    assert _run() is True
+    old.socket_client.is_connected = False
+    assert _run() is True
+    assert len(made) == 2 and old.disconnected and not new.disconnected and "play" in new.events
+
+
+def test_close_all_disconnects_cached_connections(monkeypatch):
+    cc = _FakeCC(None, ["PLAYING"])
+    _patch_play(monkeypatch, cc)
+    _run()
+    cast.close_all()
+    assert cc.disconnected and cast._conns == {}
+
+
+def test_playback_never_starting_returns_false_and_keeps_connection(monkeypatch):
     cc = _FakeCC(None, ["IDLE"])
     _patch_play(monkeypatch, cc)
-    assert _run() is False and cc.disconnected
+    assert _run() is False and not cc.disconnected
     assert asyncio.run(cast.play(DEVICE, "http://x", "tok", "1")) is False

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from urllib.parse import urlparse
 from uuid import UUID
@@ -123,6 +124,67 @@ class _Stage(Exception):
         self.stage, self.cause_type = stage, type(cause).__name__
 
 
+# One long-lived connection per device. Closing it (Chromecast.disconnect) makes pychromecast send CLOSE on the
+# virtual connection to the receiver app, and the Plex receiver stops playing when its only sender goes away
+# (observed on an Android TV: playback ran fine while connected and the TV dropped back to its home app the moment
+# we disconnected). So the connection is kept open and reused; it is only closed on app shutdown.
+_registry_lock = threading.Lock()
+_conns: dict[str, dict] = {}          # device uuid -> {"cc", "pc", "lock"}
+
+
+def _alive(cc) -> bool:
+    sc = getattr(cc, "socket_client", None)
+    if sc is None:
+        return True
+    return bool(sc.is_connected) and not sc.stop.is_set()
+
+
+def _close(cc) -> None:
+    try:
+        cc.disconnect(timeout=3)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _entry(device: dict) -> dict:
+    with _registry_lock:
+        return _conns.setdefault(device["id"], {"cc": None, "pc": None, "lock": threading.Lock()})
+
+
+def _connection(device: dict, entry: dict):
+    """(cc, plex controller) for the device, connecting if there is none or the old one died. Caller holds
+    entry["lock"]."""
+    cc = entry["cc"]
+    if cc is not None and not _alive(cc):
+        log.info("cast connection to %s lost, reconnecting", device.get("name"))
+        _close(cc)
+        entry["cc"] = entry["pc"] = cc = None
+    if cc is None:
+        host, port = device["host"], device.get("port") or CAST_PORT
+        info = CastInfo({HostServiceInfo(host, port)}, UUID(device["id"]), device.get("product"),
+                        device.get("name"), host, port, "cast", None)
+        cc = Chromecast(info, tries=1, timeout=CONNECT_TIMEOUT)
+        try:
+            cc.wait(timeout=CONNECT_TIMEOUT)
+        except Exception:
+            _close(cc)
+            raise
+        pc = PlexController()
+        cc.register_handler(pc)
+        entry["cc"], entry["pc"] = cc, pc
+    return entry["cc"], entry["pc"]
+
+
+def close_all() -> None:
+    """Close every cached cast connection (app shutdown)."""
+    with _registry_lock:
+        entries = list(_conns.values())
+        _conns.clear()
+    for e in entries:
+        if e["cc"] is not None:
+            _close(e["cc"])
+
+
 def _play_blocking(device: dict, server_url: str, server_token: str, rating_key: str) -> bool:
     # PlexController copies address/port/protocol/token from the plexapi server's base URL, so that
     # URL is what the TV will use: pass a connection that is reachable (local first, then remote).
@@ -132,42 +194,36 @@ def _play_blocking(device: dict, server_url: str, server_token: str, rating_key:
         item = server.fetchItem(int(rating_key))
     except Exception as e:  # noqa: BLE001
         raise _Stage(stage, e) from None
-    host, port = device["host"], device.get("port") or CAST_PORT
-    info = CastInfo({HostServiceInfo(host, port)}, UUID(device["id"]), device.get("product"),
-                    device.get("name"), host, port, "cast", None)
-    cc = Chromecast(info, tries=1, timeout=CONNECT_TIMEOUT)
-    try:
-        stage = "cast connect"
-        cc.wait(timeout=CONNECT_TIMEOUT)
-        stage = "cast relaunch"
-        # A Plex receiver left running by an earlier cast ignores/drops a new LOAD (pychromecast skips the
-        # launch when the app is already up), so close it and start from a clean receiver.
-        if cc.app_id == PLEX_APP_ID:
-            cc.quit_app()
-            deadline = time.monotonic() + QUIT_WAIT
-            while cc.app_id == PLEX_APP_ID and time.monotonic() < deadline:
-                time.sleep(POLL)
-        stage = "cast play"
-        pc = PlexController()
-        cc.register_handler(pc)
-        pc.play_media(item)
-        # play_media_event only means "LOAD sent": confirm via the media status the receiver publishes.
-        deadline = time.monotonic() + PLAY_TIMEOUT
-        state = None
-        while time.monotonic() < deadline:
-            state = getattr(cc.media_controller.status, "player_state", None)
-            if state in ("PLAYING", "BUFFERING"):
-                return True
-            time.sleep(POLL)
-        log.warning("cast play: receiver did not start playback (state=%s)", state)
-        return False
-    except Exception as e:  # noqa: BLE001
-        raise _Stage(stage, e) from None
-    finally:
+    entry = _entry(device)
+    with entry["lock"]:                      # two plays on one TV never interleave
         try:
-            cc.disconnect(timeout=3)
-        except Exception:  # noqa: BLE001
-            pass
+            stage = "cast connect"
+            cc, pc = _connection(device, entry)
+            stage = "cast relaunch"
+            # A Plex receiver left running by an earlier cast ignores/drops a new LOAD (pychromecast skips the
+            # launch when the app is already up), so close it and start from a clean receiver.
+            if cc.app_id == PLEX_APP_ID:
+                cc.quit_app()
+                deadline = time.monotonic() + QUIT_WAIT
+                while cc.app_id == PLEX_APP_ID and time.monotonic() < deadline:
+                    time.sleep(POLL)
+            stage = "cast play"
+            pc.play_media(item)
+            # play_media_event only means "LOAD sent": confirm via the media status the receiver publishes.
+            deadline = time.monotonic() + PLAY_TIMEOUT
+            state = None
+            while time.monotonic() < deadline:
+                state = getattr(cc.media_controller.status, "player_state", None)
+                if state in ("PLAYING", "BUFFERING"):
+                    return True
+                time.sleep(POLL)
+            log.warning("cast play: receiver did not start playback (state=%s)", state)
+            return False
+        except Exception as e:  # noqa: BLE001
+            if entry["cc"] is not None:      # unknown state: next click starts from a fresh connection
+                _close(entry["cc"])
+                entry["cc"] = entry["pc"] = None
+            raise _Stage(stage, e) from None
 
 
 async def play(device: dict, server_url: str, server_token: str, rating_key: str) -> bool:
