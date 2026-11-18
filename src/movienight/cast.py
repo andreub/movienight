@@ -11,6 +11,16 @@ import time
 from urllib.parse import urlparse
 from uuid import UUID
 
+# Imported at module level on purpose: importing these lazily from worker threads (discovery runs probes
+# and mDNS concurrently) deadlocks on the Python import lock (_DeadlockError).
+import zeroconf
+from plexapi.server import PlexServer
+from pychromecast import Chromecast
+from pychromecast.controllers.plex import PlexController
+from pychromecast.dial import get_device_info
+from pychromecast.discovery import CastBrowser, SimpleCastListener
+from pychromecast.models import CastInfo, HostServiceInfo
+
 log = logging.getLogger("movienight.cast")
 
 PROBE_TIMEOUT = 5.0
@@ -48,7 +58,6 @@ def candidate_hosts(env_hosts: str, players: list[dict]) -> list[str]:
 # --------------------------------------------------------------------------- discovery (blocking)
 
 def _device_info(host: str):
-    from pychromecast.dial import get_device_info
     return get_device_info(host, timeout=PROBE_TIMEOUT)
 
 
@@ -68,9 +77,6 @@ def _probe(host: str) -> dict | None:
 def _mdns() -> list[dict]:
     """Brief mDNS browse (works with host networking on Linux; empty behind Docker Desktop)."""
     try:
-        import zeroconf
-        from pychromecast.discovery import CastBrowser, SimpleCastListener
-
         zc = zeroconf.Zeroconf(ip_version=zeroconf.IPVersion.V4Only)
         browser = CastBrowser(SimpleCastListener(lambda *_: None), zc)
         try:
@@ -115,11 +121,6 @@ class _Stage(Exception):
 
 
 def _play_blocking(device: dict, server_url: str, server_token: str, rating_key: str) -> bool:
-    from pychromecast import Chromecast
-    from pychromecast.controllers.plex import PlexController
-    from pychromecast.models import CastInfo, HostServiceInfo
-    from plexapi.server import PlexServer
-
     # PlexController copies address/port/protocol/token from the plexapi server's base URL, so that
     # URL is what the TV will use: pass a connection that is reachable (local first, then remote).
     stage = "plex server lookup"
