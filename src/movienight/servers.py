@@ -21,8 +21,8 @@ class PlexBackend:
     def web_url(self, server_id: str, base_url: str | None, rating_key: str) -> str:
         return plex.web_url(server_id, rating_key)
 
-    def app_url(self, server_id: str, rating_key: str) -> str | None:
-        return plex.app_url(server_id, rating_key)
+    def mobile_url(self, slug: str) -> str | None:
+        return plex.mobile_url(slug)
 
     async def mark_played(self, http: httpx.AsyncClient, base_url: str, client_id: str, token: str,
                           user_id: str, rating_key: str) -> None:
@@ -50,7 +50,7 @@ class JellyfinBackend:
     def web_url(self, server_id: str, base_url: str | None, rating_key: str) -> str:
         return jellyfin.web_url(base_url or "", server_id, rating_key)
 
-    def app_url(self, server_id: str, rating_key: str) -> str | None:
+    def mobile_url(self, slug: str) -> str | None:
         return None
 
     async def mark_played(self, http, base_url, client_id, token, user_id, rating_key) -> None:

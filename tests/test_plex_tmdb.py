@@ -99,3 +99,34 @@ async def test_tmdb_rejects_bad_credentials():
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(401))) as c:
         with pytest.raises(tmdb.TmdbError):
             await tmdb.Tmdb(c, "bad").get("/x")
+
+
+def test_parse_plex_guid():
+    assert plex.parse_plex_guid({"guid": "plex://movie/5d77689033f255001e85998a"}) == "plex://movie/5d77689033f255001e85998a"
+    assert plex.parse_plex_guid({"guid": "local://123"}) is None
+    assert plex.parse_plex_guid({"guid": "plex://show/5d77689033f255001e85998a"}) is None
+    assert plex.parse_plex_guid({}) is None
+    assert plex.parse_item({"ratingKey": 1, "guid": "plex://movie/abc123"})["guid"] == "plex://movie/abc123"
+
+
+async def test_resolve_slug():
+    def handler(req):
+        assert req.url.host == "discover.provider.plex.tv" and "x-plex-token" not in req.headers
+        key = req.url.path.rsplit("/", 1)[-1]
+        if key == "ok":
+            return httpx.Response(200, json={"MediaContainer": {"Metadata": [{"slug": "the-secret-world-of-arrietty-2010"}]}})
+        if key == "bad":
+            return httpx.Response(200, json={"MediaContainer": {"Metadata": [{"slug": "../evil"}]}})
+        if key == "gone":
+            return httpx.Response(404)
+        if key == "down":
+            return httpx.Response(503)
+        raise httpx.ConnectTimeout("t")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+        assert await plex.resolve_slug(c, "cid", "plex://movie/ok") == "the-secret-world-of-arrietty-2010"
+        assert await plex.resolve_slug(c, "cid", "plex://movie/bad") == ""
+        assert await plex.resolve_slug(c, "cid", "plex://movie/gone") == ""
+        assert await plex.resolve_slug(c, "cid", "plex://movie/down") is None
+        assert await plex.resolve_slug(c, "cid", "plex://movie/boom") is None
+    assert plex.mobile_url("x-2010") == "https://watch.plex.tv/movie/x-2010"

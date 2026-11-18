@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -138,6 +139,10 @@ class SyncManager:
             library.assign_movies(conn)
             set_meta(conn, "plex_last_sync", now_iso())
             conn.commit()
+            try:
+                await self._slugs(conn, cid)
+            except Exception as e:  # noqa: BLE001 - play links just fall back to the web URL
+                self._fail("plex slugs", e)
             if self.cfg.push_seen:
                 try:
                     await self.push_seen(conn, cid)
@@ -146,6 +151,27 @@ class SyncManager:
         finally:
             conn.close()
         self.engine.invalidate()
+
+    async def _slugs(self, conn, cid: str) -> None:
+        """Resolve watch.plex.tv slugs for guids not yet looked up (misses are retried after a week)."""
+        week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        rows = conn.execute(
+            "SELECT DISTINCT json_extract(i.json, '$.guid') g FROM media_items i"
+            " LEFT JOIN plex_slugs p ON p.guid = json_extract(i.json, '$.guid')"
+            " WHERE g IS NOT NULL AND (p.guid IS NULL OR (p.slug = '' AND p.checked_at < ?))", (week_ago,)).fetchall()
+        guids = [r["g"] for r in rows]
+        sem = asyncio.Semaphore(8)
+
+        async def one(g):
+            async with sem:
+                return g, await plex.resolve_slug(self.http, cid, g)
+
+        for start in range(0, len(guids), 100):
+            for g, slug in await asyncio.gather(*(one(g) for g in guids[start:start + 100])):
+                if slug is not None:
+                    conn.execute("INSERT OR REPLACE INTO plex_slugs(guid,slug,checked_at) VALUES(?,?,?)",
+                                 (g, slug, now_iso()))
+            conn.commit()
 
     async def stage_jellyfin(self) -> None:
         """Sign in (or reuse the stored token), read the movie library, push seen marks if enabled."""

@@ -483,7 +483,7 @@ def test_migration_7_on_version_6_database(tmp_path):
 
     db.migrate(path)
     c = db.connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert c.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
     names = {r[0] for r in c.execute("SELECT name FROM sqlite_master")}
     assert {"media_servers", "media_items", "media_items_movie"} <= names
     assert not names & {"plex_servers", "plex_items", "plex_items_movie"}

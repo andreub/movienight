@@ -8,16 +8,10 @@ const RES = { '4k': '4K', 1080: '1080p', 720: '720p', sd: 'SD' };
 const MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
   || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
 
-// On mobile, try the native app first; if the page is still visible shortly after, fall back to the web URL.
-function openInApp(s, e) {
-  if (!MOBILE || !s.app_url) return;
-  e.preventDefault();
-  const cancel = () => { clearTimeout(timer); document.removeEventListener('visibilitychange', cancel); removeEventListener('pagehide', cancel); };
-  const timer = setTimeout(() => { cancel(); if (document.visibilityState === 'visible') location.href = s.url; }, 1500);
-  document.addEventListener('visibilitychange', cancel);
-  addEventListener('pagehide', cancel);
-  location.href = s.app_url;
-}
+// On mobile Plex entries carry `mobile_url`, a watch.plex.tv universal link: the Plex app opens on the movie's
+// page (without the app it is just a web page, so no fallback is needed). The link only opens the app on a real
+// user tap on an <a> to another domain, which is why these stay plain links (target=_blank is fine on iOS and Android).
+const href = (s) => (MOBILE && s.mobile_url) || s.url;
 
 export function playControl(movie, cls = '') {
   const sources = movie.plex || [];
@@ -25,13 +19,13 @@ export function playControl(movie, cls = '') {
     return h('button', { type: 'button', class: `btn btn--primary ${cls}`, disabled: true }, icon('play'), `Not on ${serverName()} right now`);
   }
   if (sources.length === 1) {
-    return h('a', { class: `btn btn--primary ${cls}`, href: sources[0].url, target: '_blank', rel: 'noopener', onclick: (e) => openInApp(sources[0], e) },
+    return h('a', { class: `btn btn--primary ${cls}`, href: href(sources[0]), target: '_blank', rel: 'noopener' },
       icon('play'), `Play on ${serverName()}`);
   }
 
   const menuId = `play-${movie.id}-${Math.random().toString(36).slice(2, 7)}`;
   const menu = h('ul', { class: 'menu', id: menuId, hidden: true },
-    sources.map((s) => h('li', null, h('a', { class: 'menu__item', href: s.url, target: '_blank', rel: 'noopener', onclick: (e) => { openInApp(s, e); toggle(false); } },
+    sources.map((s) => h('li', null, h('a', { class: 'menu__item', href: href(s), target: '_blank', rel: 'noopener', onclick: () => toggle(false) },
       h('span', { text: s.server }),
       s.resolution ? h('span', { class: 'badge', text: RES[s.resolution] || s.resolution }) : null))));
   const button = h('button', {

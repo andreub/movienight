@@ -160,6 +160,14 @@ MIGRATIONS = [
     PRAGMA user_version=7;
     COMMIT;
     """,
+    # 8: watch.plex.tv slug per Plex guid (resolved once, off the request path; slug '' = Plex has none)
+    """
+    CREATE TABLE IF NOT EXISTS plex_slugs (
+        guid TEXT PRIMARY KEY,
+        slug TEXT,
+        checked_at TEXT
+    );
+    """,
 ]
 
 # meta keys that belong to one media server type: removed when the app switches to the other one

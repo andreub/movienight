@@ -11,6 +11,7 @@ import httpx
 PLEX_TV = "https://plex.tv"
 PROBE_TIMEOUT = httpx.Timeout(4.0, connect=3.0)
 API_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
+SLUG_TIMEOUT = httpx.Timeout(10.0, connect=4.0)
 PAGE_SIZE = 500
 
 
@@ -151,6 +152,15 @@ def parse_guids(md: dict) -> tuple[int | None, str | None]:
     return tmdb, imdb
 
 
+_PLEX_GUID_RE = re.compile(r"^plex://movie/[0-9a-f]+$")
+
+
+def parse_plex_guid(md: dict) -> str | None:
+    """The item's Plex Discover guid (`plex://movie/<id>`), if the server matched it to Plex's catalogue."""
+    g = md.get("guid") or ""
+    return g if _PLEX_GUID_RE.match(g) else None
+
+
 def _resolution(md: dict) -> str | None:
     order = {"4k": 4, "1080": 3, "720": 2, "sd": 1}
     best = None
@@ -197,6 +207,7 @@ def parse_item(md: dict) -> dict:
         "roles": _tags(md, "Role", 12),
         "countries": _tags(md, "Country"),
         "resolution": _resolution(md),
+        "guid": parse_plex_guid(md),
     }
 
 
@@ -261,10 +272,31 @@ def web_url(machine_id: str, rating_key: str) -> str:
     return f"https://app.plex.tv/desktop/#!/server/{machine_id}/details?key={key}"
 
 
-def app_url(machine_id: str, rating_key: str) -> str:
-    """Deep link into the native Plex app (undocumented scheme; mobile only)."""
-    key = quote(f"/library/metadata/{rating_key}", safe="")
-    return f"plex://preplay/?metadataKey={key}&metadataType=1&server={machine_id}"
+DISCOVER = "https://discover.provider.plex.tv"
+WATCH_URL = "https://watch.plex.tv/movie/"
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+
+async def resolve_slug(client: httpx.AsyncClient, client_id: str, guid: str) -> str | None:
+    """watch.plex.tv slug of a `plex://movie/<id>` guid, from Plex's public Discover metadata (no token needed).
+
+    Returns "" when Plex has no slug for it (cache that), None on a transient failure (try again later)."""
+    try:
+        r = await client.get(f"{DISCOVER}/library/metadata/{guid.rsplit('/', 1)[-1]}",
+                             headers=base_headers(client_id), timeout=SLUG_TIMEOUT)
+        if r.status_code in (400, 404):
+            return ""
+        r.raise_for_status()
+        md = (r.json().get("MediaContainer", {}).get("Metadata") or [{}])[0]
+    except (httpx.HTTPError, ValueError):
+        return None
+    slug = md.get("slug")
+    return slug if isinstance(slug, str) and _SLUG_RE.match(slug) else ""
+
+
+def mobile_url(slug: str) -> str:
+    """Universal link: opens the movie's Discover page in the Plex app (the web page without the app)."""
+    return WATCH_URL + slug
 
 
 async def fetch_image(client: httpx.AsyncClient, base: str, token: str, client_id: str,

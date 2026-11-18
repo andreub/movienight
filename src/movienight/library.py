@@ -129,6 +129,8 @@ def load_inputs(conn: sqlite3.Connection, media=None) -> tuple[list, list]:
     details = {r["tmdb_id"]: json.loads(r["json"]) for r in conn.execute("SELECT tmdb_id, json FROM tmdb_details")}
     recs = {r["tmdb_id"]: json.loads(r["json"]) for r in conn.execute("SELECT tmdb_id, json FROM tmdb_recs")}
 
+    slugs = {r["guid"]: r["slug"] for r in conn.execute("SELECT guid, slug FROM plex_slugs WHERE slug != ''")}
+
     # ---- candidates
     rows = conn.execute(
         "SELECT m.id, m.dkey, m.tmdb_id, i.server_id, i.rating_key, i.json, s.name sname, s.owned, s.base_url"
@@ -160,7 +162,7 @@ def load_inputs(conn: sqlite3.Connection, media=None) -> tuple[list, list]:
             plex=[{"server": r["sname"], "server_id": r["server_id"], "resolution": it.get("resolution"),
                    "url": media.web_url(r["server_id"], r["base_url"], it["rating_key"]),
                    "rating_key": it["rating_key"],
-                   **({"app_url": u} if (u := media.app_url(r["server_id"], it["rating_key"])) else {})}
+                   **({"mobile_url": u} if (s := slugs.get(it.get("guid"))) and (u := media.mobile_url(s)) else {})}
                   for r, it in zip(rs, items)],
         )
         cands.append(c)
@@ -464,7 +466,7 @@ def movie_json(c: rec.Cand, st: State, dismissed: dict, with_reasons: bool = Tru
         "my_vote": c.vote,
         "dismissed_until": dismissed.get(c.id),
         "added_at": c.added_at.strftime("%Y-%m-%dT%H:%M:%SZ") if c.added_at else None,
-        "plex": [{k: p[k] for k in ("server", "server_id", "resolution", "url", "app_url") if k in p} for p in c.plex],
+        "plex": [{k: p[k] for k in ("server", "server_id", "resolution", "url", "mobile_url") if k in p} for p in c.plex],
     }
 
 

@@ -137,6 +137,7 @@ def parse_item(it: dict) -> dict:
         "roles": [p["Name"] for p in people if p.get("Type") == "Actor" and p.get("Name")][:12],
         "countries": [c for c in it.get("ProductionLocations") or [] if c],
         "resolution": _resolution(it),
+        "guid": None,                        # Plex-only (same item shape)
     }
 
 
