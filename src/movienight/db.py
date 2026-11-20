@@ -168,6 +168,14 @@ MIGRATIONS = [
         checked_at TEXT
     );
     """,
+    # 9: Letterboxd-watched films are pushed to Plex too. `source` tells them from manual "seen" marks (only
+    # those are ever unscrobbled); lb_baseline = films already watched when that began (never auto-pushed).
+    """
+    ALTER TABLE seen_pushes ADD COLUMN source TEXT NOT NULL DEFAULT 'seen';
+    CREATE TABLE IF NOT EXISTS lb_baseline (
+        lb_id INTEGER PRIMARY KEY
+    );
+    """,
 ]
 
 # meta keys that belong to one media server type: removed when the app switches to the other one

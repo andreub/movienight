@@ -11,9 +11,40 @@ from conftest import seed
 from movienight import db, plex_history
 from movienight.app import create_app
 from movienight.util import norm_title
-from test_seen_push import mark, pushes
+from test_seen_push import mark as _mark, pushes
 
 UUID = "00000000-0000-0000-0000-000000000000"
+
+
+def drain(c):
+    """The history fix-up runs in the background after the push; wait for it."""
+    c.portal.call(c.app.state.sync.drain_history)
+
+
+def mark(c, *a, **kw):
+    r = _mark(c, *a, **kw)
+    drain(c)
+    return r
+
+
+def lb_push(c, backfill=False):
+    """One full sync push including the Letterboxd-watched films."""
+    sync = c.app.state.sync
+
+    async def go():
+        conn = db.connect(c.cfg.db_path)
+        try:
+            return await sync.push_seen(conn, db.client_id(conn), lb=True)
+        finally:
+            conn.close()
+
+    out = c.portal.call(go)
+    drain(c)
+    return out
+
+
+def scrobbled(fake):
+    return sorted(r.url.params["key"] for r in fake.calls if r.url.path == "/:/scrobble")
 
 
 def ago(minutes):
@@ -29,8 +60,10 @@ class FakeServices:
         self.errors: dict[str, list] = {}       # operationName -> errors answered with HTTP 200
         self.reject_year = False
         self.history_calls = 0
+        self.calls: list[httpx.Request] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.calls.append(request)
         if request.url.path == "/:/scrobble":
             return httpx.Response(200)
         if request.url.host == "plex.tv" and request.url.path == "/api/v2/user":
@@ -223,3 +256,88 @@ def test_letterboxd_watched_without_diary_date_removes(cfg):
         assert m["operationName"] == "removeActivity"
 
     run(cfg, fake, body, diary=(111, "Crime Two", 2016, None))
+
+
+def test_baseline_skips_existing_letterboxd_history(cfg):
+    fake = FakeServices([node("g1", "Gamma", 2001, ago(0))])
+
+    def body(c):
+        out = lb_push(c)                 # Gamma is watched on Letterboxd (seeded) but predates the baseline
+        assert out["pushed"] == 0 and scrobbled(fake) == [] and fake.gql == []
+        with db.session(cfg.db_path) as d:
+            assert d.execute("SELECT value FROM meta WHERE key='lb_push_baseline'").fetchone()
+            assert d.execute("SELECT COUNT(*) FROM lb_baseline").fetchone()[0] == 4
+        lb_push(c)
+        assert scrobbled(fake) == []
+
+    run(cfg, fake, body)
+
+
+def test_new_letterboxd_film_with_diary_date_is_marked_and_redated(cfg):
+    fake = FakeServices([node("a1", "Crime Two", 2016, ago(0))])
+
+    def body(c):
+        lb_push(c)                                         # baseline
+        add_diary(cfg, 111, "Crime Two", 2016, "2024-03-05")
+        out = lb_push(c)
+        assert out["pushed"] == 1 and scrobbled(fake) == ["11"]
+        [m] = fake.mutations()
+        assert m["operationName"] == "updateActivityDate"
+        assert m["variables"] == {"id": "a1", "input": {"date": "2024-03-05T20:00:00.000Z"}}
+        assert pushes(c) == [("tmdb:111", "m1", "11")]
+        again = lb_push(c)                                 # recorded: not pushed twice, and never unscrobbled
+        assert again["pushed"] == 0 and again["unpushed"] == 0 and again["unpush_failed"] == 0
+        assert scrobbled(fake) == ["11"]
+        with db.session(cfg.db_path) as d:
+            assert d.execute("SELECT source FROM seen_pushes").fetchone()[0] == "lb"
+
+    run(cfg, fake, body)
+
+
+def test_new_letterboxd_film_without_diary_date_is_marked_and_removed(cfg):
+    fake = FakeServices([node("a1", "Crime Two", 2016, ago(0))])
+
+    def body(c):
+        lb_push(c)
+        add_diary(cfg, 111, "Crime Two", 2016, None)
+        assert lb_push(c)["pushed"] == 1 and scrobbled(fake) == ["11"]
+        [m] = fake.mutations()
+        assert m["operationName"] == "removeActivity"
+        assert m["variables"] == {"input": {"id": "a1", "type": "WATCH_HISTORY"}}
+
+    run(cfg, fake, body)
+
+
+def test_backfill_is_opt_in_and_uses_diary_dates(cfg):
+    fake = FakeServices([node("g1", "Gamma", 2001, ago(0))])
+
+    def body(c):
+        out = lb_push(c)
+        assert out["pushed"] == 1 and scrobbled(fake) == ["14"]       # Gamma, from the pre-existing history
+        [m] = fake.mutations()
+        assert m["variables"]["input"]["date"] == "2024-01-01T20:00:00.000Z"
+
+    run(cfg, fake, body, push_lb_backfill=True)
+
+
+def test_manual_mark_is_still_removed_even_when_letterboxd_has_other_films(cfg):
+    fake = FakeServices([node("a1", "Rom Com", 2020, ago(0))])
+
+    def body(c):
+        mark(c, "Rom Com")
+        [m] = fake.mutations()
+        assert m["operationName"] == "removeActivity"
+
+    run(cfg, fake, body)
+
+
+def test_manual_click_does_not_wait_for_history_fix(cfg):
+    fake = FakeServices([node("a1", "Crime Two", 2016, ago(0))])
+
+    def body(c):
+        _mark(c, "Crime Two")                              # returns without draining the background fix-up
+        assert pushes(c) == [("tmdb:111", "m1", "11")]
+        drain(c)
+        assert len(fake.mutations()) == 1
+
+    run(cfg, fake, body)

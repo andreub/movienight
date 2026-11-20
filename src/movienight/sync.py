@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from . import jellyfin, letterboxd as lb, library, plex, seenpush, servers
+from . import jellyfin, letterboxd as lb, library, plex, plex_history, seenpush, servers
 from .config import Config
 from .db import client_id, connect, get_meta, set_meta
 from .tmdb import Tmdb, TmdbError
@@ -40,6 +40,8 @@ class SyncManager:
         self.media = servers.backend(cfg)
         self.push_lock = asyncio.Lock()        # seen-mark pushes to the media server: one writer at a time
         self.last_push: dict | None = None
+        self.history_lock = asyncio.Lock()     # plex.tv history fix-ups: one at a time, outside push_lock
+        self._history_tasks: set[asyncio.Task] = set()
         self.jellyfin_problem: str | None = None
 
     # ---- status / control
@@ -150,7 +152,7 @@ class SyncManager:
                 self._fail("plex slugs", e)
             if self.cfg.push_seen:
                 try:
-                    await self.push_seen(conn, cid)
+                    await self.push_seen(conn, cid, lb=True)
                 except Exception as e:  # noqa: BLE001 - the library itself is already stored
                     self._fail("plex seen marks", e)
         finally:
@@ -270,12 +272,40 @@ class SyncManager:
             " access_token=excluded.access_token", (server_id, name, base, token))
         conn.commit()
 
-    async def push_seen(self, conn, cid: str) -> dict:
-        """Retry pending unscrobbles, then mark played every seen film not yet pushed (also the backfill)."""
+    def schedule_history(self, conn, cid: str, items: list[dict]) -> None:
+        """Run the plex.tv history fix-up in the background (best effort), so the caller can release its lock."""
+        token = history_token(conn, self.cfg)
+        if not items or not token:
+            return
+        task = asyncio.create_task(self._history(cid, token, items))
+        self._history_tasks.add(task)
+        task.add_done_callback(self._history_tasks.discard)
+
+    async def _history(self, cid: str, token: str, items: list[dict]) -> None:
+        try:
+            async with self.history_lock:
+                conn = connect(self.cfg.db_path)
+                try:
+                    await plex_history.fix_new_activities(conn, self.http, cid, token, items)
+                finally:
+                    conn.close()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - best effort
+            log.warning("plex history fix failed: %s", safe_error(e))
+
+    async def drain_history(self) -> None:
+        if self._history_tasks:
+            await asyncio.gather(*self._history_tasks, return_exceptions=True)
+
+    async def push_seen(self, conn, cid: str, lb: bool = False) -> dict:
+        """Retry pending unscrobbles, then mark played every seen film not yet pushed (also the backfill).
+        With `lb`, Letterboxd-watched films too (new ones, or the paced backfill when opted in)."""
+        sink = (lambda items: self.schedule_history(conn, cid, items)) if history_token(conn, self.cfg) else None
         async with self.push_lock:
             undone = await seenpush.unpush(conn, self.http, cid, backend=self.media)
-            counts = await seenpush.push(conn, self.http, cid, backend=self.media,
-                                         history_token=history_token(conn, self.cfg))
+            counts = await seenpush.push(conn, self.http, cid, backend=self.media, history_sink=sink,
+                                         lb=lb, backfill=self.cfg.push_lb_backfill)
         self.last_push = {**counts, "unpushed": undone["unpushed"], "unpush_failed": undone["failed"]}
         log.info("seen marks on %s: %s", self.media.label, self.last_push)
         return self.last_push
@@ -294,6 +324,13 @@ class SyncManager:
                     self._fail("letterboxd rss", e)
             conn.commit()
             library.record_outcomes(conn)
+            if self.cfg.push_seen and self.cfg.media_server == "plex":
+                try:
+                    library.assign_movies(conn)
+                    await self.push_seen(conn, client_id(conn), lb=True)
+                except Exception as e:  # noqa: BLE001 - the import itself is stored
+                    self._fail("letterboxd films on plex", e)
+                conn.commit()
         finally:
             conn.close()
         self.engine.invalidate()

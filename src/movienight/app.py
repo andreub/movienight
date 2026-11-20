@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 from . import auth, cast, chat, db, letterboxd as lb, library, plex, queries, seenpush, servers, tags as lbtags, version
 from .config import Config
-from .sync import SyncManager, history_token, plex_token, tmdb_counts
+from .sync import SyncManager, plex_token, tmdb_counts
 from .util import now_iso, safe_error
 
 log = logging.getLogger("movienight")
@@ -654,7 +654,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                     cid = db.client_id(c)
                     if body.seen:
                         await seenpush.push(c, app.state.http, cid, [key], backend=media,
-                                            history_token=history_token(c, cfg))
+                                            history_sink=lambda items: sync_mgr().schedule_history(c, cid, items))
                     else:
                         await seenpush.unpush(c, app.state.http, cid, [key], backend=media)
             except Exception as e:  # noqa: BLE001
