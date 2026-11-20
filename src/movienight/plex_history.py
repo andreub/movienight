@@ -28,6 +28,10 @@ RECENT = timedelta(minutes=10)      # only entries this fresh can be ours; older
 SCAN = 20                           # newest history nodes inspected
 LOOKUP_TRIES = 3                    # the entry can show up a moment after the scrobble
 LOOKUP_DELAY = 2.0
+CATCHUP_WINDOW = timedelta(minutes=15)   # catch-up: entries this close to a push time are ours
+PAGE = 50                           # history page size
+MAX_PAGES = 100
+PAGE_DELAY = 0.5
 MUTATION_DELAY = 1.5                # pacing between mutations (the API rate-limits)
 MAX_RETRY_AFTER = 10.0
 _sleep = asyncio.sleep
@@ -246,6 +250,138 @@ async def fix_new_activities(conn: sqlite3.Connection, http: httpx.AsyncClient, 
     except (httpx.HTTPError, GraphQLError, ValueError) as e:
         log.warning("plex history fix skipped: %s", _why(e))
     log.info("plex history fix: %s", out)
+    return out
+
+
+async def history_since(http, client_id, token, uuid: str, since: datetime) -> list[dict]:
+    """The watch history, newest first, paginated back to `since` (bounded by MAX_PAGES)."""
+    nodes: list[dict] = []
+    after, query = None, Q_FULL
+    for _ in range(MAX_PAGES):
+        variables = {"uuid": uuid, "first": PAGE, "after": after}
+        try:
+            data = await _call(http, client_id, token, query, variables, "GetWatchHistoryHub")
+        except GraphQLError as e:
+            if not e.schema_error or query is Q_MIN:
+                raise
+            query = Q_MIN
+            data = await _call(http, client_id, token, query, variables, "GetWatchHistoryHub")
+        wh = ((data.get("user") or {}).get("watchHistory")) or {}
+        page = wh.get("nodes") or []
+        nodes.extend(page)
+        info = wh.get("pageInfo") or {}
+        oldest = parse_iso(page[-1].get("date")) if page else None
+        if not page or not info.get("hasNextPage") or not info.get("endCursor") or (oldest and oldest < since):
+            break
+        after = info["endCursor"]
+        await _sleep(PAGE_DELAY)
+    return nodes
+
+
+def _index(nodes: list[dict], index: dict) -> None:
+    """discoverId -> its MOVIE entries (episodes and anything else are never indexed)."""
+    for n in nodes:
+        mi = n.get("metadataItem") or {}
+        if n.get("id") and mi.get("id") and str(mi.get("type") or "").upper() == "MOVIE":
+            index.setdefault(str(mi["id"]), {})[n["id"]] = n
+
+
+def _ours(item: dict, entries: dict) -> list[dict]:
+    """Entries within CATCHUP_WINDOW of one of the item's push times (or of its fresh scrobble): the only ones
+    Movienight can have created. Anything else may be a real play and is never touched."""
+    times = [t for t in (parse_iso(p) for p in item.get("pushed_ats") or []) if t]
+    if item.get("scrobbled_at"):
+        times.append(item["scrobbled_at"])
+    out = []
+    for n in entries.values():
+        when = parse_iso(n.get("date"))
+        if when is not None and any(abs(when - t) <= CATCHUP_WINDOW for t in times):
+            out.append(n)
+    return sorted(out, key=lambda n: n.get("date") or "")
+
+
+async def catch_up(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str, token: str,
+                   items: list[dict]) -> dict:
+    """Settle old pushes (made before plex.tv was handled). Per film:
+    1. plex.tv viewCount 0 -> Discover scrobble; 2. find the history entries Movienight created (within
+    CATCHUP_WINDOW of the push time, matched by Discover id); 3. manual -> remove them, Letterboxd with a
+    diary date -> one re-dated, the rest removed. The row is settled only if everything succeeded.
+
+    items: [{"title", "date", "discover_id", "pks", "pushed_ats"}]. The history is fetched once (paginated).
+    """
+    out = {"films": 0, "scrobbled": 0, "removed": 0, "dated": 0, "settled": 0, "failed": 0}
+    if not items or not token:
+        return out
+    out["films"] = len(items)
+    try:
+        uuid = await user_uuid(conn, http, client_id, token)
+        if not uuid:
+            log.warning("plex history catch-up skipped: could not read the plex.tv user id")
+            return out
+        ok: list[dict] = []
+        for i, it in enumerate(items):                      # 1. plex.tv watched state
+            if i:
+                await _sleep(MUTATION_DELAY)
+            did = it["discover_id"]
+            try:
+                seen = await plex.discover_view_count(http, client_id, token, did)
+                if seen is None:
+                    raise httpx.HTTPError("could not read the plex.tv watched state")
+                if seen == 0:
+                    await plex.discover_scrobble(http, client_id, token, did)
+                    it["scrobbled_at"] = datetime.now(timezone.utc)
+                    out["scrobbled"] += 1
+                ok.append(it)
+            except httpx.HTTPError as e:
+                out["failed"] += 1
+                log.warning("plex history catch-up: %r left for the next sync: %s", it.get("title"), safe_error(e))
+        if not ok:
+            return out
+        # 2. the history, once; entries of a fresh scrobble can lag, so those are looked up again
+        olds = [parse_iso(p) for it in ok for p in it.get("pushed_ats") or []]
+        since = min([t for t in olds if t] or [datetime.now(timezone.utc)]) - timedelta(days=1)
+        index: dict = {}
+        _index(await history_since(http, client_id, token, uuid, since), index)
+        for _attempt in range(LOOKUP_TRIES - 1):
+            if all(_ours(it, index.get(it["discover_id"], {})) for it in ok if it.get("scrobbled_at")):
+                break
+            await _sleep(LOOKUP_DELAY)
+            recent = datetime.now(timezone.utc) - timedelta(hours=1)
+            _index(await history_since(http, client_id, token, uuid, recent), index)
+        first = True
+        for it in ok:                                       # 3. fix the entries
+            entries = _ours(it, index.get(it["discover_id"], {}))
+            iso = iso_date(it.get("date"))
+            removed = dated = 0
+            good = True
+            for n in entries:
+                if not first:
+                    await _sleep(MUTATION_DELAY)
+                first = False
+                try:
+                    if iso and not dated:
+                        await _call(http, client_id, token, M_DATE, {"id": n["id"], "input": {"date": iso}},
+                                    "updateActivityDate")
+                        dated += 1
+                    else:
+                        await _call(http, client_id, token, M_REMOVE,
+                                    {"input": {"id": n["id"], "type": "WATCH_HISTORY"}}, "removeActivity")
+                        removed += 1
+                except (httpx.HTTPError, GraphQLError, ValueError) as e:
+                    good = False
+                    log.warning("plex history catch-up: a fix failed for %r: %s", it.get("title"), _why(e))
+            out["removed"] += removed
+            out["dated"] += dated
+            log.info("plex history catch-up: %r scrobbled=%s, entries removed=%d, re-dated=%d%s", it.get("title"),
+                     bool(it.get("scrobbled_at")), removed, dated, "" if good else " (will retry)")
+            if good:
+                _done(conn, it, now_iso())
+                out["settled"] += 1
+            else:
+                out["failed"] += 1
+    except (httpx.HTTPError, GraphQLError, ValueError) as e:
+        log.warning("plex history catch-up stopped: %s", _why(e))
+    log.info("plex history catch-up: %s", out)
     return out
 
 

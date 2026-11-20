@@ -272,21 +272,22 @@ class SyncManager:
             " access_token=excluded.access_token", (server_id, name, base, token))
         conn.commit()
 
-    def schedule_history(self, conn, cid: str, items: list[dict]) -> None:
+    def schedule_history(self, conn, cid: str, items: list[dict], catchup: bool = False) -> None:
         """Run the plex.tv history fix-up in the background (best effort), so the caller can release its lock."""
         token = history_token(conn, self.cfg)
         if not items or not token:
             return
-        task = asyncio.create_task(self._history(cid, token, items))
+        task = asyncio.create_task(self._history(cid, token, items, catchup))
         self._history_tasks.add(task)
         task.add_done_callback(self._history_tasks.discard)
 
-    async def _history(self, cid: str, token: str, items: list[dict]) -> None:
+    async def _history(self, cid: str, token: str, items: list[dict], catchup: bool = False) -> None:
         try:
             async with self.history_lock:
                 conn = connect(self.cfg.db_path)
                 try:
-                    await plex_history.fix_new_activities(conn, self.http, cid, token, items)
+                    fn = plex_history.catch_up if catchup else plex_history.fix_new_activities
+                    await fn(conn, self.http, cid, token, items)
                 finally:
                     conn.close()
         except asyncio.CancelledError:
@@ -307,7 +308,7 @@ class SyncManager:
             undone = await seenpush.unpush(conn, self.http, cid, backend=self.media, history_token=token)
             if token and self.media.name == "plex" and not self._history_tasks:
                 # pushes from before the plex.tv settling existed: once each, paced in the background
-                self.schedule_history(conn, cid, seenpush.catchup_items(conn))
+                self.schedule_history(conn, cid, seenpush.catchup_items(conn), catchup=True)
             counts = await seenpush.push(conn, self.http, cid, backend=self.media, history_sink=sink,
                                          history_token=token, lb=lb, backfill=self.cfg.push_lb_backfill)
         self.last_push = {**counts, "unpushed": undone["unpushed"], "unpush_failed": undone["failed"]}

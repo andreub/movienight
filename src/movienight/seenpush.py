@@ -185,7 +185,7 @@ def catchup_items(conn: sqlite3.Connection, limit: int = LB_BATCH) -> list[dict]
     """Plex pushes from before the plex.tv settling existed (discover_at NULL): fix-up work for each film,
     manual marks to be removed from the history, Letterboxd ones re-dated. Bounded per run."""
     rows = conn.execute(
-        "SELECT p.key, p.server_id, p.rating_key, p.source, i.json, s.base_url, s.access_token"
+        "SELECT p.key, p.server_id, p.rating_key, p.source, p.pushed_at, i.json, s.base_url, s.access_token"
         " FROM seen_pushes p JOIN media_items i ON i.server_id=p.server_id AND i.rating_key=p.rating_key"
         " JOIN media_servers s ON s.id=p.server_id WHERE p.discover_at IS NULL AND s.enabled=1"
         " ORDER BY p.pushed_at").fetchall()
@@ -195,11 +195,13 @@ def catchup_items(conn: sqlite3.Connection, limit: int = LB_BATCH) -> list[dict]
         pk = (r["key"], r["server_id"], r["rating_key"])
         if r["key"] in fixes:
             fixes[r["key"]]["pks"].append(pk)
+            fixes[r["key"]]["pushed_ats"].append(r["pushed_at"])
             continue
         if len(fixes) >= limit:
             break
         fix = _history_item(conn, r)
         fix["pks"] = [pk]
+        fix["pushed_ats"] = [r["pushed_at"]]
         fix["discover_id"] = plex.discover_id(json.loads(r["json"]).get("guid"))
         if not fix["discover_id"]:
             conn.execute("UPDATE seen_pushes SET discover_at='none' WHERE key=? AND server_id=? AND rating_key=?", pk)

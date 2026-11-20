@@ -62,6 +62,8 @@ class FakeServices:
         self.history_calls = 0
         self.calls: list[httpx.Request] = []
         self.fail_discover = False
+        self.fail_ids: set[str] = set()
+        self.pages: list = []
         self.view_counts: dict[str, int] = {}     # plex.tv userState per discover id
         self.discover: list[tuple[str, str]] = []   # (scrobble|unscrobble, discover id)
 
@@ -93,6 +95,10 @@ class FakeServices:
             body = json.loads(request.content)
             self.gql.append(body)
             op = body["operationName"]
+            if op in ("removeActivity", "updateActivityDate"):
+                v = body["variables"]
+                if (v.get("id") or (v.get("input") or {}).get("id")) in self.fail_ids:
+                    return httpx.Response(200, json={"errors": [{"message": "nope"}]})
             if op in self.errors:
                 return httpx.Response(200, json={"errors": self.errors[op]})
             if op == "GetWatchHistoryHub":
@@ -104,7 +110,13 @@ class FakeServices:
                         return httpx.Response(200, json={"errors": [{"message": 'Cannot query field "year"'}]})
                     nodes = [{**n, "metadataItem": {k: v for k, v in n["metadataItem"].items() if k != "year"}}
                              for n in nodes]
-                return httpx.Response(200, json={"data": {"user": {"watchHistory": {"nodes": nodes}}}})
+                self.pages.append(body["variables"].get("after"))
+                start = int(body["variables"].get("after") or 0)
+                size = body["variables"]["first"]
+                page = nodes[start:start + size]
+                info = {"hasNextPage": start + size < len(nodes), "endCursor": str(start + size)}
+                return httpx.Response(200, json={"data": {"user": {"watchHistory": {"nodes": page,
+                                                                                    "pageInfo": info}}}})
             return httpx.Response(200, json={"data": {"ok": True}})
         raise AssertionError(f"unexpected network call: {request.url.host}{request.url.path}")
 
@@ -124,6 +136,7 @@ def node(nid, title, year, when, type_="MOVIE", did=None):
 def fast(monkeypatch):
     monkeypatch.setattr(plex_history, "LOOKUP_DELAY", 0)
     monkeypatch.setattr(plex_history, "MUTATION_DELAY", 0)
+    monkeypatch.setattr(plex_history, "PAGE_DELAY", 0)
 
 
 def make(cfg, fake, **over):
@@ -427,10 +440,18 @@ def sync_push(c, lb=False):
     return out
 
 
-def old_push(cfg, key, server, rk, source="seen"):
+def old_push(cfg, key, server, rk, source="seen", minutes_ago=60 * 48):
+    pushed = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
     with db.session(cfg.db_path) as d:
         d.execute("INSERT INTO seen_pushes(key,server_id,rating_key,pushed_at,source) VALUES(?,?,?,?,?)",
-                  (key, server, rk, "2020-01-01T00:00:00Z", source))
+                  (key, server, rk, pushed, source))
+        if source == "seen":          # a manual mark still in place (else the sync would unscrobble the push)
+            d.execute("INSERT OR IGNORE INTO seen(key,created_at) VALUES(?,?)", (key, pushed))
+
+
+def discover_at(cfg):
+    with db.session(cfg.db_path) as d:
+        return {r[0]: r[1] for r in d.execute("SELECT rating_key, discover_at FROM seen_pushes")}
 
 
 def test_catchup_settles_old_manual_push_once(cfg):
@@ -438,8 +459,6 @@ def test_catchup_settles_old_manual_push_once(cfg):
 
     def body(c):
         old_push(cfg, "tmdb:111", "m1", "11")
-        with db.session(cfg.db_path) as d:
-            d.execute("INSERT INTO seen(key,created_at) VALUES('tmdb:111','2020-01-01T00:00:00Z')")
         sync_push(c)
         assert fake.discover == [("scrobble", "aaa")]
         assert [m["operationName"] for m in fake.mutations()] == ["removeActivity"]
@@ -463,16 +482,97 @@ def test_catchup_redates_letterboxd_push_and_skips_when_plex_tv_has_it(cfg):
     run(cfg, fake, body)
 
 
-def test_catchup_skips_item_plex_tv_already_has_watched(cfg):
-    fake = FakeServices([node("a1", "Crime Two", 2016, ago(0))])
+def test_catchup_already_watched_film_still_gets_its_old_entry_removed(cfg):
+    pushed = 60 * 48
+    fake = FakeServices([
+        node("real", "Crime Two", 2016, ago(60 * 24)),                    # a day after the push: a real play
+        node("mine", "Crime Two", 2016, ago(pushed - 5)),                 # 5 min after the push
+        node("ep", "Show", 2020, ago(pushed), type_="EPISODE", did="aaa"),  # never indexed, never touched
+        node("other", "Other Film", 2016, ago(pushed - 1)),
+    ])
     fake.view_counts["aaa"] = 1
 
     def body(c):
-        old_push(cfg, "tmdb:111", "m1", "11", source="lb")
+        old_push(cfg, "tmdb:111", "m1", "11", minutes_ago=pushed)
         sync_push(c)
-        assert fake.discover == [] and fake.mutations() == []
-        with db.session(cfg.db_path) as d:
-            assert d.execute("SELECT discover_at FROM seen_pushes").fetchone()[0]
+        assert fake.discover == []
+        assert [(m["operationName"], m["variables"]["input"]["id"]) for m in fake.mutations()] == \
+            [("removeActivity", "mine")]
+        assert discover_at(cfg)["11"]
+        sync_push(c)                                                       # settled: nothing more
+        assert len(fake.mutations()) == 1
+
+    run(cfg, fake, body)
+
+
+def test_catchup_entry_outside_window_is_untouched_and_row_settles(cfg):
+    pushed = 60 * 48
+    fake = FakeServices([node("early", "Crime Two", 2016, ago(pushed + 16)),
+                         node("late", "Crime Two", 2016, ago(pushed - 16))])
+    fake.view_counts["aaa"] = 1
+
+    def body(c):
+        old_push(cfg, "tmdb:111", "m1", "11", minutes_ago=pushed)
+        sync_push(c)
+        assert fake.mutations() == [] and discover_at(cfg)["11"]
+
+    run(cfg, fake, body)
+
+
+def test_catchup_letterboxd_redates_one_and_removes_the_rest(cfg):
+    pushed = 60 * 48
+    fake = FakeServices([node("e2", "Crime Two", 2016, ago(pushed - 8)), node("e1", "Crime Two", 2016, ago(pushed - 2))])
+    fake.view_counts["aaa"] = 1
+
+    def body(c):
+        add_diary(cfg, 111, "Crime Two", 2016, "2023-07-01")
+        old_push(cfg, "tmdb:111", "m1", "11", source="lb", minutes_ago=pushed)
+        sync_push(c)
+        ops = [(m["operationName"], (m["variables"].get("id") or m["variables"]["input"]["id"])) for m in fake.mutations()]
+        assert sorted(ops) == [("removeActivity", "e1"), ("updateActivityDate", "e2")] or \
+            sorted(ops) == [("removeActivity", "e2"), ("updateActivityDate", "e1")]
+        assert len([o for o in ops if o[0] == "updateActivityDate"]) == 1
+        assert discover_at(cfg)["11"]
+
+    run(cfg, fake, body)
+
+
+def test_catchup_fetches_history_once_with_pagination(cfg):
+    pushed = 60 * 48
+    nodes = [node(f"n{i}", "Filler", 2000, ago(60 * 24 + i), did=f"f{i}") for i in range(110)]   # newer than the push
+    nodes.append(node("mine", "Crime Two", 2016, ago(pushed - 3)))                               # index 110
+    nodes += [node(f"o{i}", "Old", 1990, ago(60 * 24 * 10 + i), did=f"x{i}") for i in range(300)]  # beyond since
+    fake = FakeServices(nodes)
+    fake.view_counts["aaa"] = 1
+    fake.view_counts["bbb"] = 1
+
+    def body(c):
+        old_push(cfg, "tmdb:111", "m1", "11", minutes_ago=pushed)
+        old_push(cfg, "tmdb:112", "m1", "12", minutes_ago=pushed)
+        sync_push(c)
+        assert [m["variables"]["input"]["id"] for m in fake.mutations()] == ["mine"]
+        assert fake.pages == [None, "50", "100"]                 # once for both films; stops once past push time - 1 day
+        assert all(discover_at(cfg).values())
+
+    run(cfg, fake, body)
+
+
+def test_catchup_partial_failure_leaves_only_that_row_unsettled(cfg):
+    pushed = 60 * 48
+    fake = FakeServices([node("a1", "Crime Two", 2016, ago(pushed - 3)), node("b1", "Rom Com", 2020, ago(pushed - 3))])
+    fake.view_counts.update(aaa=1, bbb=1)
+    fake.fail_ids = {"a1"}
+
+    def body(c):
+        old_push(cfg, "tmdb:111", "m1", "11", minutes_ago=pushed)
+        old_push(cfg, "tmdb:112", "m1", "12", minutes_ago=pushed)
+        sync_push(c)
+        done = discover_at(cfg)
+        assert done["11"] is None and done["12"]
+        fake.fail_ids = set()
+        sync_push(c)                                             # retried on the next sync
+        assert discover_at(cfg)["11"]
+        assert [m["variables"]["input"]["id"] for m in fake.mutations()][-1] == "a1"
 
     run(cfg, fake, body)
 
