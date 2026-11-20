@@ -4,8 +4,9 @@
 #   scripts/deploy.sh                 main: wait for the Release workflow of origin/main, then ask
 #                                     Watchtower to pull :latest. If a preview is running, recreate
 #                                     the container on :latest instead (back to main).
-#   scripts/deploy.sh <PR|branch>     preview: build (Preview image workflow) and run that branch's
-#                                     head as image tag sha-<7>, to test it before merging.
+#   scripts/deploy.sh <PR|branch>     preview: build (Preview image workflow, dispatched on main with
+#                                     the branch as input, so any branch works) and run that
+#                                     branch's head as image tag sha-<7>, to test it before merging.
 #
 # Previews recreate the container through its docker compose project, so the server compose file
 # must use  image: ghcr.io/andreub/movienight:${MOVIENIGHT_TAG:-latest}
@@ -55,6 +56,19 @@ wait_for_run() {
   done
   [ -n "$run_id" ] || die "no $workflow run found for ${sha:0:7} after 2 minutes"
   gh run watch "$run_id" --exit-status >/dev/null || die "the $workflow run failed: gh run view $run_id --log-failed"
+}
+
+# Wait for a new Preview image run (id greater than $2) titled "Preview $1", then watch it
+wait_for_preview_run() {
+  local branch=$1 after=$2 run_id=""
+  for _ in $(seq 1 24); do
+    run_id=$(gh run list --workflow preview.yml --event workflow_dispatch --limit 50 --json databaseId,displayTitle \
+      --jq "[.[] | select(.databaseId > $after and .displayTitle == \"Preview $branch\")] | max_by(.databaseId) | .databaseId // empty")
+    [ -n "$run_id" ] && break
+    sleep 5
+  done
+  [ -n "$run_id" ] || die "no Preview run for $branch found after 2 minutes"
+  gh run watch "$run_id" --exit-status >/dev/null || die "the Preview run failed: gh run view $run_id --log-failed"
 }
 
 # Recreate $CONTAINER on image tag $1 through its docker compose project (labels read on the server)
@@ -125,18 +139,16 @@ if [ -n "$TARGET" ] && [ "$TARGET" != main ]; then
   echo "==> Deploying $BRANCH @ ${SHA:0:7} as $IMAGE:$TAG"
 
   if [ -z "$SKIP_WAIT" ]; then
-    built=""
-    for wf in preview.yml release.yml; do
-      built=$(gh run list --workflow "$wf" --commit "$SHA" --status success --json databaseId --jq '.[0].databaseId // empty')
-      [ -n "$built" ] && break
-    done
+    # Only a Release run (a main commit) proves the image exists: preview runs are identified by
+    # branch name, not by commit, so a preview is always rebuilt.
+    built=$(gh run list --workflow release.yml --commit "$SHA" --status success --json databaseId --jq '.[0].databaseId // empty')
     if [ -n "$built" ]; then
-      echo "==> Image $TAG already built (run $built)"
+      echo "==> Image $TAG already built (release run $built)"
     else
-      last=$(gh run list --workflow preview.yml --limit 1 --json databaseId --jq '.[0].databaseId // 0')
+      last=$(gh run list --workflow preview.yml --event workflow_dispatch --limit 50 --json databaseId --jq 'map(.databaseId) | max // 0')
       echo "==> Building $TAG with the Preview image workflow"
-      gh workflow run preview.yml --ref "$BRANCH" || die "cannot dispatch preview.yml on $BRANCH (it must exist on the default branch)"
-      wait_for_run preview.yml "$SHA" "$last"
+      gh workflow run preview.yml --ref main -f ref="$BRANCH" || die "cannot dispatch preview.yml on main with ref=$BRANCH"
+      wait_for_preview_run "$BRANCH" "$last"
     fi
   fi
 

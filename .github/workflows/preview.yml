@@ -1,13 +1,21 @@
 name: Preview image
 
-# Manual: builds an image of the dispatched ref for testing on the home server
-# (scripts/deploy.sh <branch|PR>). Pushes only sha-<short> and branch-<name> tags: never
-# latest or a version, and no git tag or GitHub release.
+# Manual: builds an image of any branch or SHA for testing on the home server
+# (scripts/deploy.sh <branch|PR>). Always dispatched on main (so it also works for branches cut
+# before this file existed) and it checks out the `ref` input. Pushes only sha-<short> and
+# branch-<name> tags: never latest or a version, and no git tag or GitHub release.
+run-name: Preview ${{ inputs.ref }}
+
 on:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch name or commit SHA to build
+        required: true
+        type: string
 
 concurrency:
-  group: preview-${{ github.ref }}
+  group: preview-${{ inputs.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -19,6 +27,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
       - uses: astral-sh/setup-uv@v10.3.3
       - run: uv sync --frozen
       - run: uv run pytest -q
@@ -28,6 +38,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - id: rev
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          branch=$(printf '%s' "$REF" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g' | cut -c1-120)
+          {
+            echo "sha=$sha"
+            echo "short=${sha:0:7}"
+            echo "branch=$branch"
+          } >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
@@ -41,8 +64,11 @@ jobs:
         with:
           images: ghcr.io/andreub/movienight
           tags: |
-            type=sha,prefix=sha-,format=short
-            type=ref,event=branch,prefix=branch-
+            type=raw,value=sha-${{ steps.rev.outputs.short }}
+            type=raw,value=branch-${{ steps.rev.outputs.branch }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.rev.outputs.sha }}
+            org.opencontainers.image.version=sha-${{ steps.rev.outputs.short }}
 
       - uses: docker/build-push-action@v7
         with:
