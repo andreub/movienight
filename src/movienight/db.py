@@ -181,6 +181,12 @@ MIGRATIONS = [
     """
     ALTER TABLE seen_pushes ADD COLUMN discover_at TEXT;
     """,
+    # 11: two passes. fixed_at = first plex.tv fix done (the row now waits for the re-check), scrobbled_at = when
+    # we did the Discover scrobble (its entry is dated then); discover_at is only set by the re-check.
+    """
+    ALTER TABLE seen_pushes ADD COLUMN fixed_at TEXT;
+    ALTER TABLE seen_pushes ADD COLUMN scrobbled_at TEXT;
+    """,
 ]
 
 # meta keys that belong to one media server type: removed when the app switches to the other one

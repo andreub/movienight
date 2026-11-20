@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+from datetime import datetime, timezone
 
 import httpx
 
@@ -182,33 +183,41 @@ async def _queue_fix(conn, http, client_id: str, token: str, r: dict, fixes: dic
 
 
 def catchup_items(conn: sqlite3.Connection, limit: int = LB_BATCH) -> list[dict]:
-    """Plex pushes from before the plex.tv settling existed (discover_at NULL): fix-up work for each film,
-    manual marks to be removed from the history, Letterboxd ones re-dated. Bounded per run."""
+    """Plex pushes whose plex.tv side is not settled (discover_at NULL): fix-up work per film, bounded per run.
+
+    First pass (fixed_at NULL): Discover scrobble if plex.tv has it unwatched, then manual marks are removed
+    from the history, Letterboxd ones re-dated. Re-check (item["recheck"]): the first pass is done and the
+    push is at least RECHECK_AFTER old; the history is scanned once more for entries plex.tv created later.
+    """
     rows = conn.execute(
-        "SELECT p.key, p.server_id, p.rating_key, p.source, p.pushed_at, i.json, s.base_url, s.access_token"
-        " FROM seen_pushes p JOIN media_items i ON i.server_id=p.server_id AND i.rating_key=p.rating_key"
+        "SELECT p.key, p.server_id, p.rating_key, p.source, p.pushed_at, p.fixed_at, p.scrobbled_at, i.json,"
+        " s.base_url, s.access_token FROM seen_pushes p"
+        " JOIN media_items i ON i.server_id=p.server_id AND i.rating_key=p.rating_key"
         " JOIN media_servers s ON s.id=p.server_id WHERE p.discover_at IS NULL AND s.enabled=1"
         " ORDER BY p.pushed_at").fetchall()
-    fixes: dict = {}
+    by_key: dict = {}
     for r in rows:
-        r = dict(r, src=r["source"])
-        pk = (r["key"], r["server_id"], r["rating_key"])
-        if r["key"] in fixes:
-            fixes[r["key"]]["pks"].append(pk)
-            fixes[r["key"]]["pushed_ats"].append(r["pushed_at"])
+        by_key.setdefault(r["key"], []).append(dict(r, src=r["source"]))
+    cutoff = (datetime.now(timezone.utc) - plex_history.RECHECK_AFTER).strftime("%Y-%m-%dT%H:%M:%SZ")
+    fixes: list[dict] = []
+    for key, rs in by_key.items():
+        pks = [(r["key"], r["server_id"], r["rating_key"]) for r in rs]
+        recheck = all(r["fixed_at"] for r in rs)
+        if recheck and any(r["pushed_at"] > cutoff for r in rs):
+            continue                                        # too early for the second pass
+        did = plex.discover_id(json.loads(rs[0]["json"]).get("guid"))
+        if not did:
+            for pk in pks:
+                conn.execute("UPDATE seen_pushes SET discover_at='none' WHERE key=? AND server_id=? AND rating_key=?", pk)
             continue
         if len(fixes) >= limit:
             break
-        fix = _history_item(conn, r)
-        fix["pks"] = [pk]
-        fix["pushed_ats"] = [r["pushed_at"]]
-        fix["discover_id"] = plex.discover_id(json.loads(r["json"]).get("guid"))
-        if not fix["discover_id"]:
-            conn.execute("UPDATE seen_pushes SET discover_at='none' WHERE key=? AND server_id=? AND rating_key=?", pk)
-            continue
-        fixes[r["key"]] = fix
+        fix = _history_item(conn, rs[0])
+        fix.update(pks=pks, pushed_ats=[r["pushed_at"] for r in rs], discover_id=did, recheck=recheck,
+                   scrobbled_at=max((r["scrobbled_at"] for r in rs if r["scrobbled_at"]), default=None))
+        fixes.append(fix)
     conn.commit()
-    return list(fixes.values())
+    return fixes
 
 
 def _history_item(conn: sqlite3.Connection, r) -> dict:

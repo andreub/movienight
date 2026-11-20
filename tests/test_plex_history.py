@@ -117,6 +117,13 @@ class FakeServices:
                 info = {"hasNextPage": start + size < len(nodes), "endCursor": str(start + size)}
                 return httpx.Response(200, json={"data": {"user": {"watchHistory": {"nodes": page,
                                                                                     "pageInfo": info}}}})
+            v = body["variables"]                         # keep the fake history in step with the mutations
+            if op == "removeActivity":
+                self.nodes = [n for n in self.nodes if n["id"] != v["input"]["id"]]
+            elif op == "updateActivityDate":
+                for n in self.nodes:
+                    if n["id"] == v["id"]:
+                        n["date"] = v["input"]["date"]
             return httpx.Response(200, json={"data": {"ok": True}})
         raise AssertionError(f"unexpected network call: {request.url.host}{request.url.path}")
 
@@ -391,7 +398,7 @@ def test_discover_scrobble_marks_watched_on_plex_tv_then_fixes_history(cfg):
         assert order[:2] == ["plex.local", "discover.provider.plex.tv"] and set(order[2:]) == {"community.plex.tv"}
         assert [m["operationName"] for m in fake.mutations()] == ["removeActivity"]
         with db.session(cfg.db_path) as d:
-            assert d.execute("SELECT discover_at FROM seen_pushes").fetchone()[0]
+            assert d.execute("SELECT fixed_at FROM seen_pushes").fetchone()[0]    # waits for the re-check
 
     run(cfg, fake, body)
 
@@ -451,7 +458,7 @@ def old_push(cfg, key, server, rk, source="seen", minutes_ago=60 * 48):
 
 def discover_at(cfg):
     with db.session(cfg.db_path) as d:
-        return {r[0]: r[1] for r in d.execute("SELECT rating_key, discover_at FROM seen_pushes")}
+        return {r[0]: r[1] for r in d.execute("SELECT rating_key, COALESCE(discover_at, fixed_at) FROM seen_pushes")}
 
 
 def test_catchup_settles_old_manual_push_once(cfg):
@@ -626,3 +633,63 @@ def test_app_loggers_print_info_to_stdout(monkeypatch, capsys):
     finally:
         pkg.handlers, pkg.level, pkg.propagate = saved[0], saved[1], saved[2]
         root.handlers = saved[3]
+
+
+def stamp(minutes_ago):
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def row_state(cfg):
+    with db.session(cfg.db_path) as d:
+        return tuple(d.execute("SELECT fixed_at, discover_at FROM seen_pushes").fetchone())
+
+
+def age_push(cfg, minutes):
+    with db.session(cfg.db_path) as d:
+        d.execute("UPDATE seen_pushes SET pushed_at=?, scrobbled_at=?", (stamp(minutes), stamp(minutes)))
+
+
+def test_recheck_removes_late_entry_only_after_two_hours_and_only_once(cfg):
+    fake = FakeServices([node("a1", "Crime Two", 2016, ago(0))])
+
+    def body(c):
+        mark(c, "Crime Two")                                   # first pass: entry removed, row waits
+        fixed, settled = row_state(cfg)
+        assert fixed and settled is None and [m["operationName"] for m in fake.mutations()] == ["removeActivity"]
+        # plex.tv syncs the server scrobble to the history later: a second entry, dated at the push time
+        fake.nodes.append(node("late", "Crime Two", 2016, ago(1)))
+        calls = fake.history_calls
+        sync_push(c)                                           # less than 2 h after the push: not re-checked
+        assert fake.history_calls == calls and len(fake.mutations()) == 1 and row_state(cfg)[1] is None
+        age_push(cfg, 3 * 60)
+        fake.nodes[-1]["date"] = ago(3 * 60 - 1)               # ... as the history would have dated it
+        fake.nodes.append(node("real", "Crime Two", 2016, ago(60)))   # a real play an hour ago: not ours
+        sync_push(c)
+        assert [m["variables"]["input"]["id"] for m in fake.mutations()] == ["a1", "late"]
+        assert row_state(cfg)[1]                               # settled
+        calls, muts = fake.history_calls, len(fake.mutations())
+        sync_push(c)
+        sync_push(c)                                           # settled rows are never re-processed
+        assert fake.history_calls == calls and len(fake.mutations()) == muts
+        assert any(n["id"] == "real" for n in fake.nodes)
+
+    run(cfg, fake, body)
+
+
+def test_recheck_applies_to_letterboxd_pushes_and_redates(cfg):
+    fake = FakeServices([node("a1", "Crime Two", 2016, ago(0))])
+
+    def body(c):
+        lb_push(c)                                             # baseline
+        add_diary(cfg, 111, "Crime Two", 2016, "2024-03-05")
+        lb_push(c)
+        assert row_state(cfg)[0] and row_state(cfg)[1] is None
+        age_push(cfg, 3 * 60)
+        fake.nodes.append(node("late", "Crime Two", 2016, ago(3 * 60 - 2)))
+        sync_push(c)
+        ops = [(m["operationName"], m["variables"].get("id")) for m in fake.mutations()]
+        assert ops == [("updateActivityDate", "a1"), ("updateActivityDate", "late")] or \
+            [o[0] for o in ops] == ["updateActivityDate", "removeActivity"]
+        assert row_state(cfg)[1]
+
+    run(cfg, fake, body)

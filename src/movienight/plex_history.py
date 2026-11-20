@@ -28,6 +28,7 @@ RECENT = timedelta(minutes=10)      # only entries this fresh can be ours; older
 SCAN = 20                           # newest history nodes inspected
 LOOKUP_TRIES = 3                    # the entry can show up a moment after the scrobble
 LOOKUP_DELAY = 2.0
+RECHECK_AFTER = timedelta(hours=2)    # second pass: plex.tv can sync the server scrobble to the history later
 CATCHUP_WINDOW = timedelta(minutes=15)   # catch-up: entries this close to a push time are ours
 PAGE = 50                           # history page size
 MAX_PAGES = 100
@@ -150,11 +151,22 @@ def find_entry(nodes: list[dict], item: dict, taken: set, now: datetime) -> dict
     return None
 
 
-def _done(conn: sqlite3.Connection, item: dict, value: str) -> None:
-    """Remember that the plex.tv side of a pushed item is settled (`seen_pushes.discover_at`)."""
+def _first_pass_done(conn: sqlite3.Connection, item: dict) -> None:
+    """The first plex.tv fix is done: the row now waits for the re-check (`fixed_at`), which catches history
+    entries plex.tv creates later from the server scrobble."""
+    when = item.get("scrobbled_at")
+    when = when.strftime("%Y-%m-%dT%H:%M:%SZ") if isinstance(when, datetime) else None
+    for pk in item.get("pks") or []:
+        conn.execute("UPDATE seen_pushes SET fixed_at=?, scrobbled_at=COALESCE(?, scrobbled_at)"
+                     " WHERE key=? AND server_id=? AND rating_key=?", (now_iso(), when, *pk))
+    conn.commit()
+
+
+def _settle(conn: sqlite3.Connection, item: dict) -> None:
+    """The re-check is done: nothing more to do for this item (`seen_pushes.discover_at`)."""
     for pk in item.get("pks") or []:
         conn.execute("UPDATE seen_pushes SET discover_at=? WHERE key=? AND server_id=? AND rating_key=?",
-                     (value, *pk))
+                     (now_iso(), *pk))
     conn.commit()
 
 
@@ -176,11 +188,11 @@ async def _scrobble_discover(conn, http, client_id, token, items: list[dict], ou
                 raise httpx.HTTPError("could not read the plex.tv watched state")
             if seen > 0:
                 out["already"] += 1
-                _done(conn, it, now_iso())           # plex.tv already has it watched: leave its history alone
+                _first_pass_done(conn, it)           # plex.tv already has it watched: its history stays as is
                 continue
             await plex.discover_scrobble(http, client_id, token, did)
             out["scrobbled"] += 1
-            _done(conn, it, now_iso())
+            it["scrobbled_at"] = datetime.now(timezone.utc)
             fresh.append(it)
         except httpx.HTTPError as e:
             out["failed"] += 1
@@ -229,6 +241,7 @@ async def fix_new_activities(conn: sqlite3.Connection, http: httpx.AsyncClient, 
         out["missing"] = len(todo)
         for it in todo:
             log.info("plex history: no new entry found for %r (left as is)", it.get("title"))
+            _first_pass_done(conn, it)
         for i, (it, node) in enumerate(found):
             if i:
                 await _sleep(MUTATION_DELAY)
@@ -239,11 +252,13 @@ async def fix_new_activities(conn: sqlite3.Connection, http: httpx.AsyncClient, 
                                 {"id": node["id"], "input": {"date": iso}}, "updateActivityDate")
                     out["dated"] += 1
                     log.info("plex history: re-dated %r to %s", it.get("title"), iso[:10])
+                    _first_pass_done(conn, it)
                 else:
                     await _call(http, client_id, token, M_REMOVE,
                                 {"input": {"id": node["id"], "type": "WATCH_HISTORY"}}, "removeActivity")
                     out["removed"] += 1
                     log.info("plex history: removed the entry for %r (no real watch date known)", it.get("title"))
+                    _first_pass_done(conn, it)
             except (httpx.HTTPError, GraphQLError, ValueError) as e:
                 out["failed"] += 1
                 log.warning("plex history fix failed for one film: %s", _why(e))
@@ -291,7 +306,8 @@ def _ours(item: dict, entries: dict) -> list[dict]:
     Movienight can have created. Anything else may be a real play and is never touched."""
     times = [t for t in (parse_iso(p) for p in item.get("pushed_ats") or []) if t]
     if item.get("scrobbled_at"):
-        times.append(item["scrobbled_at"])
+        sc = item["scrobbled_at"]
+        times.append(sc if isinstance(sc, datetime) else parse_iso(sc))
     out = []
     for n in entries.values():
         when = parse_iso(n.get("date"))
@@ -309,7 +325,7 @@ async def catch_up(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id:
 
     items: [{"title", "date", "discover_id", "pks", "pushed_ats"}]. The history is fetched once (paginated).
     """
-    out = {"films": 0, "scrobbled": 0, "removed": 0, "dated": 0, "settled": 0, "failed": 0}
+    out = {"films": 0, "scrobbled": 0, "removed": 0, "dated": 0, "fixed": 0, "settled": 0, "failed": 0}
     if not items or not token:
         return out
     out["films"] = len(items)
@@ -324,7 +340,7 @@ async def catch_up(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id:
                 await _sleep(MUTATION_DELAY)
             did = it["discover_id"]
             try:
-                seen = await plex.discover_view_count(http, client_id, token, did)
+                seen = 1 if it.get("recheck") else await plex.discover_view_count(http, client_id, token, did)
                 if seen is None:
                     raise httpx.HTTPError("could not read the plex.tv watched state")
                 if seen == 0:
@@ -343,7 +359,7 @@ async def catch_up(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id:
         index: dict = {}
         _index(await history_since(http, client_id, token, uuid, since), index)
         for _attempt in range(LOOKUP_TRIES - 1):
-            if all(_ours(it, index.get(it["discover_id"], {})) for it in ok if it.get("scrobbled_at")):
+            if all(_ours(it, index.get(it["discover_id"], {})) for it in ok if it.get("scrobbled_at") and not it.get("recheck")):
                 break
             await _sleep(LOOKUP_DELAY)
             recent = datetime.now(timezone.utc) - timedelta(hours=1)
@@ -372,11 +388,17 @@ async def catch_up(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id:
                     log.warning("plex history catch-up: a fix failed for %r: %s", it.get("title"), _why(e))
             out["removed"] += removed
             out["dated"] += dated
-            log.info("plex history catch-up: %r scrobbled=%s, entries removed=%d, re-dated=%d%s", it.get("title"),
-                     bool(it.get("scrobbled_at")), removed, dated, "" if good else " (will retry)")
+            log.info("plex history %s: %r scrobbled=%s, entries removed=%d, re-dated=%d%s",
+                     "re-check" if it.get("recheck") else "catch-up", it.get("title"),
+                     bool(it.get("scrobbled_at")) and not it.get("recheck"), removed, dated,
+                     "" if good else " (will retry)")
             if good:
-                _done(conn, it, now_iso())
-                out["settled"] += 1
+                if it.get("recheck"):
+                    _settle(conn, it)
+                    out["settled"] += 1
+                else:
+                    _first_pass_done(conn, it)
+                    out["fixed"] += 1
             else:
                 out["failed"] += 1
     except (httpx.HTTPError, GraphQLError, ValueError) as e:
