@@ -28,12 +28,25 @@ SESSION_DAYS = 30
 PENDING_SECONDS = 900
 MAX_PENDING = 200
 PUBLIC_PATHS = {"/healthz", "/login", "/login/oidc", "/login/callback", "/login/plex",
-                "/login/plex/callback", "/logout", "/logged-out",
+                "/login/plex/callback", "/login/plex/tv", "/login/plex/code", "/logout", "/logged-out",
                 "/static/favicon.svg"}
+PUBLIC_PREFIXES = ("/login/plex/code/",)
+CODE_COOKIE = "movienight_code"         # binds a TV code to the browser that asked for it
+CODE_SECONDS = 600                      # a TV code lives at most this long (plex.tv may say less)
+CODE_POLL_SECONDS = 1.5                 # plex.tv is asked about a code at most this often
+CODE_STARTS_PER_MINUTE = 20             # new TV codes per minute, all clients together
 
 
 class LoginError(Exception):
     """The login could not be completed; the message is safe to show."""
+
+
+class CodeExpired(LoginError):
+    """The TV code is unknown or past its time; the client should ask for a new one."""
+
+
+class TooManyCodes(LoginError):
+    """Too many TV codes were asked for in the last minute."""
 
 
 def _b64(data: bytes) -> str:
@@ -206,6 +219,8 @@ class PlexLogin:
         self.client_id = client_id
         self.plex = plex_api
         self._pending = Pending()                            # pin id, next
+        self._codes: dict[str, dict] = {}                    # TV codes: handle -> pin, nonce, next, expires
+        self._code_starts: list[float] = []
 
     async def login_url(self, next_path: str | None) -> str:
         pin = await self.plex.create_pin(self.http, self.client_id)
@@ -223,6 +238,52 @@ class PlexLogin:
         if not account or not account["id"]:
             raise LoginError("Plex did not say which account signed in. Try again.")
         return account, token, next_path
+
+    # --- TV-style sign-in: a 4-character code typed at plex.tv/link on a signed-in phone ---------
+    async def start_code(self, next_path: str | None) -> dict:
+        """{"id": opaque handle, "code", "expires_at", "nonce"}; the nonce goes in a cookie, never to plex.tv."""
+        now = time.time()
+        self._code_starts = [t for t in self._code_starts if t > now - 60]
+        if len(self._code_starts) >= CODE_STARTS_PER_MINUTE:
+            raise TooManyCodes("Too many sign-in codes right now. Wait a minute and try again.")
+        self._code_starts.append(now)
+        pin = await self.plex.create_pin(self.http, self.client_id, strong=False)
+        ttl = min(int(pin.get("expires_in") or CODE_SECONDS), CODE_SECONDS)
+        live = {k: v for k, v in self._codes.items() if v["expires"] > now}
+        while len(live) >= MAX_PENDING:                      # drop the oldest
+            live.pop(min(live, key=lambda k: live[k]["expires"]))
+        handle, nonce = secrets.token_urlsafe(18), secrets.token_urlsafe(24)
+        live[handle] = {"pin": pin["id"], "nonce": nonce, "next": safe_next(next_path),
+                        "expires": now + ttl, "checked": 0.0}
+        self._codes = live
+        return {"id": handle, "code": pin["code"], "expires_at": int(now + ttl), "nonce": nonce}
+
+    async def poll_code(self, handle: str, nonce: str | None) -> tuple[dict, str, str] | None:
+        """None while the code is not approved yet; then (account, token, next path), once."""
+        item = self._codes.get(handle)
+        now = time.time()
+        if not item or item["expires"] <= now:
+            self._codes.pop(handle, None)
+            raise CodeExpired("This code expired. Get a new one.")
+        if not nonce or not hmac.compare_digest(nonce, item["nonce"]):
+            raise LoginError("This code belongs to another sign-in")
+        if now - item["checked"] < CODE_POLL_SECONDS:
+            return None
+        item["checked"] = now
+        try:
+            token = await self.plex.check_pin(self.http, self.client_id, item["pin"])
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:                # plex.tv already forgot it
+                self._codes.pop(handle, None)
+                raise CodeExpired("This code expired. Get a new one.") from e
+            raise
+        if not token:
+            return None
+        self._codes.pop(handle, None)                        # single use
+        account = await self.plex.account(self.http, self.client_id, token)
+        if not account or not account["id"]:
+            raise LoginError("Plex did not say which account signed in. Try again.")
+        return account, token, item["next"]
 
 
 def is_owner(account: dict, owner: str) -> bool:

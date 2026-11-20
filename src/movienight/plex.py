@@ -40,12 +40,14 @@ def auth_url(client_id: str, code: str, forward_url: str | None = None) -> str:
     )
 
 
-async def create_pin(client: httpx.AsyncClient, client_id: str) -> dict:
-    r = await client.post(f"{PLEX_TV}/api/v2/pins", params={"strong": "true"},
+async def create_pin(client: httpx.AsyncClient, client_id: str, strong: bool = True) -> dict:
+    """`strong=False` gives the short 4-character code that plex.tv/link accepts (TV-style sign-in)."""
+    r = await client.post(f"{PLEX_TV}/api/v2/pins", params={"strong": "true"} if strong else None,
                           headers=base_headers(client_id), timeout=API_TIMEOUT)
     r.raise_for_status()
     d = r.json()
-    return {"id": d["id"], "code": d["code"], "auth_url": auth_url(client_id, d["code"])}
+    return {"id": d["id"], "code": d["code"], "auth_url": auth_url(client_id, d["code"]),
+            "expires_in": d.get("expiresIn")}
 
 
 async def check_pin(client: httpx.AsyncClient, client_id: str, pin_id: int) -> str | None:

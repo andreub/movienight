@@ -1,4 +1,5 @@
 import { hydrateIcons } from './dom.js';
+import { initTvNav } from './tvnav.js';
 import { onRoute, start, go, href, parse } from './state.js';
 import { getChatStatus } from './api.js';
 import { subscribe, refreshStatus, syncPercent } from './status.js';
@@ -20,6 +21,7 @@ let current = { name: null, instance: null };
 let status = null;
 
 hydrateIcons();
+initTvNav();
 
 // The Ask tab only exists when the server has an AI key configured.
 const askTab = tabs.find((t) => t.dataset.view === 'ask');

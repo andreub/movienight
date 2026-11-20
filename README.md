@@ -116,6 +116,10 @@ MovieNight uses Google Cast, the same way the Plex phone app casts, because Plex
   players) or the `MOVIENIGHT_CAST_HOSTS` variable (comma-separated IPs or hostnames).
 - The device name shown is the one the TV reports. Plex only.
 
+Android TV: a separate app (repo movienight-androidtv) loads this UI; the UI detects the `MovieNightTV` user
+agent and enables D-pad navigation (arrow keys move focus to the nearest control, Enter opens it, a larger focus
+ring) and opens Plex links in the Plex app, as on phones.
+
 ## Media server: Plex or Jellyfin
 
 `MOVIENIGHT_MEDIA_SERVER` picks one: `plex` (default) or `jellyfin`. The app never reads both.
@@ -237,7 +241,8 @@ Notes:
 ## Login
 
 With Plex the default is "Sign in with Plex": only the Plex account the app belongs to gets in
-(`MOVIENIGHT_PLEX_OWNER`, or the first sign-in). With Jellyfin there is no Jellyfin login: use OIDC
+(`MOVIENIGHT_PLEX_OWNER`, or the first sign-in). On a TV, "Sign in with a code (TV)" shows a 4-character
+code to enter at plex.tv/link on a phone that is already signed in to Plex (same account check, no typing on the TV). With Jellyfin there is no Jellyfin login: use OIDC
 (below), or `MOVIENIGHT_LOGIN=none` on a private network. With Jellyfin and neither, the app answers
 503 instead of running open; `MOVIENIGHT_LOGIN=plex` with Jellyfin stops the app at start.
 

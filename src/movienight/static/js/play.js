@@ -15,7 +15,9 @@ function rememberPlayer(id) {
   try { localStorage.setItem(LAST_KEY, id); } catch { /* storage unavailable */ }
 }
 
-const MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+// MovieNightTV: the Android TV app's WebView (its UA usually says Android too); its Plex links go to the app.
+const TV_APP = /MovieNightTV/.test(navigator.userAgent);
+const MOBILE = TV_APP || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
   || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
 
 // On mobile Plex entries carry `mobile_url`, a watch.plex.tv universal link: the Plex app opens on the movie's
@@ -23,12 +25,26 @@ const MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
 // user tap on an <a> to another domain, which is why these stay plain links (target=_blank is fine on iOS and Android).
 const href = (s) => (MOBILE && s.mobile_url) || s.url;
 
+// In the Android TV app a plex:// deep link opens the film straight in the native Plex app, on the right server
+// (it honours the server id and ignores the slug). Jellyfin sources (server id "jf:…") and sources without ids
+// keep the web link. The app catches plex: navigations itself, so those links open in place, not in a new window.
+function tvHref(s) {
+  if (!s.server_id || !s.rating_key || String(s.server_id).startsWith('jf:')) return s.mobile_url || s.url;
+  let slug = '';
+  try { slug = new URL(s.mobile_url).pathname.split('/').filter(Boolean).pop() || ''; } catch { /* no mobile_url */ }
+  return `plex://libraries/${encodeURIComponent(s.server_id)}/movie/${slug || 'movie'}/${encodeURIComponent(s.rating_key)}`;
+}
+const playHref = (s) => (TV_APP ? tvHref(s) : href(s));
+const playTarget = (url) => (url.startsWith('plex:') ? null : '_blank');
+
 export function playControl(movie, cls = '') {
   const sources = movie.plex || [];
   if (!sources.length) {
     return h('button', { type: 'button', class: `btn btn--primary ${cls}`, disabled: true }, icon('play'), `Not on ${serverName()} right now`);
   }
   const holder = h('div', { class: 'play-control', style: { display: 'contents' } }, linkControl(sources, cls));
+  // In the TV app we are the TV: Play opens the film in the Plex app, never a cast menu.
+  if (TV_APP) return holder;
   // Players are looked up lazily, once per page load; until (or unless) some exist the plain control stays.
   getPlayers().then((players) => {
     if (players.length && sources.some((s) => s.rating_key)) holder.replaceChildren(playerMenu(movie, sources, players, cls));
@@ -38,7 +54,8 @@ export function playControl(movie, cls = '') {
 
 function linkControl(sources, cls) {
   if (sources.length === 1) {
-    return h('a', { class: `btn btn--primary ${cls}`, href: href(sources[0]), target: '_blank', rel: 'noopener' },
+    const url = playHref(sources[0]);
+    return h('a', { class: `btn btn--primary ${cls}`, href: url, target: playTarget(url), rel: 'noopener' },
       icon('play'), `Play on ${serverName()}`);
   }
   return menuControl(sources, cls, (toggle) => sources.map((s) => webItem(s, toggle, true)),
@@ -46,7 +63,8 @@ function linkControl(sources, cls) {
 }
 
 function webItem(s, toggle, withServerName) {
-  return h('li', null, h('a', { class: 'menu__item', href: href(s), target: '_blank', rel: 'noopener', onclick: () => toggle(false) },
+  const url = playHref(s);
+  return h('li', null, h('a', { class: 'menu__item', href: url, target: playTarget(url), rel: 'noopener', onclick: () => toggle(false) },
     h('span', { text: withServerName ? s.server : `Open in ${serverName()} Web` }),
     s.resolution ? h('span', { class: 'badge', text: RES[s.resolution] || s.resolution }) : null));
 }

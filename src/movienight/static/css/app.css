@@ -48,6 +48,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 [hidden] { display: none !important; }
 
 :focus-visible { outline: 3px solid var(--bulb); outline-offset: 3px; border-radius: 4px; }
+/* Android TV app (D-pad): a ring you can see from the sofa, with a dark halo so it shows over bright posters,
+   and room under the sticky top bar when focus scrolls the page. */
+html.tv { scroll-padding-block: 96px 24px; }
+html.tv :focus-visible { outline-width: 5px; outline-offset: 4px; box-shadow: 0 0 0 9px rgb(0 0 0 / .55); }
 
 .sr-only {
   position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
