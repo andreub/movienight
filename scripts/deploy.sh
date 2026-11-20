@@ -10,7 +10,8 @@
 # Previews recreate the container through its docker compose project, so the server compose file
 # must use  image: ghcr.io/andreub/movienight:${MOVIENIGHT_TAG:-latest}
 #
-# Optional settings:
+# Optional settings (also readable from a git-ignored .deploy.env.local at the repo root, see
+# .deploy.env.example; variables set in the environment take precedence over that file):
 #   HOST        ssh alias of the server                 (default: homeserver)
 #   CONTAINER   container to verify                     (default: movienight; e.g. movienight-jf)
 #   IMAGE       image to deploy                         (default: ghcr.io/andreub/movienight)
@@ -19,13 +20,25 @@
 #               branch: assume the sha-<7> image already exists)
 set -euo pipefail
 
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Defaults from .deploy.env.local (git-ignored; in the checkout, or the main checkout when run from
+# a worktree). Variables already set in the environment win over the file.
+for env_file in "$PROJECT_DIR/.deploy.env.local" "$(command git -C "$PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir)/../.deploy.env.local"; do
+  [ -f "$env_file" ] || continue
+  for name in HOST CONTAINER IMAGE TAG_VAR SKIP_WAIT; do
+    [ -z "${!name+x}" ] || continue
+    # shellcheck disable=SC1090  # user-provided file
+    value=$(. "$env_file" >/dev/null 2>&1; printf '%s' "${!name-}")
+    [ -z "$value" ] || printf -v "$name" '%s' "$value"
+  done
+  break
+done
 HOST=${HOST:-homeserver}
 CONTAINER=${CONTAINER:-movienight}
 IMAGE=${IMAGE:-ghcr.io/andreub/movienight}
 TAG_VAR=${TAG_VAR:-MOVIENIGHT_TAG}
 SKIP_WAIT=${SKIP_WAIT:-}
 TARGET=${1:-}
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck disable=SC2016  # expanded on the server, not here
 REMOTE_PATH='export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH'
 git() { command git -C "$PROJECT_DIR" "$@"; }

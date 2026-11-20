@@ -183,6 +183,9 @@ on the server to update the image (HTTP API `POST /v1/update?image=...`, token r
 and waits up to five minutes until the container is healthy and its
 `org.opencontainers.image.version` label matches the released version.
 
+Settings (`HOST`, `CONTAINER`, `IMAGE`, `TAG_VAR`) can also live in a git-ignored `.deploy.env.local`
+at the repo root; copy `.deploy.env.example`. Variables set in the environment win over the file.
+
 ### Testing a branch or PR before merging
 
 ```sh
