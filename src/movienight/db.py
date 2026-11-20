@@ -168,11 +168,30 @@ MIGRATIONS = [
         checked_at TEXT
     );
     """,
+    # 9: Letterboxd-watched films are pushed to Plex too. `source` tells them from manual "seen" marks (only
+    # those are ever unscrobbled); lb_baseline = films already watched when that began (never auto-pushed).
+    """
+    ALTER TABLE seen_pushes ADD COLUMN source TEXT NOT NULL DEFAULT 'seen';
+    CREATE TABLE IF NOT EXISTS lb_baseline (
+        lb_id INTEGER PRIMARY KEY
+    );
+    """,
+    # 10: whether a push was also settled on plex.tv (Discover scrobble + history fix): NULL = not yet
+    # (rows from before that existed get a one-off catch-up), 'none' = no Discover id, else the time.
+    """
+    ALTER TABLE seen_pushes ADD COLUMN discover_at TEXT;
+    """,
+    # 11: two passes. fixed_at = first plex.tv fix done (the row now waits for the re-check), scrobbled_at = when
+    # we did the Discover scrobble (its entry is dated then); discover_at is only set by the re-check.
+    """
+    ALTER TABLE seen_pushes ADD COLUMN fixed_at TEXT;
+    ALTER TABLE seen_pushes ADD COLUMN scrobbled_at TEXT;
+    """,
 ]
 
 # meta keys that belong to one media server type: removed when the app switches to the other one
 SERVER_META = {
-    "plex": ("plex_token", "plex_account", "plex_last_sync", "plex_owner_id"),
+    "plex": ("plex_token", "plex_account", "plex_last_sync", "plex_owner_id", "plex_uuid"),
     "jellyfin": ("jellyfin_user_id", "jellyfin_account", "jellyfin_login", "jellyfin_last_sync"),
 }
 

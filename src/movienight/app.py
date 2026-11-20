@@ -4,8 +4,10 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import os
 import random
 import secrets
+import sys
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -22,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from . import auth, cast, chat, db, letterboxd as lb, library, plex, queries, seenpush, servers, tags as lbtags, version
 from .config import Config
-from .sync import SyncManager, plex_token, tmdb_counts
+from .sync import SyncManager, history_token, plex_token, tmdb_counts
 from .util import now_iso, safe_error
 
 log = logging.getLogger("movienight")
@@ -73,7 +75,21 @@ class UserBody(BaseModel):
     username: str = Field(min_length=1, max_length=60, pattern=r"^[A-Za-z0-9_-]+$")
 
 
+def configure_logging() -> None:
+    """Let the app's own loggers (movienight.*) print INFO to stdout: uvicorn only sets up its own loggers,
+    so without this `docker logs` shows no sync/push lines. MOVIENIGHT_LOG_LEVEL overrides (default INFO)."""
+    level = getattr(logging, (os.environ.get("MOVIENIGHT_LOG_LEVEL") or "INFO").strip().upper(), logging.INFO)
+    pkg = logging.getLogger("movienight")
+    pkg.setLevel(level)
+    if not logging.getLogger().handlers and not pkg.handlers:
+        h = logging.StreamHandler(sys.stdout)
+        h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        pkg.addHandler(h)
+        pkg.propagate = False
+
+
 def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
+    configure_logging()
     cfg = cfg or Config.from_env()
     media = servers.backend(cfg)
     for noisy in ("httpx", "httpcore"):          # request URLs may contain credentials
@@ -121,6 +137,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             yield
         finally:
             task.cancel()
+            sync.cancel_history()
             await asyncio.to_thread(cast.close_all)
             if sync._task:
                 sync._task.cancel()
@@ -652,10 +669,14 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             try:
                 async with sync_mgr().push_lock:
                     cid = db.client_id(c)
+                    token = history_token(c, cfg)
                     if body.seen:
-                        await seenpush.push(c, app.state.http, cid, [key], backend=media)
+                        await seenpush.push(c, app.state.http, cid, [key], backend=media,
+                                            history_token=token,
+                                            history_sink=((lambda items: sync_mgr().schedule_history(c, cid, items))
+                                                          if token else None))
                     else:
-                        await seenpush.unpush(c, app.state.http, cid, [key], backend=media)
+                        await seenpush.unpush(c, app.state.http, cid, [key], backend=media, history_token=token)
             except Exception as e:  # noqa: BLE001
                 log.warning("seen mark not synced to %s: %s", media.label, safe_error(e))
             finally:

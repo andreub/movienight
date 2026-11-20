@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from . import jellyfin, letterboxd as lb, library, plex, seenpush, servers
+from . import jellyfin, letterboxd as lb, library, plex, plex_history, seenpush, servers
 from .config import Config
 from .db import client_id, connect, get_meta, set_meta
 from .tmdb import Tmdb, TmdbError
@@ -17,10 +17,16 @@ from .util import norm_title, now_iso, safe_error
 
 log = logging.getLogger("movienight.sync")
 CHUNK = 32
+FOLLOWUP_DELAY = 30 * 60      # seconds until the next plex.tv catch-up batch while rows remain
 
 
 def plex_token(conn, cfg: Config) -> str:
     return cfg.plex_token or get_meta(conn, "plex_token") or ""
+
+
+def history_token(conn, cfg: Config) -> str:
+    """The account token for the plex.tv history fix-up; empty = feature off (or not Plex)."""
+    return plex_token(conn, cfg) if cfg.plex_history_fix and cfg.media_server == "plex" else ""
 
 
 class SyncManager:
@@ -35,6 +41,10 @@ class SyncManager:
         self.media = servers.backend(cfg)
         self.push_lock = asyncio.Lock()        # seen-mark pushes to the media server: one writer at a time
         self.last_push: dict | None = None
+        self.history_lock = asyncio.Lock()     # plex.tv history fix-ups: one at a time, outside push_lock
+        self._history_tasks: set[asyncio.Task] = set()
+        self._followup: asyncio.Task | None = None
+        self.followup_delay = FOLLOWUP_DELAY
         self.jellyfin_problem: str | None = None
 
     # ---- status / control
@@ -145,7 +155,7 @@ class SyncManager:
                 self._fail("plex slugs", e)
             if self.cfg.push_seen:
                 try:
-                    await self.push_seen(conn, cid)
+                    await self.push_seen(conn, cid, lb=True)
                 except Exception as e:  # noqa: BLE001 - the library itself is already stored
                     self._fail("plex seen marks", e)
         finally:
@@ -265,11 +275,92 @@ class SyncManager:
             " access_token=excluded.access_token", (server_id, name, base, token))
         conn.commit()
 
-    async def push_seen(self, conn, cid: str) -> dict:
-        """Retry pending unscrobbles, then mark played every seen film not yet pushed (also the backfill)."""
+    def schedule_history(self, conn, cid: str, items: list[dict], catchup: bool = False) -> None:
+        """Run the plex.tv history fix-up in the background (best effort), so the caller can release its lock."""
+        token = history_token(conn, self.cfg)
+        if not items or not token:
+            return
+        task = asyncio.create_task(self._history(cid, token, items, catchup))
+        self._history_tasks.add(task)
+        task.add_done_callback(self._history_tasks.discard)
+
+    async def _history(self, cid: str, token: str, items: list[dict], catchup: bool = False) -> None:
+        try:
+            async with self.history_lock:
+                conn = connect(self.cfg.db_path)
+                try:
+                    fn = plex_history.catch_up if catchup else plex_history.fix_new_activities
+                    result = await fn(conn, self.http, cid, token, items, pace=self.cfg.plex_history_pace)
+                finally:
+                    conn.close()
+            if catchup:
+                self._plan_followup(result)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - best effort
+            log.warning("plex history fix failed: %s", safe_error(e))
+
+    def _plan_followup(self, result: dict | None) -> None:
+        """While unsettled pushes remain, run the next catch-up batch FOLLOWUP_DELAY later (single flight; the
+        history lock still serialises it with everything else). Stops when a batch made no progress and was not
+        rate limited, so a row that keeps failing does not loop; the next regular sync resumes it."""
+        if self._followup is not None and not self._followup.done():
+            return
+        conn = connect(self.cfg.db_path)
+        try:
+            if not seenpush.unsettled(conn):
+                return
+            progressed = result is None or result.get("rate_limited") or (result.get("fixed", 0) + result.get("settled", 0)) > 0
+            if not progressed:
+                return
+        finally:
+            conn.close()
+        self._followup = asyncio.create_task(self._followup_run())
+
+    async def _followup_run(self) -> None:
+        try:
+            await asyncio.sleep(self.followup_delay)
+            conn = connect(self.cfg.db_path)
+            try:
+                items = seenpush.catchup_items(conn)
+                self._followup = None
+                if items:
+                    self.schedule_history(conn, client_id(conn), items, catchup=True)   # plans the next one itself
+                else:
+                    self._plan_followup(None)           # only re-checks still waiting for their 2 hours
+            finally:
+                conn.close()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - best effort
+            self._followup = None
+            log.warning("plex history follow-up failed: %s", safe_error(e))
+
+    async def drain_history(self, followups: bool = False) -> None:
+        """Wait for the running history work (and, with `followups`, for the scheduled follow-up batches too)."""
+        for _ in range(10):
+            pending = [*self._history_tasks, *([self._followup] if followups and self._followup else [])]
+            if not pending:
+                return
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    def cancel_history(self) -> None:
+        """Shutdown: drop the background plex.tv work (unsettled rows are picked up again on the next start)."""
+        for t in [*self._history_tasks, *([self._followup] if self._followup else [])]:
+            t.cancel()
+
+    async def push_seen(self, conn, cid: str, lb: bool = False) -> dict:
+        """Retry pending unscrobbles, then mark played every seen film not yet pushed (also the backfill).
+        With `lb`, Letterboxd-watched films too (new ones, or the paced backfill when opted in)."""
+        token = history_token(conn, self.cfg)
+        sink = (lambda items: self.schedule_history(conn, cid, items)) if token else None
         async with self.push_lock:
-            undone = await seenpush.unpush(conn, self.http, cid, backend=self.media)
-            counts = await seenpush.push(conn, self.http, cid, backend=self.media)
+            undone = await seenpush.unpush(conn, self.http, cid, backend=self.media, history_token=token)
+            if token and self.media.name == "plex" and not self._history_tasks:
+                # pushes from before the plex.tv settling existed: once each, paced in the background
+                self.schedule_history(conn, cid, seenpush.catchup_items(conn), catchup=True)
+            counts = await seenpush.push(conn, self.http, cid, backend=self.media, history_sink=sink,
+                                         history_token=token, lb=lb, backfill=self.cfg.push_lb_backfill)
         self.last_push = {**counts, "unpushed": undone["unpushed"], "unpush_failed": undone["failed"]}
         log.info("seen marks on %s: %s", self.media.label, self.last_push)
         return self.last_push
@@ -288,6 +379,13 @@ class SyncManager:
                     self._fail("letterboxd rss", e)
             conn.commit()
             library.record_outcomes(conn)
+            if self.cfg.push_seen and self.cfg.media_server == "plex":
+                try:
+                    library.assign_movies(conn)
+                    await self.push_seen(conn, client_id(conn), lb=True)
+                except Exception as e:  # noqa: BLE001 - the import itself is stored
+                    self._fail("letterboxd films on plex", e)
+                conn.commit()
         finally:
             conn.close()
         self.engine.invalidate()

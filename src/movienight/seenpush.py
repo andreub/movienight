@@ -12,14 +12,25 @@ import asyncio
 import json
 import logging
 import sqlite3
+from datetime import datetime, timezone
 
 import httpx
 
-from . import servers
-from .util import now_iso, safe_error
+from . import plex, plex_history, servers
+from .db import get_meta, set_meta
+from .util import norm_title, now_iso, safe_error
 
 log = logging.getLogger("movienight.seenpush")
 CONCURRENCY = 4
+LB_BATCH = 25      # Letterboxd-watched films pushed per run: keeps a backfill paced over several syncs
+
+# Letterboxd-watched films (Plex only) on enabled servers, same columns as _ITEMS_OF_SEEN plus the diary date
+_ITEMS_OF_LB = (
+    "SELECT 'tmdb:'||f.tmdb_id AS key, i.server_id, i.rating_key, i.json, s.name sname, s.reachable, s.base_url,"
+    " s.access_token, f.watched_date FROM lb_films f JOIN movies m ON m.tmdb_id=f.tmdb_id"
+    " JOIN media_items i ON i.movie_id=m.id JOIN media_servers s ON s.id=i.server_id"
+    " WHERE f.watched=1 AND f.tmdb_id IS NOT NULL AND s.enabled=1"
+)
 
 # seen key -> movie: the key is `tmdb:<id>` when the TMDB id is known, else movies.dkey
 _ITEMS_OF_SEEN = (
@@ -53,24 +64,32 @@ async def _run(calls: list, fn) -> list:
 
 
 async def push(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str,
-               keys: list[str] | None = None, backend=None) -> dict:
+               keys: list[str] | None = None, backend=None, history_token: str = "", history_sink=None,
+               lb: bool = False, backfill: bool = False) -> dict:
     """Mark played every not-yet-pushed item of the `seen` films (all, or only `keys`).
+
+    With `lb` (Plex only, full runs) the Letterboxd-watched films are pushed as well, but only those that
+    became watched after the baseline (first run; see ensure_baseline), or all of them (at most LB_BATCH
+    per run) when `backfill` is on. `history_sink(items)`, when given, receives the history fix-up work
+    instead of it being awaited here (so the caller can run it after releasing its lock).
 
     Only items on enabled servers with a stored view count of 0 are pushed; items already watched in
     Plex are skipped and not recorded. Returns counts: pushed, already_watched, failed, unreachable,
-    not_on_server (seen films with no item on an enabled server).
+    not_on_server (seen films with no item on an enabled server). With a `history_token` (Plex only) the
+    plex.tv history entries the new scrobbles created are then re-dated or removed (plex_history.py).
     """
     sql, params = _ITEMS_OF_SEEN, []
     if keys is not None:
         sql += f" AND se.key IN ({','.join('?' * len(keys))})"
         params = list(keys)
     pushed_items = {(r[0], r[1]) for r in conn.execute("SELECT server_id, rating_key FROM seen_pushes")}
-    rows = conn.execute(sql, params).fetchall()
+    rows = [dict(r, src="seen") for r in conn.execute(sql, params).fetchall()]
     on_server = {r["key"] for r in rows}
     wanted = set(keys) if keys is not None else {r[0] for r in conn.execute("SELECT key FROM seen")}
     counts = {"pushed": 0, "already_watched": 0, "failed": 0, "unreachable": 0,
               "not_on_server": len(wanted - on_server)}
-    todo = []
+    be = backend or servers.PLEX
+    todo, fixes = [], {}
     for r in rows:
         if (r["server_id"], r["rating_key"]) in pushed_items:
             continue
@@ -80,9 +99,19 @@ async def push(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str
             counts["unreachable"] += 1
         else:
             todo.append(r)
+    if lb and keys is None and be.name == "plex":
+        taken = {(r["server_id"], r["rating_key"]) for r in rows} | pushed_items
+        lb_todo = []
+        for r in _lb_rows(conn, backfill):
+            ident = (r["server_id"], r["rating_key"])
+            if (ident in taken or int(json.loads(r["json"]).get("view_count") or 0) > 0
+                    or not r["reachable"] or not r["base_url"]):
+                continue
+            taken.add(ident)
+            lb_todo.append(r)
+        todo += lb_todo[:LB_BATCH]
     if not todo:
         return counts
-    be = backend or servers.PLEX
     user_id = be.user_id(conn)
 
     async def call(r):
@@ -95,24 +124,139 @@ async def push(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str
             counts["failed"] += 1
             log.warning("could not mark %s played on %s server %s: %s", r["key"], be.label, r["sname"], safe_error(res))
             continue
-        conn.execute("INSERT OR IGNORE INTO seen_pushes(key,server_id,rating_key,pushed_at) VALUES(?,?,?,?)",
-                     (r["key"], r["server_id"], r["rating_key"], now_iso()))
+        conn.execute("INSERT OR IGNORE INTO seen_pushes(key,server_id,rating_key,pushed_at,source)"
+                     " VALUES(?,?,?,?,?)",
+                     (r["key"], r["server_id"], r["rating_key"], now_iso(), r["src"]))
         _set_view_count(conn, r["server_id"], r["rating_key"], 1)
         counts["pushed"] += 1
+        if (history_token or history_sink) and be.name == "plex":
+            await _queue_fix(conn, http, client_id, history_token, r, fixes)
     conn.commit()
+    if fixes:
+        # after the whole batch, never interleaved; best effort, never changes the push result
+        items = list(fixes.values())
+        if history_sink is not None:
+            history_sink(items)
+        else:
+            await plex_history.fix_new_activities(conn, http, client_id, history_token, items)
     return counts
 
 
+def ensure_baseline(conn: sqlite3.Connection) -> bool:
+    """Record the films already watched on Letterboxd the first time (they are never pushed automatically).
+
+    Needs Letterboxd data to exist (else a later first import would look like a flood of new films), so
+    it returns False, and nothing is pushed, until there is some.
+    """
+    if get_meta(conn, "lb_push_baseline"):
+        return True
+    if conn.execute("SELECT 1 FROM lb_films WHERE watched=1 LIMIT 1").fetchone() is None:
+        return False
+    conn.execute("INSERT OR IGNORE INTO lb_baseline(lb_id) SELECT id FROM lb_films WHERE watched=1")
+    set_meta(conn, "lb_push_baseline", now_iso())
+    conn.commit()
+    return True
+
+
+def _lb_rows(conn: sqlite3.Connection, backfill: bool) -> list[dict]:
+    if not ensure_baseline(conn):
+        return []
+    sql = _ITEMS_OF_LB if backfill else _ITEMS_OF_LB + " AND f.id NOT IN (SELECT lb_id FROM lb_baseline)"
+    return [dict(r, src="lb") for r in conn.execute(sql + " ORDER BY f.watched_date DESC, f.id")]
+
+
+async def _queue_fix(conn, http, client_id: str, token: str, r: dict, fixes: dict) -> None:
+    """Add a pushed item to the plex.tv fix-up work (one entry per film, covering all its server items)."""
+    pk = (r["key"], r["server_id"], r["rating_key"])
+    if r["key"] in fixes:
+        fixes[r["key"]]["pks"].append(pk)
+        return
+    fix = _history_item(conn, r)
+    fix["pks"] = [pk]
+    guid = json.loads(r["json"]).get("guid")
+    if not guid and token and r.get("base_url"):
+        guid = await plex.item_guid(http, r["base_url"], client_id, r["access_token"] or "", r["rating_key"])
+    fix["discover_id"] = plex.discover_id(guid)
+    if not fix["discover_id"]:
+        conn.execute("UPDATE seen_pushes SET discover_at='none' WHERE key=? AND server_id=? AND rating_key=?", pk)
+    fixes[r["key"]] = fix
+
+
+def catchup_items(conn: sqlite3.Connection, limit: int | None = None) -> list[dict]:
+    """Plex pushes whose plex.tv side is not settled (discover_at NULL): fix-up work per film, bounded per run.
+
+    First pass (fixed_at NULL): Discover scrobble if plex.tv has it unwatched, then manual marks are removed
+    from the history, Letterboxd ones re-dated. Re-check (item["recheck"]): the first pass is done and the
+    push is at least RECHECK_AFTER old; the history is scanned once more for entries plex.tv created later.
+    """
+    limit = limit or LB_BATCH
+    rows = conn.execute(
+        "SELECT p.key, p.server_id, p.rating_key, p.source, p.pushed_at, p.fixed_at, p.scrobbled_at, i.json,"
+        " s.base_url, s.access_token FROM seen_pushes p"
+        " JOIN media_items i ON i.server_id=p.server_id AND i.rating_key=p.rating_key"
+        " JOIN media_servers s ON s.id=p.server_id WHERE p.discover_at IS NULL AND s.enabled=1"
+        " ORDER BY p.pushed_at").fetchall()
+    by_key: dict = {}
+    for r in rows:
+        by_key.setdefault(r["key"], []).append(dict(r, src=r["source"]))
+    cutoff = (datetime.now(timezone.utc) - plex_history.RECHECK_AFTER).strftime("%Y-%m-%dT%H:%M:%SZ")
+    fixes: list[dict] = []
+    for key, rs in by_key.items():
+        pks = [(r["key"], r["server_id"], r["rating_key"]) for r in rs]
+        recheck = all(r["fixed_at"] for r in rs)
+        if recheck and any(r["pushed_at"] > cutoff for r in rs):
+            continue                                        # too early for the second pass
+        did = plex.discover_id(json.loads(rs[0]["json"]).get("guid"))
+        if not did:
+            for pk in pks:
+                conn.execute("UPDATE seen_pushes SET discover_at='none' WHERE key=? AND server_id=? AND rating_key=?", pk)
+            continue
+        if len(fixes) >= limit:
+            break
+        fix = _history_item(conn, rs[0])
+        fix.update(pks=pks, pushed_ats=[r["pushed_at"] for r in rs], discover_id=did, recheck=recheck,
+                   scrobbled_at=max((r["scrobbled_at"] for r in rs if r["scrobbled_at"]), default=None))
+        fixes.append(fix)
+    conn.commit()
+    return fixes
+
+
+def unsettled(conn: sqlite3.Connection) -> int:
+    """Plex pushes whose plex.tv side is not settled yet (the follow-up batches go on while this is > 0)."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM seen_pushes p JOIN media_items i ON i.server_id=p.server_id AND i.rating_key=p.rating_key"
+        " JOIN media_servers s ON s.id=p.server_id WHERE p.discover_at IS NULL AND s.enabled=1").fetchone()[0]
+
+
+def _history_item(conn: sqlite3.Connection, r) -> dict:
+    """Title, year and real watch date (Letterboxd diary) of a film just marked played."""
+    it = json.loads(r["json"])
+    title, year = it.get("title") or "", it.get("year")
+    if r["src"] == "lb" and "watched_date" in r:
+        return {"title": title, "year": year, "date": r.get("watched_date") or None}
+    row = None
+    if r["key"].startswith("tmdb:"):
+        row = conn.execute("SELECT watched_date FROM lb_films WHERE tmdb_id=? AND watched=1"
+                           " AND watched_date IS NOT NULL ORDER BY watched_date DESC LIMIT 1",
+                           (r["key"][5:],)).fetchone()
+    if row is None:
+        row = conn.execute("SELECT watched_date FROM lb_films WHERE norm_title=? AND year IS ? AND watched=1"
+                           " AND watched_date IS NOT NULL ORDER BY watched_date DESC LIMIT 1",
+                           (norm_title(title), year)).fetchone()
+    return {"title": title, "year": year, "date": row["watched_date"] if row else None}
+
+
 async def unpush(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str,
-                 keys: list[str] | None = None, backend=None) -> dict:
+                 keys: list[str] | None = None, backend=None, history_token: str = "") -> dict:
     """Unscrobble the items the app pushed for films no longer marked seen (all, or only `keys`).
 
     Records for servers that no longer exist are dropped; unreachable servers and Plex errors leave
     the record in place for the next sync. Returns counts: unpushed, failed, dropped.
     """
     sql = ("SELECT p.key, p.server_id, p.rating_key, s.id sid, s.name sname, s.reachable, s.base_url,"
-           " s.access_token FROM seen_pushes p LEFT JOIN media_servers s ON s.id=p.server_id"
-           " WHERE p.key NOT IN (SELECT key FROM seen)")
+           " s.access_token, i.json FROM seen_pushes p LEFT JOIN media_servers s ON s.id=p.server_id"
+           " LEFT JOIN media_items i ON i.server_id=p.server_id AND i.rating_key=p.rating_key"
+           " WHERE p.source='seen' AND p.key NOT IN (SELECT key FROM seen)")
     params: list = []
     if keys is not None:
         sql += f" AND p.key IN ({','.join('?' * len(keys))})"
@@ -134,6 +278,8 @@ async def unpush(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: s
 
     async def call(r):
         await be.mark_unplayed(http, r["base_url"], client_id, r["access_token"] or "", user_id, r["rating_key"])
+        if history_token and be.name == "plex":
+            await _discover_unscrobble(http, client_id, history_token, r)
 
     for r, res in zip(todo, await _run(todo, call)):
         if isinstance(res, asyncio.CancelledError):
@@ -148,6 +294,17 @@ async def unpush(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: s
         counts["unpushed"] += 1
     conn.commit()
     return counts
+
+
+async def _discover_unscrobble(http, client_id: str, token: str, r) -> None:
+    """Mark the film unwatched on plex.tv too (best effort: the server unscrobble already succeeded)."""
+    try:
+        guid = json.loads(r["json"]).get("guid") if r["json"] else None
+        did = plex.discover_id(guid)
+        if did:
+            await plex.discover_unscrobble(http, client_id, token, did)
+    except (httpx.HTTPError, ValueError) as e:
+        log.warning("could not mark a film unwatched on plex.tv: %s", safe_error(e))
 
 
 def pushed_count(conn: sqlite3.Connection) -> int:
