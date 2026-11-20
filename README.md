@@ -112,6 +112,10 @@ MovieNight uses Google Cast, the same way the Plex phone app casts, because Plex
   players) or the `MOVIENIGHT_CAST_HOSTS` variable (comma-separated IPs or hostnames).
 - The device name shown is the one the TV reports. Plex only.
 
+Android TV: a separate app (repo movienight-androidtv) loads this UI; the UI detects the `MovieNightTV` user
+agent and enables D-pad navigation (arrow keys move focus to the nearest control, Enter opens it, a larger focus
+ring) and opens Plex links in the Plex app, as on phones.
+
 ## Media server: Plex or Jellyfin
 
 `MOVIENIGHT_MEDIA_SERVER` picks one: `plex` (default) or `jellyfin`. The app never reads both.

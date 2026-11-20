@@ -15,7 +15,8 @@ function rememberPlayer(id) {
   try { localStorage.setItem(LAST_KEY, id); } catch { /* storage unavailable */ }
 }
 
-const MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+// MovieNightTV: the Android TV app's WebView (its UA usually says Android too); its Plex links go to the app.
+const MOBILE = /Android|iPhone|iPad|iPod|MovieNightTV/i.test(navigator.userAgent)
   || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
 
 // On mobile Plex entries carry `mobile_url`, a watch.plex.tv universal link: the Plex app opens on the movie's
