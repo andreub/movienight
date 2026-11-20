@@ -16,7 +16,8 @@ function rememberPlayer(id) {
 }
 
 // MovieNightTV: the Android TV app's WebView (its UA usually says Android too); its Plex links go to the app.
-const MOBILE = /Android|iPhone|iPad|iPod|MovieNightTV/i.test(navigator.userAgent)
+const TV_APP = /MovieNightTV/.test(navigator.userAgent);
+const MOBILE = TV_APP || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
   || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
 
 // On mobile Plex entries carry `mobile_url`, a watch.plex.tv universal link: the Plex app opens on the movie's
@@ -30,6 +31,8 @@ export function playControl(movie, cls = '') {
     return h('button', { type: 'button', class: `btn btn--primary ${cls}`, disabled: true }, icon('play'), `Not on ${serverName()} right now`);
   }
   const holder = h('div', { class: 'play-control', style: { display: 'contents' } }, linkControl(sources, cls));
+  // In the TV app we are the TV: Play opens the film in the Plex app, never a cast menu.
+  if (TV_APP) return holder;
   // Players are looked up lazily, once per page load; until (or unless) some exist the plain control stays.
   getPlayers().then((players) => {
     if (players.length && sources.some((s) => s.rating_key)) holder.replaceChildren(playerMenu(movie, sources, players, cls));

@@ -139,6 +139,7 @@ def test_static_code_revalidates_but_images_do_not(client):
 def test_tv_client_assets_are_served(client):
     # The Android TV app's WebView adds "MovieNightTV" to its user agent; the UI keys D-pad navigation off it.
     assert "MovieNightTV" in client.get("/static/js/tvnav.js").text
-    assert "MovieNightTV" in client.get("/static/js/play.js").text
+    play = client.get("/static/js/play.js").text
+    assert "MovieNightTV" in play and "if (TV_APP) return holder" in play   # no cast menu inside the TV app
     assert "initTvNav" in client.get("/static/js/main.js").text
 
