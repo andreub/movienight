@@ -183,6 +183,35 @@ on the server to update the image (HTTP API `POST /v1/update?image=...`, token r
 and waits up to five minutes until the container is healthy and its
 `org.opencontainers.image.version` label matches the released version.
 
+### Testing a branch or PR before merging
+
+```sh
+scripts/deploy.sh 12          # a PR number
+scripts/deploy.sh feat/x      # or a branch name
+scripts/deploy.sh             # from main: back to :latest
+```
+
+The script resolves the branch head on `origin`, dispatches the manual **Preview image** workflow
+(tests, then a multi-arch image tagged `sha-<7>` and `branch-<name>`, never `latest`, no release) unless
+that commit already has a successful build, then recreates the container on `sha-<7>` through its
+docker compose project and waits until it is healthy and its `org.opencontainers.image.revision`
+label is the commit. `SKIP_WAIT=1` skips the build wait. Local `HEAD` differing from the branch, or
+unpushed commits, only produce a warning: what gets deployed is `origin/<branch>`.
+
+One-time change on the server: the compose file must take the tag from a variable, so the script can
+choose it (the variable name can be changed with `TAG_VAR`; the script refuses to deploy otherwise):
+
+```yaml
+image: ghcr.io/andreub/movienight:${MOVIENIGHT_TAG:-latest}
+```
+
+Notes:
+
+- Watchtower does not move a preview: the container stays on its `sha-<7>` tag. Run
+  `scripts/deploy.sh` with no argument from an up-to-date `main` to recreate it on `latest`.
+- A preview runs against the same data volume as production. For a PR with migrations, take a
+  database backup first (see above).
+
 ## Login
 
 With Plex the default is "Sign in with Plex": only the Plex account the app belongs to gets in
