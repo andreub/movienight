@@ -29,7 +29,8 @@ class Config:
     oidc_allowed_subs: str = ""
     public_url: str = "http://localhost:8080"
     push_seen: bool = False          # mark "seen it" films as played on the media server (writes to the account)
-    media_server: str = "plex"       # which library the app reads: plex | jellyfin (one at a time)
+    plex_history_fix: bool = True    # after a push, date (Letterboxd) or remove the "watched just now" plex.tv activity
+    media_server: str = "plex"     # which library the app reads: plex | jellyfin (one at a time)
     jellyfin_url: str = ""
     jellyfin_user: str = ""
     jellyfin_password: str = field(default="", repr=False)
@@ -106,6 +107,7 @@ class Config:
             oidc_allowed_subs=(env.get("MOVIENIGHT_OIDC_ALLOWED_SUBS") or "").strip(),
             public_url=(env.get("MOVIENIGHT_PUBLIC_URL") or "http://localhost:8080").strip(),
             push_seen=_flag(push),
+            plex_history_fix=(env.get("MOVIENIGHT_PLEX_HISTORY_FIX") or "").strip().lower() not in ("0", "false", "no"),
             media_server=media,
             jellyfin_url=(env.get("MOVIENIGHT_JELLYFIN_URL") or "").strip().rstrip("/"),
             jellyfin_user=(env.get("MOVIENIGHT_JELLYFIN_USER") or "").strip(),

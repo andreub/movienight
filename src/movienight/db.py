@@ -172,7 +172,7 @@ MIGRATIONS = [
 
 # meta keys that belong to one media server type: removed when the app switches to the other one
 SERVER_META = {
-    "plex": ("plex_token", "plex_account", "plex_last_sync", "plex_owner_id"),
+    "plex": ("plex_token", "plex_account", "plex_last_sync", "plex_owner_id", "plex_uuid"),
     "jellyfin": ("jellyfin_user_id", "jellyfin_account", "jellyfin_login", "jellyfin_last_sync"),
 }
 

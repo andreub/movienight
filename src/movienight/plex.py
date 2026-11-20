@@ -63,7 +63,7 @@ async def account(client: httpx.AsyncClient, client_id: str, token: str) -> dict
         r.raise_for_status()
         d = r.json()
         email = d.get("email") or ""
-        return {"id": str(d.get("id") or ""), "email": email,
+        return {"id": str(d.get("id") or ""), "uuid": str(d.get("uuid") or ""), "email": email,
                 "name": d.get("username") or d.get("title") or email.split("@")[0] or ""}
     except (httpx.HTTPError, ValueError, AttributeError):
         return None

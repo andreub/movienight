@@ -23,6 +23,11 @@ def plex_token(conn, cfg: Config) -> str:
     return cfg.plex_token or get_meta(conn, "plex_token") or ""
 
 
+def history_token(conn, cfg: Config) -> str:
+    """The account token for the plex.tv history fix-up; empty = feature off (or not Plex)."""
+    return plex_token(conn, cfg) if cfg.plex_history_fix and cfg.media_server == "plex" else ""
+
+
 class SyncManager:
     def __init__(self, cfg: Config, http: httpx.AsyncClient, engine: library.Engine):
         self.cfg = cfg
@@ -269,7 +274,8 @@ class SyncManager:
         """Retry pending unscrobbles, then mark played every seen film not yet pushed (also the backfill)."""
         async with self.push_lock:
             undone = await seenpush.unpush(conn, self.http, cid, backend=self.media)
-            counts = await seenpush.push(conn, self.http, cid, backend=self.media)
+            counts = await seenpush.push(conn, self.http, cid, backend=self.media,
+                                         history_token=history_token(conn, self.cfg))
         self.last_push = {**counts, "unpushed": undone["unpushed"], "unpush_failed": undone["failed"]}
         log.info("seen marks on %s: %s", self.media.label, self.last_push)
         return self.last_push

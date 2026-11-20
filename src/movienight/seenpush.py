@@ -15,8 +15,8 @@ import sqlite3
 
 import httpx
 
-from . import servers
-from .util import now_iso, safe_error
+from . import plex_history, servers
+from .util import norm_title, now_iso, safe_error
 
 log = logging.getLogger("movienight.seenpush")
 CONCURRENCY = 4
@@ -53,12 +53,13 @@ async def _run(calls: list, fn) -> list:
 
 
 async def push(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str,
-               keys: list[str] | None = None, backend=None) -> dict:
+               keys: list[str] | None = None, backend=None, history_token: str = "") -> dict:
     """Mark played every not-yet-pushed item of the `seen` films (all, or only `keys`).
 
     Only items on enabled servers with a stored view count of 0 are pushed; items already watched in
     Plex are skipped and not recorded. Returns counts: pushed, already_watched, failed, unreachable,
-    not_on_server (seen films with no item on an enabled server).
+    not_on_server (seen films with no item on an enabled server). With a `history_token` (Plex only) the
+    plex.tv history entries the new scrobbles created are then re-dated or removed (plex_history.py).
     """
     sql, params = _ITEMS_OF_SEEN, []
     if keys is not None:
@@ -70,7 +71,7 @@ async def push(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str
     wanted = set(keys) if keys is not None else {r[0] for r in conn.execute("SELECT key FROM seen")}
     counts = {"pushed": 0, "already_watched": 0, "failed": 0, "unreachable": 0,
               "not_on_server": len(wanted - on_server)}
-    todo = []
+    todo, fixes = [], {}
     for r in rows:
         if (r["server_id"], r["rating_key"]) in pushed_items:
             continue
@@ -99,8 +100,29 @@ async def push(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str
                      (r["key"], r["server_id"], r["rating_key"], now_iso()))
         _set_view_count(conn, r["server_id"], r["rating_key"], 1)
         counts["pushed"] += 1
+        if history_token and be.name == "plex" and r["key"] not in fixes:
+            fixes[r["key"]] = _history_item(conn, r)
     conn.commit()
+    if fixes:
+        # after the whole batch, never interleaved; best effort, never changes the push result
+        await plex_history.fix_new_activities(conn, http, client_id, history_token, list(fixes.values()))
     return counts
+
+
+def _history_item(conn: sqlite3.Connection, r) -> dict:
+    """Title, year and real watch date (Letterboxd diary) of a film just marked played."""
+    it = json.loads(r["json"])
+    title, year = it.get("title") or "", it.get("year")
+    row = None
+    if r["key"].startswith("tmdb:"):
+        row = conn.execute("SELECT watched_date FROM lb_films WHERE tmdb_id=? AND watched=1"
+                           " AND watched_date IS NOT NULL ORDER BY watched_date DESC LIMIT 1",
+                           (r["key"][5:],)).fetchone()
+    if row is None:
+        row = conn.execute("SELECT watched_date FROM lb_films WHERE norm_title=? AND year IS ? AND watched=1"
+                           " AND watched_date IS NOT NULL ORDER BY watched_date DESC LIMIT 1",
+                           (norm_title(title), year)).fetchone()
+    return {"title": title, "year": year, "date": row["watched_date"] if row else None}
 
 
 async def unpush(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str,

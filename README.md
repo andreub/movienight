@@ -92,6 +92,7 @@ The UI can run without a backend in mock mode at http://localhost:8080/?mock=1.
 | `MOVIENIGHT_JELLYFIN_USER` / `_PASSWORD` | empty | Jellyfin only: the account MovieNight signs in with |
 | `MOVIENIGHT_JELLYFIN_WATCHED` | on | `0`: ignore what was played in Jellyfin (use it when the account is shared with other people) |
 | `MOVIENIGHT_SYNC_HOURS` | `6` | Background sync interval |
+| `MOVIENIGHT_PLEX_HISTORY_FIX` | on | Plex only, with `MOVIENIGHT_PUSH_SEEN`: plex.tv adds a "watched just now" entry to your watch history for every film marked played. When on, that entry is set to the film's Letterboxd diary date, or removed when there is none (marks made in Movienight never use the time you clicked). The film stays played on the server. Uses an undocumented plex.tv API, best effort. `0`/`false`/`no` = off |
 | `MOVIENIGHT_CAST_HOSTS` | empty | Plex only: IPs/hostnames (comma-separated) of Chromecasts / Android TVs to offer under Play on, for when they are not found automatically (see Play on your TV) |
 | `MOVIENIGHT_PUSH_SEEN` | off | `1`/`true`/`yes`: marks films you flag "seen it" as played on the media server (writes to that account). `MOVIENIGHT_PLEX_PUSH_SEEN` is the older name and still works |
 | `MOVIENIGHT_LOGIN` | `plex` (Plex), empty (Jellyfin) | Login methods, comma-separated: `plex`, `oidc`, or `none`. See [Login](#login) |
