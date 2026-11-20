@@ -190,7 +190,8 @@ and waits up to five minutes until the container is healthy and its
 ## Login
 
 With Plex the default is "Sign in with Plex": only the Plex account the app belongs to gets in
-(`MOVIENIGHT_PLEX_OWNER`, or the first sign-in). With Jellyfin there is no Jellyfin login: use OIDC
+(`MOVIENIGHT_PLEX_OWNER`, or the first sign-in). On a TV, "Sign in with a code (TV)" shows a 4-character
+code to enter at plex.tv/link on a phone that is already signed in to Plex (same account check, no typing on the TV). With Jellyfin there is no Jellyfin login: use OIDC
 (below), or `MOVIENIGHT_LOGIN=none` on a private network. With Jellyfin and neither, the app answers
 503 instead of running open; `MOVIENIGHT_LOGIN=plex` with Jellyfin stops the app at start.
 

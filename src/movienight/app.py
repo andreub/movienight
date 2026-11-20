@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import logging
 import random
 import secrets
@@ -151,7 +152,8 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         return JSONResponse({"detail": "Internal server error"}, status_code=500)
 
     # ---- login (see auth.py): Plex account and/or OIDC; nothing here runs when login is off
-    def _page(title: str, body: str, status: int = 200, links: list[tuple[str, str]] | None = None) -> HTMLResponse:
+    def _page(title: str, body: str, status: int = 200, links: list[tuple[str, str]] | None = None,
+              script: str = "") -> HTMLResponse:
         buttons = "".join(
             f"<p><a style='display:inline-block;min-width:240px;padding:14px 22px;border-radius:12px;"
             f"background:#f5b942;color:#14122b;font-weight:700;text-decoration:none' href='{html.escape(href)}'>"
@@ -160,9 +162,55 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
             f"<title>{html.escape(title)} · MovieNight</title><link rel=icon href='/static/favicon.svg'>"
             "<body style='font:18px system-ui;background:#14122b;color:#f3efe6;display:grid;place-items:center;"
-            "min-height:90vh;text-align:center;padding:24px;margin:0'><main>"
-            f"<h1>{html.escape(title)}</h1><p>{html.escape(body)}</p>{buttons}</main>",
+            "min-height:90vh;text-align:center;padding:24px;margin:0'>"
+            "<style>a:focus-visible,button:focus-visible{outline:4px solid #f3efe6;outline-offset:4px}</style><main>"
+            f"<h1>{html.escape(title)}</h1><p>{html.escape(body)}</p>{buttons}</main>"
+            + (f"<script>{script}</script>" if script else ""),
             status_code=status, headers={"Cache-Control": "no-store"})
+
+    # In the Android TV app (its WebView's user agent says MovieNightTV) the code sign-in comes first, focused.
+    _TV_FIRST = ("if(/MovieNightTV/.test(navigator.userAgent)){const a=document.querySelector('a[href^=\"/login/plex/tv\"]');"
+                 "const first=document.querySelector('main p a');"
+                 "if(a&&first){first.parentElement.before(a.parentElement);a.focus();}}")
+
+    def _code_page(next_path: str) -> HTMLResponse:
+        """Sign in with a 4-character code typed at plex.tv/link (no typing on the TV itself)."""
+        nxt = json.dumps(next_path).replace("<", "\\u003c")
+        script = (
+            f"const NEXT={nxt};const codeEl=document.getElementById('code'),msg=document.getElementById('msg'),"
+            "again=document.getElementById('again');let timer=null;"
+            "function fail(t){msg.textContent=t;again.hidden=false;again.focus();}"
+            "async function start(){clearTimeout(timer);again.hidden=true;codeEl.textContent='····';"
+            "msg.textContent='Getting a code…';"
+            "try{const r=await fetch('/login/plex/code?next='+encodeURIComponent(NEXT),{method:'POST',credentials:'same-origin'});"
+            "const d=await r.json();if(!r.ok)return fail(d.detail||'Could not get a code.');"
+            "codeEl.textContent=d.code;msg.textContent='Waiting for the code to be entered…';poll(d.id);}"
+            "catch(e){fail('Could not reach MovieNight.');}}"
+            "function poll(id){timer=setTimeout(async()=>{try{"
+            "const r=await fetch('/login/plex/code/'+encodeURIComponent(id),{credentials:'same-origin'});const d=await r.json();"
+            "if(d.status==='ok'){msg.textContent='Signed in.';location.replace(d.next||'/');return;}"
+            "if(d.status==='pending'){poll(id);return;}"
+            "codeEl.textContent='····';"
+            "fail(d.status==='expired'?'This code expired.':(d.detail||'Could not sign you in.'));"
+            "}catch(e){poll(id);}},2000);}"
+            "again.onclick=start;start();")
+        return HTMLResponse(
+            "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<title>Sign in with a code · MovieNight</title><link rel=icon href='/static/favicon.svg'>"
+            "<body style='font:20px system-ui;background:#14122b;color:#f3efe6;display:grid;place-items:center;"
+            "min-height:90vh;text-align:center;padding:24px;margin:0'>"
+            "<style>a{color:#f5b942}a:focus-visible,button:focus-visible{outline:4px solid #f3efe6;outline-offset:4px}"
+            "#code{font:700 clamp(64px,16vw,168px)/1.1 ui-monospace,Menlo,monospace;letter-spacing:.18em;"
+            "color:#f5b942;margin:16px 0}</style><main>"
+            "<h1>Sign in with a code</h1>"
+            "<p>Go to <a href='https://plex.tv/link' target=_blank rel=noopener>plex.tv/link</a>"
+            " on your phone and enter this code</p>"
+            "<p id=code aria-live=polite>····</p><p id=msg role=status></p>"
+            "<p><button id=again type=button hidden style='min-width:240px;padding:14px 22px;border:0;border-radius:12px;"
+            "background:#f5b942;color:#14122b;font:700 18px system-ui;cursor:pointer'>Get a new code</button></p>"
+            f"<p><a href='/login?next={html.escape(quote(next_path, safe=''))}'>Other ways to sign in</a></p></main>"
+            f"<script>{script}</script>",
+            headers={"Cache-Control": "no-store"})
 
     def _oidc_ready(st) -> bool:
         return st.oidc is not None and st.oidc.configured
@@ -187,7 +235,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         st = request.app.state
         sessions = getattr(st, "sessions", None)
         path = request.url.path
-        if sessions is None or path in auth.PUBLIC_PATHS:
+        if sessions is None or path in auth.PUBLIC_PATHS or path.startswith(auth.PUBLIC_PREFIXES):
             return await call_next(request)
         if st.plex_login is None and not _oidc_ready(st):
             if cfg.media_server != "plex" and not cfg.oidc_issuer:
@@ -218,6 +266,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         links = []
         if st.plex_login is not None:
             links.append(("Sign in with Plex", "/login/plex" + q))
+            links.append(("Sign in with a code (TV)", "/login/plex/tv" + q))
         if _oidc_ready(st):
             links.append((f"Sign in with {cfg.oidc_name}", "/login/oidc" + q))
         if not links:
@@ -225,7 +274,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                 return _page("Login not configured", "Set MOVIENIGHT_OIDC_ISSUER and MOVIENIGHT_OIDC_CLIENT_ID"
                              " (or MOVIENIGHT_LOGIN=none) and restart.", 503, [])
             return _page("Login not configured", "Set MOVIENIGHT_OIDC_CLIENT_ID and restart.", 503, [])
-        return _page("MovieNight", "Sign in to pick tonight's film.", links=links)
+        return _page("MovieNight", "Sign in to pick tonight's film.", links=links, script=_TV_FIRST)
 
     @app.get("/login/oidc", include_in_schema=False)
     async def login_oidc(request: Request, next: str = "/"):
@@ -270,33 +319,89 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             return RedirectResponse("/", status_code=303)
         try:
             account, token, next_path = await st.plex_login.finish(state)
-            with db.session(cfg.db_path) as c:
-                stored = plex_token(c, cfg)
-                owner_id = db.get_meta(c, "plex_owner_id") or ""
-            if not owner_id and stored and not cfg.plex_owner:
-                # a library is already connected: the app belongs to that Plex account
-                known = await plex.account(st.http, st.plex_login.client_id, stored)
-                owner_id = (known or {}).get("id") or ""
-            if cfg.plex_owner:
-                allowed = auth.is_owner(account, cfg.plex_owner)
-            elif owner_id:
-                allowed = account["id"] == owner_id
-            else:
-                allowed = not stored          # nobody yet: the first sign-in becomes the owner
-            if not allowed:
-                raise auth.LoginError("This MovieNight belongs to another Plex account")
-            with db.session(cfg.db_path) as c:
-                db.set_meta(c, "plex_owner_id", account["id"])
-                if not stored:
-                    library.set_plex_token(c, token, account["name"] or None)
-            if not stored:
-                sync_mgr().start("plex")
+            await _plex_admit(st, account, token)
         except auth.LoginError as e:
             return _page("Could not sign you in", str(e), 403)
         except Exception as e:  # noqa: BLE001
             log.error("plex login failed: %s", safe_error(e))
             return _page("Could not sign you in", "Something went wrong talking to plex.tv.", 502)
         return _signed_in(st, auth.Session("plex:" + account["id"], account["name"]), next_path)
+
+    async def _plex_admit(st, account: dict, token: str) -> None:
+        """Only the Plex account this MovieNight belongs to gets in (the first one owns it). Raises LoginError."""
+        with db.session(cfg.db_path) as c:
+            stored = plex_token(c, cfg)
+            owner_id = db.get_meta(c, "plex_owner_id") or ""
+        if not owner_id and stored and not cfg.plex_owner:
+            # a library is already connected: the app belongs to that Plex account
+            known = await plex.account(st.http, st.plex_login.client_id, stored)
+            owner_id = (known or {}).get("id") or ""
+        if cfg.plex_owner:
+            allowed = auth.is_owner(account, cfg.plex_owner)
+        elif owner_id:
+            allowed = account["id"] == owner_id
+        else:
+            allowed = not stored          # nobody yet: the first sign-in becomes the owner
+        if not allowed:
+            raise auth.LoginError("This MovieNight belongs to another Plex account")
+        with db.session(cfg.db_path) as c:
+            db.set_meta(c, "plex_owner_id", account["id"])
+            if not stored:
+                library.set_plex_token(c, token, account["name"] or None)
+        if not stored:
+            sync_mgr().start("plex")
+
+    @app.get("/login/plex/tv", include_in_schema=False)
+    def login_plex_tv(request: Request, next: str = "/"):
+        if request.app.state.plex_login is None:
+            return RedirectResponse("/login", status_code=303)
+        return _code_page(auth.safe_next(next))
+
+    @app.post("/login/plex/code", include_in_schema=False)
+    async def login_plex_code(request: Request, next: str = "/"):
+        """TV-style sign-in: a short code to type at plex.tv/link on a phone that is signed in to Plex."""
+        st = request.app.state
+        if st.plex_login is None:
+            return JSONResponse({"detail": "Plex sign-in is off"}, status_code=404)
+        try:
+            started = await st.plex_login.start_code(next)
+        except auth.TooManyCodes as e:
+            return JSONResponse({"detail": str(e)}, status_code=429)
+        except Exception as e:  # noqa: BLE001
+            log.error("plex code start failed: %s", safe_error(e))
+            return JSONResponse({"detail": "plex.tv could not be reached. Try again in a moment."}, status_code=502)
+        nonce = started.pop("nonce")
+        res = JSONResponse(started, headers={"Cache-Control": "no-store"})
+        res.set_cookie(auth.CODE_COOKIE, nonce, max_age=auth.CODE_SECONDS,
+                       **{**st.sessions.cookie_kwargs(), "path": "/login/plex/code"})
+        return res
+
+    @app.get("/login/plex/code/{handle}", include_in_schema=False)
+    async def login_plex_code_poll(request: Request, handle: str):
+        """{"status": "pending" | "ok" | "expired"}; "ok" also sets the session cookie, like the callback."""
+        st = request.app.state
+        if st.plex_login is None:
+            return JSONResponse({"detail": "Plex sign-in is off"}, status_code=404)
+        headers = {"Cache-Control": "no-store"}
+        try:
+            done = await st.plex_login.poll_code(handle, request.cookies.get(auth.CODE_COOKIE))
+            if done is None:
+                return JSONResponse({"status": "pending"}, headers=headers)
+            account, token, next_path = done
+            await _plex_admit(st, account, token)
+        except auth.CodeExpired as e:
+            return JSONResponse({"status": "expired", "detail": str(e)}, status_code=410, headers=headers)
+        except auth.LoginError as e:
+            return JSONResponse({"status": "denied", "detail": str(e)}, status_code=403, headers=headers)
+        except Exception as e:  # noqa: BLE001
+            log.error("plex code login failed: %s", safe_error(e))
+            return JSONResponse({"detail": "Something went wrong talking to plex.tv."}, status_code=502, headers=headers)
+        res = JSONResponse({"status": "ok", "next": next_path}, headers=headers)
+        res.set_cookie(auth.SESSION_COOKIE, st.sessions.sign("plex:" + account["id"], account["name"]),
+                       max_age=auth.SESSION_DAYS * 86400, **st.sessions.cookie_kwargs())
+        res.delete_cookie(auth.CODE_COOKIE, path="/login/plex/code")
+        return res
+
 
     @app.get("/logout", include_in_schema=False)
     async def logout(request: Request):
