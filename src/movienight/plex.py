@@ -383,3 +383,53 @@ def key_maps(items: list[dict]) -> tuple[dict, dict]:
     return imdb_to_tmdb, title_to_tmdb
 
 
+
+
+# --------------------------------------------------------------------------- plex.tv (Discover) watched state
+# Scrobbling on a server only sets that server's view count. plex.tv's own watched state (and its watch
+# history) is set by scrobbling the title on the Discover provider, with the account token.
+
+DISCOVER_IDENTIFIER = "tv.plex.provider.discover"
+
+
+def discover_id(guid: str | None) -> str | None:
+    """`plex://movie/<id>` -> `<id>` (the id Discover and the plex.tv history use); None for other guids."""
+    return guid.rsplit("/", 1)[-1] if guid and parse_plex_guid({"guid": guid}) else None
+
+
+async def item_guid(client: httpx.AsyncClient, base: str, client_id: str, token: str, rating_key: str) -> str | None:
+    """The Plex Discover guid of a server item, read from the server (None if it has none or on error)."""
+    try:
+        mc = await _get_json(client, base, f"/library/metadata/{quote(str(rating_key), safe='')}", client_id, token)
+        return parse_plex_guid((mc.get("Metadata") or [{}])[0])
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return None
+
+
+async def _discover_action(client: httpx.AsyncClient, action: str, client_id: str, token: str, did: str) -> None:
+    r = await client.put(f"{DISCOVER}/actions/{action}",
+                         params={"identifier": DISCOVER_IDENTIFIER, "key": did},
+                         headers=base_headers(client_id, token), timeout=API_TIMEOUT)
+    r.raise_for_status()
+
+
+async def discover_scrobble(client: httpx.AsyncClient, client_id: str, token: str, did: str) -> None:
+    """Mark a title watched on plex.tv (also adds a watch-history entry dated now). Raises httpx errors."""
+    await _discover_action(client, "scrobble", client_id, token, did)
+
+
+async def discover_unscrobble(client: httpx.AsyncClient, client_id: str, token: str, did: str) -> None:
+    """Mark a title unwatched on plex.tv. Raises httpx errors."""
+    await _discover_action(client, "unscrobble", client_id, token, did)
+
+
+async def discover_view_count(client: httpx.AsyncClient, client_id: str, token: str, did: str) -> int | None:
+    """How often the account watched a title according to plex.tv; None if it cannot be read."""
+    try:
+        r = await client.get(f"{DISCOVER}/library/metadata/{quote(did, safe='')}/userState",
+                             headers=base_headers(client_id, token), timeout=API_TIMEOUT)
+        r.raise_for_status()
+        st = (r.json().get("MediaContainer", {}).get("UserState") or [{}])[0]
+        return int(st.get("viewCount") or 0)
+    except (httpx.HTTPError, ValueError, AttributeError, TypeError):
+        return None

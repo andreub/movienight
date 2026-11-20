@@ -301,11 +301,15 @@ class SyncManager:
     async def push_seen(self, conn, cid: str, lb: bool = False) -> dict:
         """Retry pending unscrobbles, then mark played every seen film not yet pushed (also the backfill).
         With `lb`, Letterboxd-watched films too (new ones, or the paced backfill when opted in)."""
-        sink = (lambda items: self.schedule_history(conn, cid, items)) if history_token(conn, self.cfg) else None
+        token = history_token(conn, self.cfg)
+        sink = (lambda items: self.schedule_history(conn, cid, items)) if token else None
         async with self.push_lock:
-            undone = await seenpush.unpush(conn, self.http, cid, backend=self.media)
+            undone = await seenpush.unpush(conn, self.http, cid, backend=self.media, history_token=token)
+            if token and self.media.name == "plex" and not self._history_tasks:
+                # pushes from before the plex.tv settling existed: once each, paced in the background
+                self.schedule_history(conn, cid, seenpush.catchup_items(conn))
             counts = await seenpush.push(conn, self.http, cid, backend=self.media, history_sink=sink,
-                                         lb=lb, backfill=self.cfg.push_lb_backfill)
+                                         history_token=token, lb=lb, backfill=self.cfg.push_lb_backfill)
         self.last_push = {**counts, "unpushed": undone["unpushed"], "unpush_failed": undone["failed"]}
         log.info("seen marks on %s: %s", self.media.label, self.last_push)
         return self.last_push

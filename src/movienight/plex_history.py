@@ -19,7 +19,7 @@ import httpx
 
 from . import plex
 from .db import get_meta, set_meta
-from .util import norm_title, parse_iso, safe_error
+from .util import norm_title, now_iso, parse_iso, safe_error
 
 log = logging.getLogger("movienight.plexhistory")
 
@@ -119,14 +119,24 @@ async def recent_history(http, client_id, token, uuid: str) -> list[dict]:
     return (((data.get("user") or {}).get("watchHistory") or {}).get("nodes")) or []
 
 
-def find_entry(nodes: list[dict], title: str, year: int | None, taken: set, now: datetime) -> dict | None:
-    """The newest fresh, not yet claimed entry for this film (title, and year when both sides have it)."""
-    want = norm_title(title)
+def find_entry(nodes: list[dict], item: dict, taken: set, now: datetime) -> dict | None:
+    """The newest fresh, not yet claimed entry for this film.
+
+    Matched by the Discover id (`metadataItem.id`) when the item has one; otherwise by title (accent and
+    case-insensitive), and year when both sides have it.
+    """
+    did = item.get("discover_id")
+    want = norm_title(item.get("title"))
+    year = item.get("year")
     for n in nodes[:SCAN]:
         mi = n.get("metadataItem") or {}
         when = parse_iso(n.get("date"))
         if not n.get("id") or n["id"] in taken or when is None or abs(now - when) > RECENT:
             continue
+        if did:
+            if str(mi.get("id") or "") != did:
+                continue
+            return n
         if str(mi.get("type") or "movie").lower() != "movie" or norm_title(mi.get("title")) != want:
             continue
         y = mi.get("year")
@@ -136,28 +146,72 @@ def find_entry(nodes: list[dict], title: str, year: int | None, taken: set, now:
     return None
 
 
+def _done(conn: sqlite3.Connection, item: dict, value: str) -> None:
+    """Remember that the plex.tv side of a pushed item is settled (`seen_pushes.discover_at`)."""
+    for pk in item.get("pks") or []:
+        conn.execute("UPDATE seen_pushes SET discover_at=? WHERE key=? AND server_id=? AND rating_key=?",
+                     (value, *pk))
+    conn.commit()
+
+
+async def _scrobble_discover(conn, http, client_id, token, items: list[dict], out: dict) -> list[dict]:
+    """Mark the items watched on plex.tv unless plex.tv already counts them watched; returns those that now
+    have a fresh history entry to fix. Items without a Discover id pass through (nothing to scrobble)."""
+    fresh, first = [], True
+    for it in items:
+        did = it.get("discover_id")
+        if not did:
+            fresh.append(it)
+            continue
+        if not first:
+            await _sleep(MUTATION_DELAY)
+        first = False
+        try:
+            seen = await plex.discover_view_count(http, client_id, token, did)
+            if seen is None:
+                raise httpx.HTTPError("could not read the plex.tv watched state")
+            if seen > 0:
+                out["already"] += 1
+                _done(conn, it, now_iso())           # plex.tv already has it watched: leave its history alone
+                continue
+            await plex.discover_scrobble(http, client_id, token, did)
+            out["scrobbled"] += 1
+            _done(conn, it, now_iso())
+            fresh.append(it)
+        except httpx.HTTPError as e:
+            out["failed"] += 1
+            log.warning("could not mark a film watched on plex.tv: %s", safe_error(e))
+    return fresh
+
+
 async def fix_new_activities(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str, token: str,
                              items: list[dict]) -> dict:
-    """items: [{"title", "year", "date"}] just marked played; date is 'YYYY-MM-DD' or None.
+    """items: [{"title", "year", "date", "discover_id"?, "pks"?}] just marked played on the server.
 
-    Returns counts {"dated", "removed", "missing", "failed"}. Never raises (except cancellation).
+    Items with a `discover_id` are first marked watched on plex.tv (Discover scrobble; the server scrobble
+    alone does not do that), then every item's new history entry is re-dated to `date` ('YYYY-MM-DD') or
+    removed when there is none. Returns counts {"scrobbled", "already", "dated", "removed", "missing",
+    "failed"}. Never raises (except cancellation).
     """
-    out = {"dated": 0, "removed": 0, "missing": 0, "failed": 0}
+    out = {"scrobbled": 0, "already": 0, "dated": 0, "removed": 0, "missing": 0, "failed": 0}
     if not items or not token:
         return out
     found: list[tuple[dict, dict]] = []
     try:
+        todo = await _scrobble_discover(conn, http, client_id, token, items, out)
+        if not todo:
+            return out
         uuid = await user_uuid(conn, http, client_id, token)
         if not uuid:
             log.warning("plex history fix skipped: could not read the plex.tv user id")
             return out
-        todo, taken = list(items), set()
+        taken: set = set()
         for attempt in range(LOOKUP_TRIES):
             nodes = await recent_history(http, client_id, token, uuid)
             now = datetime.now(timezone.utc)
             rest = []
             for it in todo:
-                n = find_entry(nodes, it["title"], it.get("year"), taken, now)
+                n = find_entry(nodes, it, taken, now)
                 if n is None:
                     rest.append(it)
                 else:
@@ -169,6 +223,8 @@ async def fix_new_activities(conn: sqlite3.Connection, http: httpx.AsyncClient, 
             if attempt < LOOKUP_TRIES - 1:
                 await _sleep(LOOKUP_DELAY)
         out["missing"] = len(todo)
+        for it in todo:
+            log.info("plex history: no new entry found for %r (left as is)", it.get("title"))
         for i, (it, node) in enumerate(found):
             if i:
                 await _sleep(MUTATION_DELAY)
@@ -178,10 +234,12 @@ async def fix_new_activities(conn: sqlite3.Connection, http: httpx.AsyncClient, 
                     await _call(http, client_id, token, M_DATE,
                                 {"id": node["id"], "input": {"date": iso}}, "updateActivityDate")
                     out["dated"] += 1
+                    log.info("plex history: re-dated %r to %s", it.get("title"), iso[:10])
                 else:
                     await _call(http, client_id, token, M_REMOVE,
                                 {"input": {"id": node["id"], "type": "WATCH_HISTORY"}}, "removeActivity")
                     out["removed"] += 1
+                    log.info("plex history: removed the entry for %r (no real watch date known)", it.get("title"))
             except (httpx.HTTPError, GraphQLError, ValueError) as e:
                 out["failed"] += 1
                 log.warning("plex history fix failed for one film: %s", _why(e))

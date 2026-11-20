@@ -15,7 +15,7 @@ import sqlite3
 
 import httpx
 
-from . import plex_history, servers
+from . import plex, plex_history, servers
 from .db import get_meta, set_meta
 from .util import norm_title, now_iso, safe_error
 
@@ -128,8 +128,8 @@ async def push(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str
                      (r["key"], r["server_id"], r["rating_key"], now_iso(), r["src"]))
         _set_view_count(conn, r["server_id"], r["rating_key"], 1)
         counts["pushed"] += 1
-        if (history_token or history_sink) and be.name == "plex" and r["key"] not in fixes:
-            fixes[r["key"]] = _history_item(conn, r)
+        if (history_token or history_sink) and be.name == "plex":
+            await _queue_fix(conn, http, client_id, history_token, r, fixes)
     conn.commit()
     if fixes:
         # after the whole batch, never interleaved; best effort, never changes the push result
@@ -164,11 +164,56 @@ def _lb_rows(conn: sqlite3.Connection, backfill: bool) -> list[dict]:
     return [dict(r, src="lb") for r in conn.execute(sql + " ORDER BY f.watched_date DESC, f.id")]
 
 
+async def _queue_fix(conn, http, client_id: str, token: str, r: dict, fixes: dict) -> None:
+    """Add a pushed item to the plex.tv fix-up work (one entry per film, covering all its server items)."""
+    pk = (r["key"], r["server_id"], r["rating_key"])
+    if r["key"] in fixes:
+        fixes[r["key"]]["pks"].append(pk)
+        return
+    fix = _history_item(conn, r)
+    fix["pks"] = [pk]
+    guid = json.loads(r["json"]).get("guid")
+    if not guid and token and r.get("base_url"):
+        guid = await plex.item_guid(http, r["base_url"], client_id, r["access_token"] or "", r["rating_key"])
+    fix["discover_id"] = plex.discover_id(guid)
+    if not fix["discover_id"]:
+        conn.execute("UPDATE seen_pushes SET discover_at='none' WHERE key=? AND server_id=? AND rating_key=?", pk)
+    fixes[r["key"]] = fix
+
+
+def catchup_items(conn: sqlite3.Connection, limit: int = LB_BATCH) -> list[dict]:
+    """Plex pushes from before the plex.tv settling existed (discover_at NULL): fix-up work for each film,
+    manual marks to be removed from the history, Letterboxd ones re-dated. Bounded per run."""
+    rows = conn.execute(
+        "SELECT p.key, p.server_id, p.rating_key, p.source, i.json, s.base_url, s.access_token"
+        " FROM seen_pushes p JOIN media_items i ON i.server_id=p.server_id AND i.rating_key=p.rating_key"
+        " JOIN media_servers s ON s.id=p.server_id WHERE p.discover_at IS NULL AND s.enabled=1"
+        " ORDER BY p.pushed_at").fetchall()
+    fixes: dict = {}
+    for r in rows:
+        r = dict(r, src=r["source"])
+        pk = (r["key"], r["server_id"], r["rating_key"])
+        if r["key"] in fixes:
+            fixes[r["key"]]["pks"].append(pk)
+            continue
+        if len(fixes) >= limit:
+            break
+        fix = _history_item(conn, r)
+        fix["pks"] = [pk]
+        fix["discover_id"] = plex.discover_id(json.loads(r["json"]).get("guid"))
+        if not fix["discover_id"]:
+            conn.execute("UPDATE seen_pushes SET discover_at='none' WHERE key=? AND server_id=? AND rating_key=?", pk)
+            continue
+        fixes[r["key"]] = fix
+    conn.commit()
+    return list(fixes.values())
+
+
 def _history_item(conn: sqlite3.Connection, r) -> dict:
     """Title, year and real watch date (Letterboxd diary) of a film just marked played."""
     it = json.loads(r["json"])
     title, year = it.get("title") or "", it.get("year")
-    if r["src"] == "lb":
+    if r["src"] == "lb" and "watched_date" in r:
         return {"title": title, "year": year, "date": r.get("watched_date") or None}
     row = None
     if r["key"].startswith("tmdb:"):
@@ -183,14 +228,15 @@ def _history_item(conn: sqlite3.Connection, r) -> dict:
 
 
 async def unpush(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str,
-                 keys: list[str] | None = None, backend=None) -> dict:
+                 keys: list[str] | None = None, backend=None, history_token: str = "") -> dict:
     """Unscrobble the items the app pushed for films no longer marked seen (all, or only `keys`).
 
     Records for servers that no longer exist are dropped; unreachable servers and Plex errors leave
     the record in place for the next sync. Returns counts: unpushed, failed, dropped.
     """
     sql = ("SELECT p.key, p.server_id, p.rating_key, s.id sid, s.name sname, s.reachable, s.base_url,"
-           " s.access_token FROM seen_pushes p LEFT JOIN media_servers s ON s.id=p.server_id"
+           " s.access_token, i.json FROM seen_pushes p LEFT JOIN media_servers s ON s.id=p.server_id"
+           " LEFT JOIN media_items i ON i.server_id=p.server_id AND i.rating_key=p.rating_key"
            " WHERE p.source='seen' AND p.key NOT IN (SELECT key FROM seen)")
     params: list = []
     if keys is not None:
@@ -213,6 +259,8 @@ async def unpush(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: s
 
     async def call(r):
         await be.mark_unplayed(http, r["base_url"], client_id, r["access_token"] or "", user_id, r["rating_key"])
+        if history_token and be.name == "plex":
+            await _discover_unscrobble(http, client_id, history_token, r)
 
     for r, res in zip(todo, await _run(todo, call)):
         if isinstance(res, asyncio.CancelledError):
@@ -227,6 +275,17 @@ async def unpush(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: s
         counts["unpushed"] += 1
     conn.commit()
     return counts
+
+
+async def _discover_unscrobble(http, client_id: str, token: str, r) -> None:
+    """Mark the film unwatched on plex.tv too (best effort: the server unscrobble already succeeded)."""
+    try:
+        guid = json.loads(r["json"]).get("guid") if r["json"] else None
+        did = plex.discover_id(guid)
+        if did:
+            await plex.discover_unscrobble(http, client_id, token, did)
+    except (httpx.HTTPError, ValueError) as e:
+        log.warning("could not mark a film unwatched on plex.tv: %s", safe_error(e))
 
 
 def pushed_count(conn: sqlite3.Connection) -> int:

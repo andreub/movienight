@@ -176,6 +176,11 @@ MIGRATIONS = [
         lb_id INTEGER PRIMARY KEY
     );
     """,
+    # 10: whether a push was also settled on plex.tv (Discover scrobble + history fix): NULL = not yet
+    # (rows from before that existed get a one-off catch-up), 'none' = no Discover id, else the time.
+    """
+    ALTER TABLE seen_pushes ADD COLUMN discover_at TEXT;
+    """,
 ]
 
 # meta keys that belong to one media server type: removed when the app switches to the other one
