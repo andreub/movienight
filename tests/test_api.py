@@ -141,5 +141,7 @@ def test_tv_client_assets_are_served(client):
     assert "MovieNightTV" in client.get("/static/js/tvnav.js").text
     play = client.get("/static/js/play.js").text
     assert "MovieNightTV" in play and "if (TV_APP) return holder" in play   # no cast menu inside the TV app
+    assert "plex://libraries/${encodeURIComponent(s.server_id)}/movie/" in play     # TV: straight into the Plex app
+    assert "const playHref = (s) => (TV_APP ? tvHref(s) : href(s));" in play       # other clients: unchanged href
     assert "initTvNav" in client.get("/static/js/main.js").text
 
