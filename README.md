@@ -139,8 +139,8 @@ TMDB id and stay. Marks already pushed to the old server stay on that server.
 
 The database tables are `media_servers` and `media_items` since schema version 7 (they were
 `plex_servers` and `plex_items`). Older versions of MovieNight cannot open a database after that
-upgrade: back up `data/movienight.db` before deploying, and roll back by restoring that copy together
-with the previous code.
+upgrade: `scripts/deploy.sh` backs up the database automatically before every deploy (see Deploy), and
+you roll back by restoring that copy together with the previous code.
 
 ## Refreshing Letterboxd data
 
@@ -190,6 +190,19 @@ and waits up to five minutes until the container is healthy and its
 Settings (`HOST`, `CONTAINER`, `IMAGE`, `TAG_VAR`) can also live in a git-ignored `.deploy.env.local`
 at the repo root; copy `.deploy.env.example`. Variables set in the environment win over the file.
 
+### Automatic database backup
+
+Before it changes the container (a release, a preview, or the return to `latest`) the script backs up
+the database inside the running container with SQLite's online backup API, so the copy is consistent
+while the app writes, and checks it with `PRAGMA integrity_check`. The copy is
+`movienight.db.bak-auto-<UTC time>-pre-<target>` next to the database; the newest `KEEP_BACKUPS` (5)
+are kept and other files are never touched. If the backup fails the deploy stops; if the container is
+not running it only warns. Settings: `DB_PATH` (default `/data/movienight.db`, a path inside the
+container), `KEEP_BACKUPS`, and `NO_BACKUP=1` to skip it.
+
+To restore: stop the container, copy the chosen `.bak-auto-*` file over `movienight.db`, delete
+`movienight.db-wal` and `movienight.db-shm`, and start the container (on the matching code version).
+
 ### Testing a branch or PR before merging
 
 ```sh
@@ -219,7 +232,7 @@ Notes:
 - Watchtower does not move a preview: the container stays on its `sha-<7>` tag. Run
   `scripts/deploy.sh` with no argument from an up-to-date `main` to recreate it on `latest`.
 - A preview runs against the same data volume as production. For a PR with migrations, take a
-  database backup first (see above).
+  database backup first (see above; the script makes one automatically).
 
 ## Login
 
