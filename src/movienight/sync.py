@@ -17,6 +17,7 @@ from .util import norm_title, now_iso, safe_error
 
 log = logging.getLogger("movienight.sync")
 CHUNK = 32
+FOLLOWUP_DELAY = 30 * 60      # seconds until the next plex.tv catch-up batch while rows remain
 
 
 def plex_token(conn, cfg: Config) -> str:
@@ -42,6 +43,8 @@ class SyncManager:
         self.last_push: dict | None = None
         self.history_lock = asyncio.Lock()     # plex.tv history fix-ups: one at a time, outside push_lock
         self._history_tasks: set[asyncio.Task] = set()
+        self._followup: asyncio.Task | None = None
+        self.followup_delay = FOLLOWUP_DELAY
         self.jellyfin_problem: str | None = None
 
     # ---- status / control
@@ -287,17 +290,64 @@ class SyncManager:
                 conn = connect(self.cfg.db_path)
                 try:
                     fn = plex_history.catch_up if catchup else plex_history.fix_new_activities
-                    await fn(conn, self.http, cid, token, items)
+                    result = await fn(conn, self.http, cid, token, items, pace=self.cfg.plex_history_pace)
                 finally:
                     conn.close()
+            if catchup:
+                self._plan_followup(result)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 - best effort
             log.warning("plex history fix failed: %s", safe_error(e))
 
-    async def drain_history(self) -> None:
-        if self._history_tasks:
-            await asyncio.gather(*self._history_tasks, return_exceptions=True)
+    def _plan_followup(self, result: dict | None) -> None:
+        """While unsettled pushes remain, run the next catch-up batch FOLLOWUP_DELAY later (single flight; the
+        history lock still serialises it with everything else). Stops when a batch made no progress and was not
+        rate limited, so a row that keeps failing does not loop; the next regular sync resumes it."""
+        if self._followup is not None and not self._followup.done():
+            return
+        conn = connect(self.cfg.db_path)
+        try:
+            if not seenpush.unsettled(conn):
+                return
+            progressed = result is None or result.get("rate_limited") or (result.get("fixed", 0) + result.get("settled", 0)) > 0
+            if not progressed:
+                return
+        finally:
+            conn.close()
+        self._followup = asyncio.create_task(self._followup_run())
+
+    async def _followup_run(self) -> None:
+        try:
+            await asyncio.sleep(self.followup_delay)
+            conn = connect(self.cfg.db_path)
+            try:
+                items = seenpush.catchup_items(conn)
+                self._followup = None
+                if items:
+                    self.schedule_history(conn, client_id(conn), items, catchup=True)   # plans the next one itself
+                else:
+                    self._plan_followup(None)           # only re-checks still waiting for their 2 hours
+            finally:
+                conn.close()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - best effort
+            self._followup = None
+            log.warning("plex history follow-up failed: %s", safe_error(e))
+
+    async def drain_history(self, followups: bool = False) -> None:
+        """Wait for the running history work (and, with `followups`, for the scheduled follow-up batches too)."""
+        for _ in range(10):
+            pending = [*self._history_tasks, *([self._followup] if followups and self._followup else [])]
+            if not pending:
+                return
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    def cancel_history(self) -> None:
+        """Shutdown: drop the background plex.tv work (unsettled rows are picked up again on the next start)."""
+        for t in [*self._history_tasks, *([self._followup] if self._followup else [])]:
+            t.cancel()
 
     async def push_seen(self, conn, cid: str, lb: bool = False) -> dict:
         """Retry pending unscrobbles, then mark played every seen film not yet pushed (also the backfill).

@@ -63,6 +63,8 @@ class FakeServices:
         self.calls: list[httpx.Request] = []
         self.fail_discover = False
         self.fail_ids: set[str] = set()
+        self.limits: dict[str, list] = {}           # op -> errors answered once each, then success
+        self.limit_forever: dict[str, dict] = {}    # op -> error answered every time
         self.pages: list = []
         self.view_counts: dict[str, int] = {}     # plex.tv userState per discover id
         self.discover: list[tuple[str, str]] = []   # (scrobble|unscrobble, discover id)
@@ -99,6 +101,10 @@ class FakeServices:
                 v = body["variables"]
                 if (v.get("id") or (v.get("input") or {}).get("id")) in self.fail_ids:
                     return httpx.Response(200, json={"errors": [{"message": "nope"}]})
+            if op in self.limit_forever:
+                return httpx.Response(200, json={"errors": [self.limit_forever[op]]})
+            if self.limits.get(op):
+                return httpx.Response(200, json={"errors": [self.limits[op].pop(0)]})
             if op in self.errors:
                 return httpx.Response(200, json={"errors": self.errors[op]})
             if op == "GetWatchHistoryHub":
@@ -147,6 +153,7 @@ def fast(monkeypatch):
 
 
 def make(cfg, fake, **over):
+    over.setdefault("plex_history_pace", 0)
     app = create_app(replace(cfg, push_seen=True, plex_token="TOK", **over), transport=httpx.MockTransport(fake))
     c = TestClient(app)
     c.cfg = cfg
@@ -168,6 +175,7 @@ def run(cfg, fake, body, diary=None, **over):
     app, c = make(cfg, fake, **over)
     with c:
         start(app, c, cfg)
+        app.state.sync.followup_delay = 3600        # follow-up batches are tested explicitly
         if diary:
             add_diary(cfg, *diary)
         body(c)
@@ -220,21 +228,157 @@ def test_old_entries_never_touched(cfg):
     run(cfg, fake, body)
 
 
-def test_rate_limit_is_retried_once_and_push_survives(cfg, monkeypatch):
+def nap_recorder(monkeypatch):
     slept = []
 
-    async def nap(s):
-        slept.append(s)
+    async def nap(sec):
+        slept.append(sec)
 
     monkeypatch.setattr(plex_history, "_sleep", nap)
+    return slept
+
+
+def test_retry_after_is_honored_and_the_same_film_is_retried(cfg, monkeypatch):
+    slept = nap_recorder(monkeypatch)
     fake = FakeServices([node("a1", "Crime Two", 2016, ago(0))])
-    fake.errors["removeActivity"] = [{"message": "slow", "extensions": {"code": "RATE_LIMITED", "retryAfter": 2}}]
+    fake.limits["removeActivity"] = [{"message": "slow", "extensions": {"code": "RATE_LIMITED", "retryAfter": 7}}]
 
     def body(c):
         mark(c, "Crime Two")
-        assert [m["operationName"] for m in fake.mutations()] == ["removeActivity"] * 2
-        assert 2.0 in slept
-        assert pushes(c) == [("tmdb:111", "m1", "11")]
+        assert [m["variables"]["input"]["id"] for m in fake.mutations()] == ["a1", "a1"]   # same film, again
+        assert 7.0 in slept and not any(x >= 60 for x in slept)
+        assert pushes(c) == [("tmdb:111", "m1", "11")] and row_state(cfg)[0]                # fixed in the end
+
+    run(cfg, fake, body)
+
+
+def test_rate_limit_without_retry_after_backs_off_exponentially(cfg, monkeypatch):
+    slept = nap_recorder(monkeypatch)
+    fake = FakeServices([node("a1", "Crime Two", 2016, ago(0))])
+    msg = {"message": "Rate limit exceeded!"}                  # the shape seen live: no code, no retryAfter
+    fake.limits["removeActivity"] = [msg, msg, msg]
+
+    def body(c):
+        mark(c, "Crime Two")
+        assert [x for x in slept if x >= 60] == [60.0, 120.0, 240.0]
+        assert len(fake.mutations()) == 4 and row_state(cfg)[0]
+
+    run(cfg, fake, body)
+
+
+def test_batch_stops_after_the_longest_backoff_without_failure_noise(cfg, monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="movienight")
+    slept = nap_recorder(monkeypatch)
+    pushed = 60 * 48
+    fake = FakeServices([node("a1", "Crime Two", 2016, ago(pushed - 3)), node("b1", "Rom Com", 2020, ago(pushed - 3))])
+    fake.view_counts.update(aaa=1, bbb=1)
+    fake.limit_forever["removeActivity"] = {"message": "Rate limit exceeded!"}
+
+    def body(c):
+        old_push(cfg, "tmdb:111", "m1", "11", minutes_ago=pushed)
+        old_push(cfg, "tmdb:112", "m1", "12", minutes_ago=pushed)
+        sync_push(c)
+        assert [x for x in slept if x >= 60] == [60.0, 120.0, 240.0, 480.0, 600.0]
+        assert len(fake.mutations()) == 1 + len(plex_history.RATE_WAITS)        # only the first film was tried
+        assert all(v is None for v in discover_at(cfg).values())               # both left unprocessed
+        assert "will retry" not in caplog.text and "WARNING" not in " ".join(r.levelname for r in caplog.records)
+        assert "still rate limited" in caplog.text
+
+    run(cfg, fake, body)
+
+
+def test_unprocessed_rows_resume_when_the_limit_lifts(cfg, monkeypatch):
+    nap_recorder(monkeypatch)
+    pushed = 60 * 48
+    fake = FakeServices([node("a1", "Crime Two", 2016, ago(pushed - 3)), node("b1", "Rom Com", 2020, ago(pushed - 3))])
+    fake.view_counts.update(aaa=1, bbb=1)
+    fake.limit_forever["removeActivity"] = {"message": "Rate limit exceeded!"}
+
+    def body(c):
+        old_push(cfg, "tmdb:111", "m1", "11", minutes_ago=pushed)
+        old_push(cfg, "tmdb:112", "m1", "12", minutes_ago=pushed)
+        sync_push(c)
+        fake.limit_forever.clear()
+        sync_push(c)
+        assert sorted(n["id"] for n in fake.nodes) == []
+        assert all(discover_at(cfg).values())
+
+    run(cfg, fake, body)
+
+
+def test_pace_setting_is_read_from_env(monkeypatch):
+    from movienight.config import Config
+    monkeypatch.delenv("MOVIENIGHT_PLEX_HISTORY_PACE", raising=False)
+    assert Config.from_env().plex_history_pace == 6.0
+    monkeypatch.setenv("MOVIENIGHT_PLEX_HISTORY_PACE", "2.5")
+    assert Config.from_env().plex_history_pace == 2.5
+    monkeypatch.setenv("MOVIENIGHT_PLEX_HISTORY_PACE", "junk")
+    assert Config.from_env().plex_history_pace == 6.0
+
+
+def test_pace_is_applied_between_mutations(cfg, monkeypatch):
+    slept = nap_recorder(monkeypatch)
+    pushed = 60 * 48
+    fake = FakeServices([node("a1", "Crime Two", 2016, ago(pushed - 3)), node("b1", "Rom Com", 2020, ago(pushed - 3))])
+    fake.view_counts.update(aaa=1, bbb=1)
+
+    def body(c):
+        old_push(cfg, "tmdb:111", "m1", "11", minutes_ago=pushed)
+        old_push(cfg, "tmdb:112", "m1", "12", minutes_ago=pushed)
+        sync_push(c)
+        assert slept.count(4.5) >= 2                          # between the status checks and between the removals
+
+    run(cfg, fake, body, plex_history_pace=4.5)
+
+
+def test_followup_batch_is_scheduled_while_rows_remain(cfg, monkeypatch):
+    monkeypatch.setattr("movienight.seenpush.LB_BATCH", 1)
+    pushed = 60 * 48
+    fake = FakeServices([node("a1", "Crime Two", 2016, ago(pushed - 3)), node("b1", "Rom Com", 2020, ago(pushed - 3))])
+    fake.view_counts.update(aaa=1, bbb=1)
+
+    def body(c):
+        sync = c.app.state.sync
+        old_push(cfg, "tmdb:111", "m1", "11", minutes_ago=pushed)
+        old_push(cfg, "tmdb:112", "m1", "12", minutes_ago=pushed)
+        sync_push(c)                                          # batch of 1: one film fixed, one row still unprocessed
+        assert sync._followup is not None and not sync._followup.done()
+        assert [m["variables"]["input"]["id"] for m in fake.mutations()] == ["a1"]
+        sync.followup_delay = 0
+        sync._followup.cancel()
+        sync._followup = None
+        c.portal.call(lambda: _replan(sync))
+        c.portal.call(lambda: sync.drain_history(followups=True))
+        assert sorted(m["variables"]["input"]["id"] for m in fake.mutations()) == ["a1", "b1"]
+        assert all(v for v in discover_at(cfg).values())
+
+    run(cfg, fake, body)
+
+
+async def _replan(sync):
+    sync._plan_followup(None)
+
+
+def test_no_followup_when_nothing_remains(cfg):
+    pushed = 60 * 48
+    fake = FakeServices([node("a1", "Crime Two", 2016, ago(pushed - 3))])
+    fake.view_counts["aaa"] = 1
+
+    def body(c):
+        sync = c.app.state.sync
+        old_push(cfg, "tmdb:111", "m1", "11", minutes_ago=pushed)
+        sync_push(c)                                         # first pass done; the re-check is planned
+        assert sync._followup is not None
+        sync._followup.cancel()
+        sync._followup = None
+        sync.followup_delay = 0
+        c.portal.call(lambda: _replan(sync))
+        c.portal.call(lambda: sync.drain_history(followups=True))   # the re-check settles it: nothing is planned
+        assert all(v for v in discover_at(cfg).values())
+        with db.session(cfg.db_path) as d:
+            assert d.execute("SELECT discover_at FROM seen_pushes").fetchone()[0]
+        assert sync._followup is None or sync._followup.done()
 
     run(cfg, fake, body)
 

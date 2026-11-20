@@ -11,7 +11,9 @@ so field names may change; every step degrades to "do nothing". Tokens never rea
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -33,8 +35,9 @@ CATCHUP_WINDOW = timedelta(minutes=15)   # catch-up: entries this close to a pus
 PAGE = 50                           # history page size
 MAX_PAGES = 100
 PAGE_DELAY = 0.5
-MUTATION_DELAY = 1.5                # pacing between mutations (the API rate-limits)
-MAX_RETRY_AFTER = 10.0
+MUTATION_DELAY = 6.0                # default pacing between plex.tv writes (configurable: MOVIENIGHT_PLEX_HISTORY_PACE)
+RATE_WAITS = (60.0, 120.0, 240.0, 480.0, 600.0)   # backoff when rate limited and the server gives no retryAfter
+MAX_BACKOFF = 600.0
 _sleep = asyncio.sleep
 TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
@@ -48,8 +51,8 @@ M_REMOVE = "mutation removeActivity($input: RemoveActivityInput!) { removeActivi
 
 
 class GraphQLError(Exception):
-    def __init__(self, errors: list, retry_after: float | None = None):
-        self.errors, self.retry_after = errors, retry_after
+    def __init__(self, errors: list, retry_after: float | None = None, limited: bool = False):
+        self.errors, self.retry_after, self.limited = errors, retry_after, limited
         super().__init__("; ".join(str((e or {}).get("message") or "error")[:80] for e in errors))
 
     @property
@@ -57,6 +60,41 @@ class GraphQLError(Exception):
         return any("Cannot query field" in str((e or {}).get("message")) or
                    ((e or {}).get("extensions") or {}).get("code") == "GRAPHQL_VALIDATION_FAILED"
                    for e in self.errors)
+
+
+class RateLimitedOut(GraphQLError):
+    """Still rate limited after the longest backoff: the caller stops its batch and resumes later."""
+
+
+_AFTER_RE = re.compile(r"(?:retry|try again)[^0-9]{0,20}(\d+(?:\.\d+)?)\s*(?:s\b|sec|seconds)?", re.I)
+_shape_logged = False
+
+
+def _rate_limit(errors: list) -> tuple[bool, float | None]:
+    """(is it a rate limit?, seconds to wait if the server said). The real error shape is not documented: the
+    code RATE_LIMITED, a retryAfter in the extensions, or the message ("Rate limit exceeded!") are all accepted."""
+    global _shape_logged
+    limited, retry = False, None
+    for e in errors:
+        e = e or {}
+        ext = e.get("extensions") or {}
+        msg = str(e.get("message") or "")
+        if ext.get("code") == "RATE_LIMITED" or "rate limit" in msg.lower():
+            limited = True
+            for k in ("retryAfter", "retry_after", "retryAfterSeconds"):
+                try:
+                    if ext.get(k) is not None:
+                        retry = float(ext[k])
+                        break
+                except (TypeError, ValueError):
+                    pass
+            if retry is None and (m := _AFTER_RE.search(msg)):
+                retry = float(m.group(1))
+            if not _shape_logged:
+                _shape_logged = True
+                log.info("plex.tv rate limit shape: code=%r extensions=%s message=%r",
+                         ext.get("code"), json.dumps(ext, default=str)[:300], msg[:100])
+    return limited, retry
 
 
 def iso_date(day: str | None) -> str | None:
@@ -77,27 +115,27 @@ async def _gql(http: httpx.AsyncClient, client_id: str, token: str, query: str, 
     body = r.json()
     errors = body.get("errors") or []
     if errors:
-        retry = None
-        for e in errors:
-            ext = (e or {}).get("extensions") or {}
-            if ext.get("code") == "RATE_LIMITED":
-                try:
-                    retry = float(ext.get("retryAfter") or 1)
-                except (TypeError, ValueError):
-                    retry = 1.0
-        raise GraphQLError(errors, retry)
+        limited, retry = _rate_limit(errors)
+        raise GraphQLError(errors, retry, limited)
     return body.get("data") or {}
 
 
 async def _call(http, client_id, token, query, variables, op) -> dict:
-    """One GraphQL call; a rate limit is waited out once (bounded)."""
-    try:
-        return await _gql(http, client_id, token, query, variables, op)
-    except GraphQLError as e:
-        if e.retry_after is None:
-            raise
-        await _sleep(min(e.retry_after, MAX_RETRY_AFTER))
-        return await _gql(http, client_id, token, query, variables, op)
+    """One GraphQL call. When rate limited it waits (the server's retryAfter, else RATE_WAITS: 60 s doubling up
+    to 10 min) and retries the SAME call; RateLimitedOut once the waits are used up."""
+    tries = 0
+    while True:
+        try:
+            return await _gql(http, client_id, token, query, variables, op)
+        except GraphQLError as e:
+            if not e.limited:
+                raise
+            if tries >= len(RATE_WAITS):
+                raise RateLimitedOut(e.errors, e.retry_after, True) from None
+            wait = min(e.retry_after if e.retry_after is not None else RATE_WAITS[tries], MAX_BACKOFF)
+            log.info("plex.tv rate limited: waiting %.0f s (attempt %d of %d)", wait, tries + 1, len(RATE_WAITS))
+            await _sleep(wait)
+            tries += 1
 
 
 async def user_uuid(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str, token: str) -> str:
@@ -162,6 +200,14 @@ def _first_pass_done(conn: sqlite3.Connection, item: dict) -> None:
     conn.commit()
 
 
+def _note_scrobble(conn: sqlite3.Connection, item: dict) -> None:
+    """Remember our Discover scrobble time right away (its history entry is dated then)."""
+    when = item["scrobbled_at"].strftime("%Y-%m-%dT%H:%M:%SZ")
+    for pk in item.get("pks") or []:
+        conn.execute("UPDATE seen_pushes SET scrobbled_at=? WHERE key=? AND server_id=? AND rating_key=?", (when, *pk))
+    conn.commit()
+
+
 def _settle(conn: sqlite3.Connection, item: dict) -> None:
     """The re-check is done: nothing more to do for this item (`seen_pushes.discover_at`)."""
     for pk in item.get("pks") or []:
@@ -170,7 +216,8 @@ def _settle(conn: sqlite3.Connection, item: dict) -> None:
     conn.commit()
 
 
-async def _scrobble_discover(conn, http, client_id, token, items: list[dict], out: dict) -> list[dict]:
+async def _scrobble_discover(conn, http, client_id, token, items: list[dict], out: dict,
+                             pace: float | None = None) -> list[dict]:
     """Mark the items watched on plex.tv unless plex.tv already counts them watched; returns those that now
     have a fresh history entry to fix. Items without a Discover id pass through (nothing to scrobble)."""
     fresh, first = [], True
@@ -180,7 +227,7 @@ async def _scrobble_discover(conn, http, client_id, token, items: list[dict], ou
             fresh.append(it)
             continue
         if not first:
-            await _sleep(MUTATION_DELAY)
+            await _sleep(MUTATION_DELAY if pace is None else pace)
         first = False
         try:
             seen = await plex.discover_view_count(http, client_id, token, did)
@@ -193,6 +240,8 @@ async def _scrobble_discover(conn, http, client_id, token, items: list[dict], ou
             await plex.discover_scrobble(http, client_id, token, did)
             out["scrobbled"] += 1
             it["scrobbled_at"] = datetime.now(timezone.utc)
+            if it.get("pks"):
+                _note_scrobble(conn, it)
             fresh.append(it)
         except httpx.HTTPError as e:
             out["failed"] += 1
@@ -201,7 +250,7 @@ async def _scrobble_discover(conn, http, client_id, token, items: list[dict], ou
 
 
 async def fix_new_activities(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str, token: str,
-                             items: list[dict]) -> dict:
+                             items: list[dict], pace: float | None = None) -> dict:
     """items: [{"title", "year", "date", "discover_id"?, "pks"?}] just marked played on the server.
 
     Items with a `discover_id` are first marked watched on plex.tv (Discover scrobble; the server scrobble
@@ -209,12 +258,14 @@ async def fix_new_activities(conn: sqlite3.Connection, http: httpx.AsyncClient, 
     removed when there is none. Returns counts {"scrobbled", "already", "dated", "removed", "missing",
     "failed"}. Never raises (except cancellation).
     """
-    out = {"scrobbled": 0, "already": 0, "dated": 0, "removed": 0, "missing": 0, "failed": 0}
+    out = {"scrobbled": 0, "already": 0, "dated": 0, "removed": 0, "missing": 0, "failed": 0,
+           "rate_limited": False}
+    delay = MUTATION_DELAY if pace is None else pace
     if not items or not token:
         return out
     found: list[tuple[dict, dict]] = []
     try:
-        todo = await _scrobble_discover(conn, http, client_id, token, items, out)
+        todo = await _scrobble_discover(conn, http, client_id, token, items, out, pace)
         if not todo:
             return out
         uuid = await user_uuid(conn, http, client_id, token)
@@ -244,7 +295,7 @@ async def fix_new_activities(conn: sqlite3.Connection, http: httpx.AsyncClient, 
             _first_pass_done(conn, it)
         for i, (it, node) in enumerate(found):
             if i:
-                await _sleep(MUTATION_DELAY)
+                await _sleep(delay)
             try:
                 iso = iso_date(it.get("date"))
                 if iso:
@@ -259,11 +310,18 @@ async def fix_new_activities(conn: sqlite3.Connection, http: httpx.AsyncClient, 
                     out["removed"] += 1
                     log.info("plex history: removed the entry for %r (no real watch date known)", it.get("title"))
                     _first_pass_done(conn, it)
+            except RateLimitedOut:
+                out["rate_limited"] = True
+                break                                   # the rest is picked up by the catch-up later
             except (httpx.HTTPError, GraphQLError, ValueError) as e:
                 out["failed"] += 1
                 log.warning("plex history fix failed for one film: %s", _why(e))
+    except RateLimitedOut:
+        out["rate_limited"] = True
     except (httpx.HTTPError, GraphQLError, ValueError) as e:
         log.warning("plex history fix skipped: %s", _why(e))
+    if out["rate_limited"]:
+        log.info("plex history fix: still rate limited after the longest backoff; the rest waits for the catch-up")
     log.info("plex history fix: %s", out)
     return out
 
@@ -317,7 +375,7 @@ def _ours(item: dict, entries: dict) -> list[dict]:
 
 
 async def catch_up(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: str, token: str,
-                   items: list[dict]) -> dict:
+                   items: list[dict], pace: float | None = None) -> dict:
     """Settle old pushes (made before plex.tv was handled). Per film:
     1. plex.tv viewCount 0 -> Discover scrobble; 2. find the history entries Movienight created (within
     CATCHUP_WINDOW of the push time, matched by Discover id); 3. manual -> remove them, Letterboxd with a
@@ -325,7 +383,9 @@ async def catch_up(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id:
 
     items: [{"title", "date", "discover_id", "pks", "pushed_ats"}]. The history is fetched once (paginated).
     """
-    out = {"films": 0, "scrobbled": 0, "removed": 0, "dated": 0, "fixed": 0, "settled": 0, "failed": 0}
+    out = {"films": 0, "scrobbled": 0, "removed": 0, "dated": 0, "fixed": 0, "settled": 0, "failed": 0,
+           "rate_limited": False}
+    delay = MUTATION_DELAY if pace is None else pace
     if not items or not token:
         return out
     out["films"] = len(items)
@@ -337,7 +397,7 @@ async def catch_up(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id:
         ok: list[dict] = []
         for i, it in enumerate(items):                      # 1. plex.tv watched state
             if i:
-                await _sleep(MUTATION_DELAY)
+                await _sleep(delay)
             did = it["discover_id"]
             try:
                 seen = 1 if it.get("recheck") else await plex.discover_view_count(http, client_id, token, did)
@@ -346,6 +406,7 @@ async def catch_up(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id:
                 if seen == 0:
                     await plex.discover_scrobble(http, client_id, token, did)
                     it["scrobbled_at"] = datetime.now(timezone.utc)
+                    _note_scrobble(conn, it)            # kept, so a batch cut short still finds its entry later
                     out["scrobbled"] += 1
                 ok.append(it)
             except httpx.HTTPError as e:
@@ -366,13 +427,15 @@ async def catch_up(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id:
             _index(await history_since(http, client_id, token, uuid, recent), index)
         first = True
         for it in ok:                                       # 3. fix the entries
+            if out["rate_limited"]:
+                break
             entries = _ours(it, index.get(it["discover_id"], {}))
             iso = iso_date(it.get("date"))
             removed = dated = 0
             good = True
             for n in entries:
                 if not first:
-                    await _sleep(MUTATION_DELAY)
+                    await _sleep(delay)
                 first = False
                 try:
                     if iso and not dated:
@@ -383,11 +446,16 @@ async def catch_up(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id:
                         await _call(http, client_id, token, M_REMOVE,
                                     {"input": {"id": n["id"], "type": "WATCH_HISTORY"}}, "removeActivity")
                         removed += 1
+                except RateLimitedOut:
+                    out["rate_limited"] = True          # stop the batch, no failure noise: resumed later
+                    break
                 except (httpx.HTTPError, GraphQLError, ValueError) as e:
                     good = False
                     log.warning("plex history catch-up: a fix failed for %r: %s", it.get("title"), _why(e))
             out["removed"] += removed
             out["dated"] += dated
+            if out["rate_limited"]:
+                break
             log.info("plex history %s: %r scrobbled=%s, entries removed=%d, re-dated=%d%s",
                      "re-check" if it.get("recheck") else "catch-up", it.get("title"),
                      bool(it.get("scrobbled_at")) and not it.get("recheck"), removed, dated,
@@ -401,8 +469,12 @@ async def catch_up(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id:
                     out["fixed"] += 1
             else:
                 out["failed"] += 1
+    except RateLimitedOut:
+        out["rate_limited"] = True
     except (httpx.HTTPError, GraphQLError, ValueError) as e:
         log.warning("plex history catch-up stopped: %s", _why(e))
+    if out["rate_limited"]:
+        log.info("plex history catch-up: still rate limited after the longest backoff; stopping, the rest waits")
     log.info("plex history catch-up: %s", out)
     return out
 

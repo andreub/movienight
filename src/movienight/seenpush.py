@@ -182,13 +182,14 @@ async def _queue_fix(conn, http, client_id: str, token: str, r: dict, fixes: dic
     fixes[r["key"]] = fix
 
 
-def catchup_items(conn: sqlite3.Connection, limit: int = LB_BATCH) -> list[dict]:
+def catchup_items(conn: sqlite3.Connection, limit: int | None = None) -> list[dict]:
     """Plex pushes whose plex.tv side is not settled (discover_at NULL): fix-up work per film, bounded per run.
 
     First pass (fixed_at NULL): Discover scrobble if plex.tv has it unwatched, then manual marks are removed
     from the history, Letterboxd ones re-dated. Re-check (item["recheck"]): the first pass is done and the
     push is at least RECHECK_AFTER old; the history is scanned once more for entries plex.tv created later.
     """
+    limit = limit or LB_BATCH
     rows = conn.execute(
         "SELECT p.key, p.server_id, p.rating_key, p.source, p.pushed_at, p.fixed_at, p.scrobbled_at, i.json,"
         " s.base_url, s.access_token FROM seen_pushes p"
@@ -218,6 +219,13 @@ def catchup_items(conn: sqlite3.Connection, limit: int = LB_BATCH) -> list[dict]
         fixes.append(fix)
     conn.commit()
     return fixes
+
+
+def unsettled(conn: sqlite3.Connection) -> int:
+    """Plex pushes whose plex.tv side is not settled yet (the follow-up batches go on while this is > 0)."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM seen_pushes p JOIN media_items i ON i.server_id=p.server_id AND i.rating_key=p.rating_key"
+        " JOIN media_servers s ON s.id=p.server_id WHERE p.discover_at IS NULL AND s.enabled=1").fetchone()[0]
 
 
 def _history_item(conn: sqlite3.Connection, r) -> dict:

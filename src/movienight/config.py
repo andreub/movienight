@@ -12,6 +12,13 @@ def _flag(value: str | None) -> bool:
     return (value or "").strip().lower() in ("1", "true", "yes")
 
 
+def _seconds(value: str | None, default: float) -> float:
+    try:
+        return max(float(value), 0.0) if (value or "").strip() else default
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class Config:
     data_dir: Path = Path("./data")
@@ -31,6 +38,7 @@ class Config:
     push_seen: bool = False          # mark "seen it" films as played on the media server (writes to the account)
     plex_history_fix: bool = True    # after a push, date (Letterboxd) or remove the "watched just now" plex.tv activity
     push_lb_backfill: bool = False   # opt in: also push the Letterboxd history that existed before (paced, a batch per sync)
+    plex_history_pace: float = 6.0   # seconds between plex.tv history writes (it rate-limits; slower is safer)
     media_server: str = "plex"     # which library the app reads: plex | jellyfin (one at a time)
     jellyfin_url: str = ""
     jellyfin_user: str = ""
@@ -110,6 +118,7 @@ class Config:
             push_seen=_flag(push),
             plex_history_fix=(env.get("MOVIENIGHT_PLEX_HISTORY_FIX") or "").strip().lower() not in ("0", "false", "no"),
             push_lb_backfill=_flag(env.get("MOVIENIGHT_PUSH_LETTERBOXD_BACKFILL")),
+            plex_history_pace=_seconds(env.get("MOVIENIGHT_PLEX_HISTORY_PACE"), 6.0),
             media_server=media,
             jellyfin_url=(env.get("MOVIENIGHT_JELLYFIN_URL") or "").strip().rstrip("/"),
             jellyfin_user=(env.get("MOVIENIGHT_JELLYFIN_USER") or "").strip(),
