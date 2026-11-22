@@ -472,6 +472,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                 "tmdb": tmdb_counts(c, sync_mgr().tmdb.configured),
                 "sync": dict(sync_mgr().state),
                 "ready": bool(movies) and (counts["watched"] + counts["watchlist"]) > 0,
+                "features": {"completionist": cfg.completionist},
             }
             if not is_plex:
                 jf = c.execute("SELECT reachable, access_token FROM media_servers WHERE id LIKE 'jf:%'"
@@ -675,41 +676,43 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         return {"min_films": lbtags.MIN_GROUP_FILMS, "families": lbtags.usable(engine().get())}
 
     # ---- completionist: sagas, franchises and series the user has started (discovered from the TMDB cache)
-    @app.get("/api/completions")
-    def completions(kind: Literal["collection", "franchise", "series"] | None = None, hidden: bool = False):
-        st = engine().get()
-        c = conn()
-        try:
-            return completion.overview(st, c, kind=kind, show_hidden=hidden)
-        finally:
-            c.close()
+    # (MOVIENIGHT_COMPLETIONIST=0: not mounted, so every /api/completions* answers 404)
+    if cfg.completionist:
+        @app.get("/api/completions")
+        def completions(kind: Literal["collection", "franchise", "series"] | None = None, hidden: bool = False):
+            st = engine().get()
+            c = conn()
+            try:
+                return completion.overview(st, c, kind=kind, show_hidden=hidden)
+            finally:
+                c.close()
 
-    @app.get("/api/completions/{key}")
-    def completion_group(key: str):
-        st = engine().get()
-        c = conn()
-        try:
-            g = completion.group(st, c, key)
-        finally:
-            c.close()
-        if g is None:
-            raise HTTPException(404, "Group not found")
-        return g
-
-    @app.post("/api/completions/{key}/hide")
-    def completion_hide(key: str):
-        st = engine().get()
-        with db.session(cfg.db_path) as c:
-            if not any(g["key"] == key for g in completion.build(st, c)):
+        @app.get("/api/completions/{key}")
+        def completion_group(key: str):
+            st = engine().get()
+            c = conn()
+            try:
+                g = completion.group(st, c, key)
+            finally:
+                c.close()
+            if g is None:
                 raise HTTPException(404, "Group not found")
-            c.execute("INSERT OR REPLACE INTO completion_hidden(group_key, created_at) VALUES(?,?)", (key, now_iso()))
-        return {"ok": True}
+            return g
 
-    @app.delete("/api/completions/{key}/hide")
-    def completion_unhide(key: str):
-        with db.session(cfg.db_path) as c:
-            c.execute("DELETE FROM completion_hidden WHERE group_key=?", (key,))
-        return {"ok": True}
+        @app.post("/api/completions/{key}/hide")
+        def completion_hide(key: str):
+            st = engine().get()
+            with db.session(cfg.db_path) as c:
+                if not any(g["key"] == key for g in completion.build(st, c)):
+                    raise HTTPException(404, "Group not found")
+                c.execute("INSERT OR REPLACE INTO completion_hidden(group_key, created_at) VALUES(?,?)", (key, now_iso()))
+            return {"ok": True}
+
+        @app.delete("/api/completions/{key}/hide")
+        def completion_unhide(key: str):
+            with db.session(cfg.db_path) as c:
+                c.execute("DELETE FROM completion_hidden WHERE group_key=?", (key,))
+            return {"ok": True}
 
     @app.get("/api/recommendations")
     def recommendations(
@@ -799,6 +802,12 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             if row is None:
                 raise HTTPException(404, "Movie not found")
             key = library.feedback_key(row["tmdb_id"], row["dkey"])
+        return await _set_seen(key, body)
+
+    async def _set_seen(key: str, body: SeenBody) -> dict:
+        """Store (or remove) the "seen it" mark of `key` and, when given, its vote in one transaction, then push
+        it to the media server when MOVIENIGHT_PUSH_SEEN is on (only items the app marked itself are undone)."""
+        with db.session(cfg.db_path) as c:
             if body.seen:
                 c.execute("INSERT OR IGNORE INTO seen(key, created_at) VALUES(?,?)", (key, now_iso()))
             else:
@@ -825,6 +834,65 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                 c.close()
         engine().invalidate()
         return {"ok": True}
+
+    # ---- any film by TMDB id, in the library or not (Complete: seen and missing saga films)
+    def _listed_film(st, c, tmdb_id: int) -> dict | None:
+        """The film as a completionist group lists it (title, year, poster), for films without TMDB details."""
+        if not cfg.completionist:
+            return None
+        return next((f for g in completion.build(st, c) for f in g["films"] if f["tmdb_id"] == tmdb_id), None)
+
+    @app.get("/api/films/{tmdb_id}")
+    async def film(tmdb_id: int):
+        """A light detail view: library info, else the cached TMDB details (fetched once on demand), else what a
+        group knows; plus how the film was seen and whether that mark can be undone here."""
+        if tmdb_id < 1:
+            raise HTTPException(404, "Film not found")
+        st = engine().get()
+        c = conn()
+        try:
+            base = _listed_film(st, c, tmdb_id)
+            out = library.film_json(c, st, tmdb_id, base)
+            if (out is None or not out["details"]) and sync_mgr().tmdb.configured:
+                try:
+                    det = await sync_mgr().tmdb.details(tmdb_id)
+                except Exception as e:  # noqa: BLE001 - what is cached is still shown
+                    log.warning("TMDB details for a film outside the library failed: %s", safe_error(e))
+                    det = None
+                if det:
+                    c.execute("INSERT OR REPLACE INTO tmdb_details(tmdb_id,json,fetched_at) VALUES(?,?,?)",
+                              (tmdb_id, json.dumps(det), now_iso()))
+                    c.commit()
+                    out = library.film_json(c, st, tmdb_id, base)
+        finally:
+            c.close()
+        if out is None:
+            raise HTTPException(404, "Film not found")
+        out.pop("details", None)
+        return out
+
+    @app.post("/api/films/{tmdb_id}/seen")
+    async def film_seen(tmdb_id: int, body: SeenBody):
+        """Mark a film seen (with an optional verdict) by TMDB id, whether it is in the library or not. The mark is
+        stored as `tmdb:<id>`, so a library film with that TMDB id added later is seen, and the vote counts, from
+        then on. Unmarking undoes the app's own push to the media server (MOVIENIGHT_PUSH_SEEN), at once. A film
+        seen on Letterboxd, or played on the media server itself, cannot be unmarked here (409)."""
+        st = engine().get()
+        c = conn()
+        try:
+            known = (c.execute("SELECT 1 FROM movies WHERE tmdb_id=? UNION SELECT 1 FROM tmdb_details WHERE tmdb_id=?"
+                               " AND json != '{}'", (tmdb_id, tmdb_id)).fetchone() is not None
+                     or _listed_film(st, c, tmdb_id) is not None)
+            if not known:
+                raise HTTPException(404, "Film not found")
+            if not body.seen:
+                f = library.film_json(c, st, tmdb_id, {"title": "?"})
+                if f and ("letterboxd" in f["seen_via"] or "server" in f["seen_via"]):
+                    where = "Letterboxd" if "letterboxd" in f["seen_via"] else media.label
+                    raise HTTPException(409, f"Seen on {where}: it can only be unmarked there")
+        finally:
+            c.close()
+        return await _set_seen(f"tmdb:{tmdb_id}", body)
 
     @app.get("/api/seen-candidates")
     def seen_candidates(limit: int = Query(60, ge=1, le=200), offset: int = Query(0, ge=0)):

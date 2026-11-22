@@ -169,6 +169,16 @@ def _seen(st) -> set[int]:
             | {c.tmdb_id for c in st.cands if c.watched and c.tmdb_id})
 
 
+def _tmdb_keyed(conn: sqlite3.Connection, table: str, col: str = "1") -> dict[int, int]:
+    """tmdb id -> `col` of the `tmdb:<id>` rows of the seen or votes table (marks on films outside the library)."""
+    out = {}
+    for key, val in conn.execute(f"SELECT key, {col} FROM {table} WHERE key LIKE 'tmdb:%'"):
+        tid = key[5:]
+        if tid.isdigit():
+            out[int(tid)] = val
+    return out
+
+
 def _available(st) -> dict:
     """Unwatched library films by TMDB id (the best match when a film is there twice)."""
     out: dict = {}
@@ -356,9 +366,10 @@ def _date(s: str | None) -> date | None:
         return None
 
 
-def user_ratings(st) -> tuple[dict[int, tuple[float, bool]], float]:
+def user_ratings(st, votes: dict[int, int] | None = None) -> tuple[dict[int, tuple[float, bool]], float]:
     """tmdb id -> (stars, is a real rating), and the user's overall mean rating. A Letterboxd rating wins; a film
-    with only an app vote gets the overall mean shifted by VOTE_AS_RATING."""
+    with only an app vote gets the overall mean shifted by VOTE_AS_RATING. `votes` (tmdb id -> vote) adds the
+    verdicts on films outside the library."""
     mu = st.profile.mean_rating or 3.0
     out: dict[int, tuple[float, bool]] = {}
     for h in st.history:
@@ -371,6 +382,9 @@ def user_ratings(st) -> tuple[dict[int, tuple[float, bool]], float]:
             out[c.tmdb_id] = (float(c.my_rating), True)
         elif c.vote in VOTE_AS_RATING:
             out[c.tmdb_id] = (min(5.0, max(0.5, mu + VOTE_AS_RATING[c.vote])), False)
+    for tid, v in (votes or {}).items():
+        if tid not in out and v in VOTE_AS_RATING:
+            out[tid] = (min(5.0, max(0.5, mu + VOTE_AS_RATING[v])), False)
     return out, mu
 
 
@@ -430,14 +444,14 @@ def build(st, conn: sqlite3.Connection) -> list[dict]:
     """Every started group, ranked by score (best first); cached on the state (rebuilt whenever the state is)."""
     if "completion" in st.cache:
         return st.cache["completion"]
-    seen = _seen(st)
+    seen = _seen(st) | set(_tmdb_keyed(conn, "seen"))      # + films marked seen here that are not in the library
     avail = _available(st)
     raw = _raw_groups(conn, seen)
     need = {f["tmdb_id"] for g in raw for f in g["films"] if not f.get("backdrop_path")}
     backdrops = {r[0]: r[1] for r in conn.execute(
         "SELECT tmdb_id, json_extract(json,'$.backdrop_path') FROM tmdb_details"
         " WHERE json_extract(json,'$.backdrop_path') IS NOT NULL") if r[0] in need} if need else {}
-    ratings, mu = user_ratings(st)
+    ratings, mu = user_ratings(st, _tmdb_keyed(conn, "votes", "vote"))
     today = _today()
     out = []
     for g in raw:

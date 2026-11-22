@@ -1,20 +1,22 @@
 // "Complete" on the Android TV app (html.tv): one saga per screen, in the look of Tonight. A full-screen hero with
 // the backdrop of the next film to watch, the saga's name, progress and "why" hint, and the whole saga as one
-// poster row in release order. D-pad: Left/Right walk the films, OK opens the detail sheet (Play lives there),
+// poster row in release order. D-pad: Left/Right walk the films, OK opens the film's side panel (the detail sheet
+// with Play for one in the library; for a seen or missing one, its info, the four verdicts and Unmark),
 // Down/Up move to the next/previous saga with a slide. Up on the first saga leaves for the tabs (tvnav.js).
 // Browsers never load this: complete.js hands over only when tvnav.js detected the TV app.
 import { api } from '../api.js';
-import { go } from '../state.js';
-import { h, fill, icon, poster, hueOf, errorBox, toast, announce } from '../dom.js';
+import { h, fill, icon, poster, hueOf, errorBox, announce } from '../dom.js';
+import { openSagaFilm } from './complete.js';
 
 const KIND_LABEL = { collection: 'Saga', franchise: 'Franchise', series: 'Series' };
-const STATE_TEXT = { available: 'In your library · OK to open', seen: 'Seen', missing: 'Not in your library' };
+const STATE_TEXT = { available: 'In your library · OK to open', seen: 'Seen · OK for details', missing: 'Not in your library · OK to mark seen' };
 
 export function mountTv(root) {
   let alive = true;
   let groups = [];
   let index = 0;
   let screen = null;
+  let lastFilm = null; // the film focused last: kept across reloads and given focus back when the panel closes
   const stage = h('div', { class: 'ctv__stage' });
   const dots = h('ol', { class: 'ctv__dots', 'aria-hidden': 'true' });
   const el = h('section', { class: 'ctv', 'aria-roledescription': 'carousel', 'aria-label': 'Sagas you have started' },
@@ -42,11 +44,9 @@ export function mountTv(root) {
     const label = `${f.title}${f.year ? ` (${f.year})` : ''}, ${STATE_TEXT[f.state].split(' · ')[0].toLowerCase()}`;
     const btn = h('button', {
       type: 'button', class: 'ctv__film', 'aria-label': label,
-      onclick: () => {
-        if (f.state === 'available' && f.movie_id) go({ movie: f.movie_id });
-        else toast(f.state === 'seen' ? `You have seen ${f.title}.` : `${f.title} is not in your library.`, { timeout: 2500 });
-      },
+      onclick: () => openSagaFilm(f),
       onfocus: () => {
+        lastFilm = f.tmdb_id;
         fill(caption,
           h('span', { class: 'ctv__cap-title', text: f.title }),
           f.year ? h('span', { text: String(f.year) }) : null,
@@ -142,7 +142,7 @@ export function mountTv(root) {
   document.addEventListener('keydown', onKey);
 
   async function load() {
-    const focusKey = document.activeElement?.closest?.('.ctv') ? currentFilm() : null;
+    const focusKey = document.activeElement?.closest?.('.ctv') || document.querySelector('dialog[open]') ? lastFilm : null;
     const key = groups[index]?.key;
     if (!groups.length) fill(stage, h('div', { class: 'ctv__screen ctv__screen--skeleton pick pick--skeleton', 'aria-busy': 'true' }, h('div', { class: 'pick__art skel' })));
     try {
@@ -163,15 +163,18 @@ export function mountTv(root) {
     }
   }
 
-  function currentFilm() {
-    const film = document.activeElement?.closest?.('.ctv__film');
-    const tiles = screen ? [...screen.querySelectorAll('.ctv__film')] : [];
-    return groups[index]?.films[tiles.indexOf(film)]?.tmdb_id ?? null;
-  }
-
-  // A film marked seen in the detail sheet changes the counts: refresh, staying on the same saga and film.
+  // A film marked (or unmarked) seen in the panel changes the counts: refresh, staying on the same saga and film.
   const onSeen = () => load();
   window.addEventListener('movienight:seen', onSeen);
+  // Closing the panel (Back) gives focus back to the film it was opened from, even after a refresh.
+  const dialog = document.getElementById('detail');
+  const onClose = () => {
+    if (!alive || !screen) return;
+    const i = groups[index]?.films.findIndex((f) => f.tmdb_id === lastFilm) ?? -1;
+    const tile = screen.querySelectorAll('.ctv__film')[i];
+    if (tile) setTimeout(() => tile.focus({ preventScroll: true }), 0);
+  };
+  dialog?.addEventListener('close', onClose);
   load();
 
   return {
@@ -180,6 +183,7 @@ export function mountTv(root) {
       alive = false;
       document.removeEventListener('keydown', onKey);
       window.removeEventListener('movienight:seen', onSeen);
+      dialog?.removeEventListener('close', onClose);
     },
   };
 }

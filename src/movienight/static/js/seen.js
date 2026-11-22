@@ -2,7 +2,15 @@
 // same film flips at once through a window event and rolls back with a toast if the server refuses.
 import { api } from './api.js';
 import { h, icon, toast } from './dom.js';
-import { voteOf, announceVote } from './vote.js';
+import { voteOf, announceVote, LOVE } from './vote.js';
+
+// The four "seen it" verdicts ("Seen these?", Complete's film panel): value = the vote stored with the mark.
+export const OUTCOMES = [
+  { key: 'down', vote: -1, icon: 'thumbdown', label: "Seen it, didn't like it", short: "Didn't like it" },
+  { key: 'seen', vote: 0, icon: 'check', label: 'Seen it, no opinion', short: 'Seen' },
+  { key: 'up', vote: 1, icon: 'thumbup', label: 'Seen it, liked it', short: 'Liked it' },
+  { key: 'love', vote: LOVE, icon: 'heart', label: 'Seen it, a favourite', short: 'A favourite' },
+];
 
 const states = new Map(); // last known state per film, so re-rendered controls agree with what the user just did
 

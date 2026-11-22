@@ -507,7 +507,7 @@ def test_status_plex_block_is_empty_with_jellyfin(jf):
 def test_plex_mode_status_payload_only_adds_media_server(client):
     s = client.get("/api/status").json()
     assert s["media_server"] == "plex" and "jellyfin" not in s
-    assert set(s) == {"media_server", "letterboxd", "plex", "tmdb", "sync", "ready"}
+    assert set(s) == {"media_server", "letterboxd", "plex", "tmdb", "sync", "ready", "features"}
     assert set(s["plex"]) == {"connected", "account", "movies", "last_sync", "servers", "seen_pushed"}
     assert [x["id"] for x in s["plex"]["servers"]] == ["m1"]
 

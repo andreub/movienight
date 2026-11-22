@@ -1173,3 +1173,41 @@ html.tv .ctv__film:focus-visible, .ctv__film:focus { outline: none; box-shadow: 
   .ctv__art, .ctv__dots li { transition: none; }
   .ctv__film:focus .ctv__art { transform: none; }
 }
+
+/* ---------- a film by TMDB id (Complete's saga films): how it was seen, and the four "seen it" verdicts ---------- */
+.meta .meta__lib { color: var(--bulb); }
+.meta .meta__missing { color: var(--muted); opacity: .8; }
+.fseen {
+  display: grid; gap: 12px; padding: 16px; border-radius: var(--r-m);
+  background: var(--ink); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 70%, transparent);
+}
+.fseen__h { font: 800 1.5rem/1 var(--font-display); }
+.fseen__note { color: var(--muted); font-size: .875rem; }
+.fseen__stars { color: var(--bulb); font-weight: 400; }
+.fseen__foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+/* four labelled buttons, coloured like "Seen these?" once chosen */
+.verdicts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.verdict {
+  display: grid; justify-items: center; align-content: center; gap: 6px; min-height: 72px; padding: 10px 4px;
+  border: 1px solid var(--line); border-radius: var(--r-m); background: rgb(255 255 255 / .05); color: var(--paper);
+  font-size: .8125rem; line-height: 1.15; text-align: center; transition: background-color .15s, border-color .15s, transform .1s;
+}
+.verdict .icon { width: 22px; height: 22px; }
+.verdict:hover { background: rgb(255 255 255 / .11); }
+.verdict:active { transform: scale(.96); }
+.verdict--love { color: var(--curtain); }
+.verdict--love .verdict__label { color: var(--paper); }
+.verdict[aria-pressed="true"] { border-color: transparent; font-weight: 700; }
+.verdict[aria-pressed="true"] svg { fill: currentColor; }
+.verdict--down[aria-pressed="true"] { background: var(--curtain); color: var(--bulb-ink); }
+.verdict--seen[aria-pressed="true"] { background: var(--ok); color: var(--ink); }
+.verdict--seen[aria-pressed="true"] svg { fill: none; }
+.verdict--up[aria-pressed="true"] { background: var(--bulb); color: var(--bulb-ink); }
+.verdict--love[aria-pressed="true"] { background: linear-gradient(135deg, var(--bulb), var(--curtain)); color: var(--bulb-ink); }
+.verdict--love[aria-pressed="true"] .verdict__label { color: inherit; }
+@media (max-width: 420px) { .verdicts { gap: 6px; } .verdict { padding-inline: 2px; font-size: .75rem; } }
+@media (max-width: 359px) { .verdicts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+html.tv .verdict { min-height: 88px; font-size: 1rem; }
+html.tv .verdict .icon { width: 28px; height: 28px; }
+/* saga films that are not playable now open a panel too: the same hover lift */
+.cfilm--missing button.cfilm__btn:hover .poster, .cfilm--seen button.cfilm__btn:hover .poster { transform: translateY(-2px); }

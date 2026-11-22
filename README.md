@@ -32,6 +32,8 @@ on a private network.
   favourite. One tap saves the mark and the vote together (`POST /api/movies/{id}/seen` with
   `{"seen": true, "vote": 2}`); tapping the chosen verdict again removes both. The "Already
   marked" tab (`GET /api/seen-marked`, newest mark first) lets you rate films marked earlier.
+- Films outside the library can be marked too, from the Complete tab (`POST /api/films/{tmdb_id}/seen`,
+  same body): the mark and vote wait under `tmdb:<id>` and apply when the film reaches the library.
 - With `MOVIENIGHT_PUSH_SEEN` on, marks are also set as played on Plex or Jellyfin, whichever way they are
   made. Only items the app marked itself are ever set back to unplayed.
 
@@ -96,8 +98,22 @@ Nothing is hand-written: groups are discovered from your own data and the TMDB c
   - *Library* is 1 when an unseen film is playable now.
 - **Android TV**: in the TV app the tab shows one group per screen, in the look of Tonight: the
   backdrop of the next film to watch, the name, progress, the hint and the whole saga as a poster
-  row. Left and right move through the films, OK opens one, down and up go to the next and previous
-  group. Browsers keep the cards.
+  row. Left and right move through the films, OK opens the side panel of any of them, down and up
+  go to the next and previous group. Browsers keep the cards.
+- **Any film opens a panel**, seen, in the library or missing. A film in the library to watch opens
+  the usual detail sheet (Play lives there). Any other one opens a lighter panel built from TMDB
+  (title, year, poster, overview; details are fetched once on demand when not cached):
+  - **Not seen**: the four verdicts of "Seen these?" (👎 · ✓ · 👍 · ❤). The mark and the vote are
+    stored under `tmdb:<id>`, like every seen mark and vote, so a film outside the library counts as
+    seen in its saga at once and, when it later arrives in the library, it is seen there too and the
+    vote teaches the recommender. Until then the vote already counts for the saga's taste score.
+  - **Marked seen here**: the verdict can be changed, or "Unmark as seen" removes the mark and vote.
+    If `MOVIENIGHT_PUSH_SEEN` had set it played on Plex or Jellyfin, that is undone too, at once.
+  - **Seen on Letterboxd** or **seen on Plex/Jellyfin** (played there, not by MovieNight): shown as
+    such, with no unmark. It can only be unmarked where it was logged or played.
+- **Off switch**: `MOVIENIGHT_COMPLETIONIST=0` hides the tab (browser and TV), answers 404 on every
+  `/api/completions*` route and skips the TMDB lookups above (`features.completionist` in
+  `/api/status` tells the frontend).
 - **Data**: the TMDB sync stores each film's collection, keyword ids and director/cast ids with its
   details (details stored before these fields existed are backfilled once). It then caches, for 30
   days:
@@ -111,6 +127,10 @@ Nothing is hand-written: groups are discovered from your own data and the TMDB c
     `available`, `next`, `score`, `reason` and `backdrop_url`, best score first.
   - `GET /api/completions/{key}` returns one group.
   - `POST` and `DELETE /api/completions/{key}/hide` hide and unhide a group.
+  - `GET /api/films/{tmdb_id}` returns a film by TMDB id, in the library or not, with `seen_via`
+    (`letterboxd`, `server`, `here`), `can_unmark`, `my_vote` and `movie_id` when it is in the
+    library. `POST /api/films/{tmdb_id}/seen` takes `{"seen": true, "vote": 2}` like the library
+    route; unmarking a film seen on Letterboxd or played on the server answers 409.
   - Keys look like `collection-556`, `franchise-spider-man` and `series-357318`.
 
 ## Quick start (Docker)
@@ -155,6 +175,7 @@ The UI can run without a backend in mock mode at http://localhost:8080/?mock=1.
 | `MOVIENIGHT_PUSH_SEEN` | off | `1`/`true`/`yes`: marks films you flag "seen it" as played on the media server (writes to that account). `MOVIENIGHT_PLEX_PUSH_SEEN` is the older name and still works |
 | `MOVIENIGHT_LOGIN` | `plex` (Plex), empty (Jellyfin) | Login methods, comma-separated: `plex`, `oidc`, or `none`. See [Login](#login) |
 | `MOVIENIGHT_PLEX_OWNER` | empty | Plex login only: the account id, username or email allowed in; empty = the first sign-in (or the account of the stored token) |
+| `MOVIENIGHT_COMPLETIONIST` | on | The Complete tab (sagas, franchises, series). `0`/`false`/`no`: tab hidden, `/api/completions*` answers 404, and the sync skips the collection, collection-search and keyword lookups |
 | `MOVIENIGHT_PORT` | `8080` | Compose only: host port |
 | `TZ` | `Europe/Madrid` | Compose only: container timezone |
 

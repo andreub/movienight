@@ -1,7 +1,8 @@
 // "Complete": sagas, franchises and series the user has started, discovered from what they watched, as a single
 // column of roomy cards. Posters fill the card's width (CSS grid, measured with a ResizeObserver) so covers stay
 // large. Sagas show the whole group in release order: seen films dimmed with a check, films in the library in
-// full colour with the accent ring (tap opens the detail sheet), missing ones greyed, so it is clear where the
+// full colour with the accent ring, missing ones greyed; any film opens its detail panel (missing and seen ones
+// can be marked seen with a verdict, or unmarked), so it is clear where the
 // gaps fall. When a saga does not fit in a few rows, long runs of seen films fold into a "✓ 7 seen" tile (tap
 // opens it); unseen films and their neighbours always stay. "Show all" appears only if it still overflows.
 // Groups without an order list unseen films first. Finished and hidden groups stay folded at the bottom.
@@ -32,17 +33,22 @@ function progress(g) {
 
 const STATE_LABEL = { available: 'in your library', seen: 'seen', missing: 'not in your library' };
 
-// One film tile. Available films open the detail sheet; the others are not links.
+// Opens a film: one in the library to watch gets the full detail sheet (Play lives there); any other one (seen,
+// or missing from the library) the light panel by TMDB id, to mark it seen with a verdict or undo a mark.
+export function openSagaFilm(f) {
+  if (f.state === 'available' && f.movie_id) go({ movie: f.movie_id });
+  else go({ film: f.tmdb_id });
+}
+
+// One film tile; every one opens a panel.
 function film(f) {
   const label = `${f.title}${f.year ? ` (${f.year})` : ''}, ${STATE_LABEL[f.state]}`;
   const art = h('div', { class: 'cfilm__art' },
     poster(f, { label }),
     f.state === 'available' ? h('span', { class: 'cfilm__badge', text: 'In library' }) : null,
     f.state === 'seen' ? h('span', { class: 'cfilm__seen', 'aria-hidden': 'true' }, icon('check')) : null);
-  const body = f.state === 'available' && f.movie_id
-    ? h('button', { type: 'button', class: 'cfilm__btn', 'aria-label': label, title: label, onclick: () => go({ movie: f.movie_id }) }, art)
-    : h('div', { class: 'cfilm__btn', title: label }, art);
-  return h('li', { class: `cfilm cfilm--${f.state}` }, body);
+  return h('li', { class: `cfilm cfilm--${f.state}` },
+    h('button', { type: 'button', class: 'cfilm__btn', 'aria-label': label, title: label, onclick: () => openSagaFilm(f) }, art));
 }
 
 // A run of seen films folded into one tile the size of a poster.

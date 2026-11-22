@@ -397,7 +397,8 @@ class SyncManager:
         try:
             await self._resolve(conn)
             await self._details(conn)
-            await self._collections(conn)
+            if self.cfg.completionist:          # MOVIENIGHT_COMPLETIONIST=0: no collection/search/keyword lookups
+                await self._collections(conn)
             await self._recs(conn)
         finally:
             conn.close()
@@ -483,12 +484,13 @@ class SyncManager:
         have = set(ids)
         # completionist: backfill details stored before `collection` / `keyword_ids` existed. json_type is NULL
         # only when the key is absent: a film with no saga stores JSON null and is never refetched.
-        wanted = {r[0] for r in conn.execute(
-            "SELECT tmdb_id FROM lb_films WHERE tmdb_id IS NOT NULL AND (watched=1 OR liked=1)"
-            " UNION SELECT tmdb_id FROM movies WHERE tmdb_id IS NOT NULL")}
-        ids += [r[0] for r in conn.execute(
-            "SELECT tmdb_id FROM tmdb_details WHERE json != '{}' AND (json_type(json,'$.collection') IS NULL"
-            " OR json_type(json,'$.keyword_ids') IS NULL) ORDER BY tmdb_id") if r[0] in wanted and r[0] not in have]
+        if self.cfg.completionist:
+            wanted = {r[0] for r in conn.execute(
+                "SELECT tmdb_id FROM lb_films WHERE tmdb_id IS NOT NULL AND (watched=1 OR liked=1)"
+                " UNION SELECT tmdb_id FROM movies WHERE tmdb_id IS NOT NULL")}
+            ids += [r[0] for r in conn.execute(
+                "SELECT tmdb_id FROM tmdb_details WHERE json != '{}' AND (json_type(json,'$.collection') IS NULL"
+                " OR json_type(json,'$.keyword_ids') IS NULL) ORDER BY tmdb_id") if r[0] in wanted and r[0] not in have]
         if not ids:
             return
 

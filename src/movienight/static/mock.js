@@ -79,6 +79,7 @@ const NOFB = params.get('mock') === 'nofb'; // no accuracy check or outcomes yet
 const NOCHAT = params.get('mock') === 'nochat'; // AI chat switched off
 const FREECHAT = params.get('mock') === 'free'; // AI chat on a free OpenAI-compatible tier (price 0)
 const JELLYFIN = params.get('mock') === 'jellyfin'; // Jellyfin is the media server
+const NOCOMPLETE = params.get('mock') === 'nocomplete'; // MOVIENIGHT_COMPLETIONIST=0: no Complete tab
 const JF_BASE = 'https://jellyfin.example.com';
 const votes = new Map(); // id -> -1 | 1 | 2 (love)
 const seenSet = new Set(); // films marked "seen it" in this session
@@ -248,8 +249,8 @@ const COMPLETIONS = [
   { key: 'collection-9100', kind: 'collection', name: 'The Long Night Chronicles', score: 1.9, reason: 'You rated \u26054.4',
     films: SAGA_TITLES.map((t, i) => [`The Long Night: ${t}`, 1988 + i, SAGA_STATES[i], 4000 + ((i * 3719) % 9000)]) },
   { key: 'franchise-spider-man', kind: 'franchise', name: 'Spider-Man', score: 4.1, reason: 'New \u00b7 2026', films: [
-    ['Spider-Man', 2002, 's', 19000], ['Spider-Man 2', 2004, 's', 15000], ['Spider-Man 3', 2007, 'a', 14000], ['The Amazing Spider-Man', 2012, 'm', 18000],
-    ['The Amazing Spider-Man 2', 2014, 'm', 13000], ['Spider-Man: Homecoming', 2017, 's', 21000], ['Spider-Man: Into the Spider-Verse', 2018, 's', 16000],
+    ['Spider-Man', 2002, 's', 19000], ['Spider-Man 2', 2004, 'p', 15000], ['Spider-Man 3', 2007, 'a', 14000], ['The Amazing Spider-Man', 2012, 'm', 18000],
+    ['The Amazing Spider-Man 2', 2014, 'm', 13000], ['Spider-Man: Homecoming', 2017, 'h', 21000], ['Spider-Man: Into the Spider-Verse', 2018, 's', 16000],
     ['Spider-Man: Far From Home', 2019, 'm', 16000], ['Spider-Man: No Way Home', 2021, 's', 20000], ['Spider-Man: Across the Spider-Verse', 2023, 'a', 7000],
     ['Spider-Man: Brand New Day', 2026, 'm', 900]] },
   { key: 'series-357318', kind: 'series', name: 'Cornetto Trilogy', score: 2.3, reason: 'You rated \u26054.5', films: [
@@ -267,10 +268,18 @@ const COMPLETIONS = [
 ];
 const hiddenGroups = new Set(FRESH ? [] : ['collection-295']);
 const completionMovies = [];
+// How a seen saga film was seen: 's' Letterboxd, 'p' played on Plex itself, 'h' marked seen here (can be undone).
+// localSeen: tmdb id -> vote of the marks made here (GET/POST /api/films/:id).
+const localSeen = new Map();
+const sagaFilms = new Map(); // tmdb id -> [film, group]
 let nextSagaId = 800;
 for (const g of COMPLETIONS) {
   g.films = g.films.map(([title, year, st, votes], i) => {
-    const f = { tmdb_id: 90000 + nextSagaId, title, year, release_date: `${year}-06-01`, backdrop_url: null, state: { s: 'seen', a: 'available', m: 'missing' }[st], vote_count: votes, vote_average: 6.4 + ((i * 7) % 20) / 10, poster_url: null };
+    const via = { s: 'letterboxd', p: 'server', h: 'here' }[st] || null;
+    const f = { tmdb_id: 90000 + nextSagaId, title, year, release_date: `${year}-06-01`, backdrop_url: null, state: via ? 'seen' : { a: 'available', m: 'missing' }[st], vote_count: votes, vote_average: 6.4 + ((i * 7) % 20) / 10, poster_url: null };
+    if (via) f.via = via;
+    if (via === 'here') localSeen.set(f.tmdb_id, 1);
+    sagaFilms.set(f.tmdb_id, [f, g]);
     if (f.state === 'available') {
       f.movie_id = nextSagaId;
       completionMovies.push({ ...movies[1], id: nextSagaId, title, original_title: title, year, tmdb_id: f.tmdb_id, genres: ['Adventure'], directors: ['Saga Director'],
@@ -280,8 +289,14 @@ for (const g of COMPLETIONS) {
     return f;
   });
 }
+// The state a saga film has now, after the marks made here.
+function sagaState(f) {
+  if (f.via === 'here') return localSeen.has(f.tmdb_id) ? 'seen' : 'missing';
+  if (f.state !== 'seen' && (localSeen.has(f.tmdb_id) || seenSet.has(f.movie_id))) return 'seen';
+  return f.state;
+}
 function completionGroup(g) {
-  const films = g.films.map((f) => (f.state === 'available' && seenSet.has(f.movie_id) ? { ...f, state: 'seen' } : f));
+  const films = g.films.map(({ via, ...f }) => ({ ...f, state: sagaState({ via, ...f }) }));
   const avail = films.filter((f) => f.state === 'available');
   const seen = films.filter((f) => f.state === 'seen').length;
   const next = avail[0];
@@ -290,6 +305,22 @@ function completionGroup(g) {
     next: next ? { movie_id: next.movie_id, title: next.title, year: next.year } : null, films, hidden: hiddenGroups.has(g.key),
     score: g.score ?? 0, reason: g.reason ?? null, backdrop_url: null };
 }
+function sagaFilm(id) {
+  const [f, g] = sagaFilms.get(id) || [];
+  if (!f) return null;
+  const state = sagaState(f);
+  const via = state !== 'seen' ? [] : f.via && f.via !== 'here' ? [f.via] : ['here'];
+  return {
+    tmdb_id: f.tmdb_id, movie_id: f.movie_id || null, title: f.title, original_title: f.title, year: f.year,
+    runtime: 96 + (f.tmdb_id % 47), tagline: '', genres: ['Adventure', 'Action'], directors: ['Saga Director'], cast: ['Lead Actor', 'Second Lead'],
+    overview: `Part of ${g.name}. A chapter that picks up where the last one left off, with old friends, new enemies and more at stake.`,
+    language: 'en', countries: ['US'], poster_url: null, backdrop_url: null, tmdb_rating: f.vote_average, tmdb_votes: f.vote_count,
+    letterboxd_url: `https://letterboxd.com/tmdb/${f.tmdb_id}`, in_library: Boolean(f.movie_id), seen: via.length > 0, seen_via: via,
+    can_unmark: via[0] === 'here', pushed: false, my_vote: via[0] === 'here' ? localSeen.get(f.tmdb_id) || null : null,
+    my_rating: via[0] === 'letterboxd' ? 4 : null, liked: false,
+  };
+}
+
 function completions(p) {
   const all = FRESH ? [] : COMPLETIONS.map(completionGroup);
   all.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
@@ -315,6 +346,7 @@ export async function handle(method, path, p, body) {
   const route = `${method} ${path.replace(/\/\d+(?=\/|$)/g, '/:id').replace(/^(\/api\/plex\/servers\/)[^/]+$/, '$1:id')}`;
   const id = Number((path.match(/\/(\d+)(?:\/|$)/) || [])[1]);
 
+  if (NOCOMPLETE && path.startsWith('/api/completions')) return err(404, 'Not Found');
   const comp = path.match(/^\/api\/completions\/([a-z0-9-]+)(\/hide)?$/);
   if (comp) {
     const g = COMPLETIONS.find((x) => x.key === comp[1]);
@@ -324,6 +356,14 @@ export async function handle(method, path, p, body) {
     if (comp[2] && method === 'DELETE') { hiddenGroups.delete(g.key); return ok({ ok: true }); }
   }
   if (route === 'GET /api/completions') return ok(completions(p));
+  if (route === 'GET /api/films/:id') { const f = sagaFilm(id); return f ? ok(f) : err(404, 'Film not found'); }
+  if (route === 'POST /api/films/:id/seen') {
+    const f = sagaFilm(id);
+    if (!f) return err(404, 'Film not found');
+    if (!body.seen && f.seen && !f.can_unmark) return err(409, `Seen on ${f.seen_via[0] === 'letterboxd' ? 'Letterboxd' : 'Plex'}: it can only be unmarked there`);
+    if (body.seen) localSeen.set(id, body.vote ?? localSeen.get(id) ?? 0); else localSeen.delete(id);
+    return ok({ ok: true });
+  }
 
   switch (route) {
     case 'GET /api/status': {
@@ -338,6 +378,7 @@ export async function handle(method, path, p, body) {
           tmdb: { configured: true, enriched: 1400, pending: 12 },
           sync: sync.running && sync.stage === 'plex' ? { ...sync, stage: 'jellyfin' } : sync,
           ready: lbReady && synced,
+          features: { completionist: !NOCOMPLETE },
         });
       }
       return ok({
@@ -349,6 +390,7 @@ export async function handle(method, path, p, body) {
         tmdb: { configured: !FRESH, enriched: 1400, pending: 12 },
         sync,
         ready: plexState.connected && lbReady && synced,
+        features: { completionist: !NOCOMPLETE },
       });
     }
     case 'GET /api/moods': return ok(MOODS.map(({ test, ...m }) => m));
