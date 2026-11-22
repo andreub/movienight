@@ -1,0 +1,29 @@
+{
+  "franchises": [
+    {
+      "key": "spider-man",
+      "name": "Spider-Man",
+      "collections": [556, 125574, 531241, 573436]
+    }
+  ],
+  "curated": [
+    {
+      "key": "cornetto",
+      "name": "Three Flavours Cornetto",
+      "films": [
+        {"id": 747, "title": "Shaun of the Dead", "year": 2004},
+        {"id": 4638, "title": "Hot Fuzz", "year": 2007},
+        {"id": 107985, "title": "The World's End", "year": 2013}
+      ]
+    },
+    {
+      "key": "vengeance",
+      "name": "The Vengeance Trilogy",
+      "films": [
+        {"id": 4689, "title": "Sympathy for Mr. Vengeance", "year": 2002},
+        {"id": 670, "title": "Oldboy", "year": 2003},
+        {"id": 4550, "title": "Lady Vengeance", "year": 2005}
+      ]
+    }
+  ]
+}
