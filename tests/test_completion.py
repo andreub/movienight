@@ -1,5 +1,5 @@
-"""Completionist: TMDB collection data, the collection sync, group building (franchises, curated, dedupe),
-film states, ranking and hide/unhide. Synthetic data only."""
+"""Completionist: TMDB data, the discovery sync (collections, franchise searches, series keywords), group building
+(franchise merge, series keywords, dedupe), film states, ranking and hide/unhide. Synthetic data only."""
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -9,19 +9,6 @@ import pytest
 from movienight import completion, db, library, tmdb
 from movienight.config import Config
 from movienight.sync import SyncManager
-
-CONFIG = {
-    "franchises": [{"key": "fr", "name": "Franchise", "collections": [910, 920]}],
-    "curated": [{"key": "trio", "name": "Trio", "films": [
-        {"id": 404, "title": "Delta Noir", "year": 2012}, {"id": 113, "title": "Drama Three", "year": 2010},
-        {"id": 9301, "title": "Curated Missing", "year": 2014}]}],
-}
-
-
-@pytest.fixture
-def groups(monkeypatch):
-    monkeypatch.setattr(completion, "config", lambda: CONFIG)
-    return CONFIG
 
 
 def part(tid, year, va=7.0, vc=1000, title=None):
@@ -33,45 +20,69 @@ def coll(cid, name, parts):
     return {"id": cid, "name": name, "poster_path": None, "backdrop_path": None, "parts": parts}
 
 
-# seeded (conftest): seen 101, 202, 303, 404; unwatched library films 111, 112, 113, 115, 116, 505
+def ws(tid, year, title, vc=10000, va=7.0):
+    return part(tid, year, va, vc, title)
+
+
+# seeded (conftest): seen 101, 202, 303, 404; unwatched library films 111, 112, 113, 115, 116, 505.
+# 101 and 404 share a director, an actor and a keyword: an ordinary filmography, never a group by itself.
 COLLECTIONS = [
     coll(900, "Alpha Collection", [part(101, 2015, 8), part(111, 2016, 8), part(9001, 2018, 8, 50),
                                    part(9002, 2020, 8, 90000)]),
-    coll(910, "Fr One Collection", [part(202, 2019, 6), part(9101, 2021, 6)]),
-    coll(920, "Fr Two Collection", [part(112, 2020, 6), part(9201, 2022, 6)]),       # nothing seen: still merged
-    coll(930, "Trio Collection", [part(404, 2012), part(113, 2010)]),                  # subset of curated "trio"
+    # a franchise across collections, like Spider-Man: Raimi, Amazing, MCU (the stem names each one and its films)
+    coll(910, "Web-Slinger Collection", [ws(202, 2002, "Web-Slinger"), ws(9101, 2004, "Web-Slinger 2")]),
+    coll(920, "The Amazing Web-Slinger Collection", [ws(112, 2012, "The Amazing Web-Slinger", 8000),
+                                                     ws(9201, 2014, "The Amazing Web-Slinger 2", 7000)]),
+    coll(925, "Web-Slinger (Shared Universe) Collection", [ws(9251, 2017, "Web-Slinger: Homecoming"),
+                                                           ws(9252, 2019, "Web-Slinger: Far From Home")]),
+    # not merged: a far less popular TV offshoot, a villain spin-off whose name lacks the stem, a generic stem
+    coll(921, "Web-Slinger (TV) Collection", [ws(9211, 1977, "Web-Slinger", 90), ws(9212, 1978, "Web-Slinger Strikes Back", 40)]),
+    coll(922, "Venomous Collection", [ws(9221, 2018, "Venomous"), ws(9222, 2021, "Venomous: Web-Slinger Cameo")]),
+    coll(930, "Pint Collection", [part(404, 2012), part(113, 2010)]),             # inside the "pint trilogy" series
     coll(940, "Unstarted Collection", [part(115, 1975), part(9401, 1980)]),
     coll(950, "Single Collection", [part(101, 2015)]),
     coll(960, "Long Saga Collection", [part(303, 2001)] + [part(9600 + i, 2002 + i, 6, 100 + i) for i in range(29)]),
     coll(970, "Done Collection", [part(101, 2015), part(202, 2019)]),
 ]
+KEYWORDS = {
+    # a series keyword like "cornetto trilogy": three films plus a fan-made short (dropped by its vote count)
+    5001: {"id": 5001, "name": "pint trilogy", "total": 4, "parts": [
+        part(113, 2010, 6.0), part(404, 2012), part(9301, 2014, 7.2, 500, "Pint Three"), part(9302, 2026, 9, 2, "Pint Short")]},
+    5002: {"id": 5002, "name": "theme saga", "total": 300, "parts": [part(101, 2015), part(9501, 2016)]},  # a theme
+    5003: {"id": 5003, "name": "alpha duology", "total": 2, "parts": [part(101, 2015), part(111, 2016)]},  # in 900
+}
 
 
 @pytest.fixture
-def cc(client, groups):
+def cc(client):
     with db.session(client.cfg.db_path) as c:
         for x in COLLECTIONS:
             c.execute("INSERT INTO tmdb_collections(collection_id,json,fetched_at) VALUES(?,?,?)",
                       (x["id"], json.dumps(x), "2026-01-01T00:00:00Z"))
         c.execute("INSERT INTO tmdb_collections(collection_id,json,fetched_at) VALUES(999,'{}','2026-01-01T00:00:00Z')")
+        for kid, k in KEYWORDS.items():
+            c.execute("INSERT INTO tmdb_lookups(key,json,fetched_at) VALUES(?,?,?)",
+                      (f"keyword:{kid}", json.dumps(k), "2026-01-01T00:00:00Z"))
     client.app.state.engine.invalidate()
     return client
 
 
 # ---------------------------------------------------------------- TMDB data
 
-def test_compact_details_collection_and_people_ids():
+def test_compact_details_collection_people_and_keyword_ids():
     raw = {"id": 1, "title": "T", "release_date": "2002-05-01",
            "belongs_to_collection": {"id": 556, "name": "Spider-Man Collection", "poster_path": "/x"},
+           "keywords": {"keywords": [{"id": 357318, "name": "cornetto trilogy"}, {"id": 9748, "name": "revenge"}]},
            "credits": {"crew": [{"id": 7, "name": "Dir", "job": "Director"}, {"id": 8, "name": "W", "job": "Writer"}],
                        "cast": [{"id": 100 + i, "name": f"A{i}", "order": 9 - i} for i in range(10)]}}
     d = tmdb.compact_details(raw)
     assert d["collection"] == {"id": 556, "name": "Spider-Man Collection"}
     assert d["director_ids"] == [7]
     assert d["cast_ids"] == [109, 108, 107, 106, 105]        # top 5 by billing order
+    assert d["keywords"] == ["cornetto trilogy", "revenge"] and d["keyword_ids"] == [357318, 9748]
     plain = tmdb.compact_details({"id": 2, "title": "N"})
     assert "collection" in plain and plain["collection"] is None
-    assert plain["director_ids"] == [] and plain["cast_ids"] == []
+    assert plain["director_ids"] == [] and plain["cast_ids"] == [] and plain["keyword_ids"] == []
 
 
 def test_compact_collection_sorts_and_drops_unreleased():
@@ -85,52 +96,111 @@ def test_compact_collection_sorts_and_drops_unreleased():
                              "vote_count": 10, "vote_average": 7.5}
 
 
-def test_migration_12_tables(cfg):
+def test_migrations_12_13_tables(cfg):
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     db.migrate(cfg.db_path)
     with db.session(cfg.db_path) as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) >= 12
+        assert c.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS) >= 13
         assert {r[1] for r in c.execute("PRAGMA table_info(tmdb_collections)")} == {"collection_id", "json", "fetched_at"}
         assert {r[1] for r in c.execute("PRAGMA table_info(completion_hidden)")} == {"group_key", "created_at"}
+        assert {r[1] for r in c.execute("PRAGMA table_info(tmdb_lookups)")} == {"key", "json", "fetched_at"}
 
 
-def test_bundled_groups_file_is_valid():
-    cfg = completion.config()
-    keys = [f["key"] for f in cfg["franchises"]] + [g["key"] for g in cfg["curated"]]
-    assert {"spider-man", "cornetto", "vengeance"} <= set(keys) and len(keys) == len(set(keys))
-    assert all(k.replace("-", "").isalnum() for k in keys)          # path-safe
-    spidey = next(f for f in cfg["franchises"] if f["key"] == "spider-man")
-    assert len(spidey["collections"]) == 4
-    for g in cfg["curated"]:
-        assert len(g["films"]) == 3 and all(isinstance(f["id"], int) and f["title"] for f in g["films"])
+# ---------------------------------------------------------------- names and signals
+
+@pytest.mark.parametrize("name, want", [
+    ("Spider-Man Collection", "Spider-Man"), ("Spider-Man (MCU) Collection", "Spider-Man"),
+    ("Spider-Man: Spider-Verse Collection", "Spider-Man"), ("The Amazing Spider-Man Collection", "Amazing Spider-Man"),
+    ("The Dark Knight Collection", "Dark Knight"), ("Before... Collection", "Before"),
+])
+def test_stem(name, want):
+    assert completion.stem(name) == want
 
 
-# ---------------------------------------------------------------- collection sync
+def test_distinctive_stems():
+    assert all(map(completion.distinctive, ["Spider-Man", "Godzilla", "Toy Story", "Dark Knight"]))
+    assert not any(map(completion.distinctive, ["Before", "Matrix", "Alien", ""]))
 
-async def test_collection_sync_fetches_once_ttl_and_no_loop(tmp_path, monkeypatch):
-    monkeypatch.setattr(completion, "config", lambda: {
-        "franchises": [{"key": "f", "name": "F", "collections": [77, 79]}],
-        "curated": [{"key": "c", "name": "C", "films": [{"id": 2, "title": "B", "year": 2001},
-                                                         {"id": 50, "title": "X", "year": 2002}]},
-                    {"key": "u", "name": "U", "films": [{"id": 60, "title": "Y", "year": 2003}]}]})
+
+def test_series_keywords():
+    yes = ["cornetto trilogy", "three colours trilogy", "john ford's cavalry trilogy", "twilight saga", "dollars trilogy"]
+    no = ["trilogy", "family saga", "space saga", "sequel", "revenge", "superhero", "vengeance", "based on comic",
+          "trilogy of terror", "menstrual cycle", "duringcreditsstinger"]
+    assert all(map(completion.is_series_keyword, yes))
+    assert not any(map(completion.is_series_keyword, no))
+    assert completion.series_name("cornetto trilogy") == "Cornetto Trilogy"
+
+
+def test_franchise_merge_rejects_unrelated():
+    colls = {c["id"]: c for c in COLLECTIONS}
+    fr = completion.franchises(colls)
+    assert fr == [{"name": "Web-Slinger", "collections": [910, 920, 925]}]      # not 921 (TV), 922 (spin-off)
+    # a generic stem never merges ("Before" vs "The Land Before Time")
+    before = {1: coll(1, "Before... Collection", [ws(1, 1995, "Before Sunrise"), ws(2, 2004, "Before Sunset")]),
+              2: coll(2, "The Land Before Time Collection", [ws(3, 1988, "The Land Before Time"),
+                                                             ws(4, 1994, "The Land Before Time II")])}
+    assert completion.franchises(before) == []
+    # a far less popular offshoot whose name and titles carry the stem stays out
+    dk = {1: coll(1, "The Dark Knight Collection", [ws(1, 2005, "Batman Begins", 21000), ws(2, 2008, "The Dark Knight", 33000),
+                                                    ws(3, 2012, "The Dark Knight Rises", 23000)]),
+          2: coll(2, "Batman: The Dark Knight Returns Collection", [ws(4, 2012, "Batman: The Dark Knight Returns, Part 1", 2200),
+                                                                    ws(5, 2013, "Batman: The Dark Knight Returns, Part 2", 2000)])}
+    assert completion.franchises(dk) == []
+
+
+# ---------------------------------------------------------------- discovery sync
+
+def _cfg(tmp_path):
     cfg = Config(data_dir=tmp_path / "d", letterboxd_dir=tmp_path / "nolb", tmdb_token="eyJtest", sync_on_start=False)
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     db.migrate(cfg.db_path)
+    return cfg
+
+
+def _runner(cfg, handler):
+    calls: list[str] = []
+
+    def record(request):
+        calls.append(request.url.path)
+        return handler(request)
+
+    async def run():
+        calls.clear()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(record)) as http:
+            mgr = SyncManager(cfg, http, library.Engine(lambda: db.connect(cfg.db_path), None))
+            mgr._stage("tmdb")
+            with db.session(cfg.db_path) as c:
+                await mgr._details(c)
+                await mgr._collections(c)
+        return sorted(calls)
+    return run
+
+
+async def test_discovery_sync_fetches_once_ttl_and_no_loop(tmp_path):
+    cfg = _cfg(tmp_path)
     with db.session(cfg.db_path) as c:
         for tid in (1, 2, 3):
             c.execute("INSERT INTO lb_films(name,year,norm_title,tmdb_id,resolve_state,watched) VALUES(?,2000,?,?,1,1)",
                       (f"F{tid}", f"f{tid}", tid))
-        c.execute("INSERT INTO tmdb_details(tmdb_id,json,fetched_at) VALUES(1,?,'x')",
-                  (json.dumps({"id": 1, "release_date": "2000-01-01", "collection": {"id": 77, "name": "S"}}),))
-        c.execute("INSERT INTO tmdb_details(tmdb_id,json,fetched_at) VALUES(2,?,'x')",
-                  (json.dumps({"id": 2, "release_date": "2000-01-01", "collection": None}),))      # no saga
-        c.execute("INSERT INTO tmdb_details(tmdb_id,json,fetched_at) VALUES(3,?,'x')",
-                  (json.dumps({"id": 3, "release_date": "2000-01-01"}),))                          # predates the field
-    calls: list[str] = []
+        c.execute("INSERT INTO tmdb_details(tmdb_id,json,fetched_at) VALUES(1,?,'x')", (json.dumps(
+            {"id": 1, "release_date": "2000-01-01", "collection": {"id": 77, "name": "Web-Slinger Collection"},
+             "keywords": ["pint trilogy", "trilogy", "revenge"], "keyword_ids": [5001, 384197, 9748]}),))
+        c.execute("INSERT INTO tmdb_details(tmdb_id,json,fetched_at) VALUES(2,?,'x')",       # no saga, no series
+                  (json.dumps({"id": 2, "release_date": "2000-01-01", "collection": None, "keyword_ids": []}),))
+        c.execute("INSERT INTO tmdb_details(tmdb_id,json,fetched_at) VALUES(3,?,'x')",       # predates keyword_ids
+                  (json.dumps({"id": 3, "release_date": "2000-01-01", "collection": None}),))
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
-        calls.append(path)
+        if path == "/3/search/collection":
+            assert request.url.params["query"] == "Web-Slinger"
+            return httpx.Response(200, json={"results": [{"id": 79, "name": "The Amazing Web-Slinger Collection"},
+                                                         {"id": 80, "name": "Unrelated Collection"}]})
+        if path == "/3/discover/movie":
+            assert request.url.params["with_keywords"] == "5001"
+            return httpx.Response(200, json={"total_results": 2, "results": [
+                {"id": 1, "title": "A", "release_date": "2000-01-01", "vote_count": 50},
+                {"id": 9, "title": "Z", "release_date": "2004-01-01", "vote_count": 60}]})
         if path.startswith("/3/collection/"):
             cid = int(path.rsplit("/", 1)[1])
             if cid == 78:
@@ -140,79 +210,103 @@ async def test_collection_sync_fetches_once_ttl_and_no_loop(tmp_path, monkeypatc
         tid = int(path.split("/")[3])
         body = {"id": tid, "title": f"T{tid}", "release_date": "2000-01-01"}
         if tid == 3:
-            body["belongs_to_collection"] = {"id": 78, "name": "Gone"}
+            body["belongs_to_collection"] = {"id": 78, "name": "Gone"}        # a stem too short to search
         return httpx.Response(200, json=body)
 
-    async def run():
-        calls.clear()
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-            mgr = SyncManager(cfg, http, library.Engine(lambda: db.connect(cfg.db_path), None))
-            mgr._stage("tmdb")
-            with db.session(cfg.db_path) as c:
-                await mgr._details(c)
-                await mgr._collections(c)
-        return sorted(calls)
-
-    # details: 3 (backfill) and 50 (started curated group); never 2 (JSON null) nor 60 (group not started)
-    # collections: 77 (seen film 1), 79 (franchise sibling), 78 (from the backfilled film 3, a 404)
-    assert await run() == ["/3/collection/77", "/3/collection/78", "/3/collection/79", "/3/movie/3", "/3/movie/50"]
+    run = _runner(cfg, handler)
+    # details: only 3 (backfill); search: the distinctive stem; collections: 77 (seen), 79 (search hit whose
+    # name carries the stem; not 80), 78 (backfilled film 3, a 404); discover: the series keyword only
+    assert await run() == ["/3/collection/77", "/3/collection/78", "/3/collection/79", "/3/discover/movie",
+                           "/3/movie/3", "/3/search/collection"]
     with db.session(cfg.db_path) as c:
         rows = {r[0]: json.loads(r[1]) for r in c.execute("SELECT collection_id, json FROM tmdb_collections")}
+        lookups = {r[0]: json.loads(r[1]) for r in c.execute("SELECT key, json FROM tmdb_lookups")}
     assert rows[78] == {} and [p["id"] for p in rows[77]["parts"]] == [1, 9]
+    assert set(lookups) == {"collsearch:web-slinger", "keyword:5001"}
+    assert lookups["keyword:5001"]["name"] == "pint trilogy" and lookups["keyword:5001"]["total"] == 2
+    assert [p["id"] for p in lookups["keyword:5001"]["parts"]] == [1, 9]
     assert await run() == []                      # nothing pending: no refetch loop
     old = (datetime.now(timezone.utc) - timedelta(days=31)).strftime("%Y-%m-%dT%H:%M:%SZ")
     with db.session(cfg.db_path) as c:
         c.execute("UPDATE tmdb_collections SET fetched_at=? WHERE collection_id IN (77, 78)", (old,))
-    assert await run() == ["/3/collection/77", "/3/collection/78"]     # past the TTL
+        c.execute("UPDATE tmdb_lookups SET fetched_at=? WHERE key='keyword:5001'", (old,))
+    assert await run() == ["/3/collection/77", "/3/collection/78", "/3/discover/movie"]     # past the TTL
+
+
+async def test_no_lookups_for_an_ordinary_filmography(tmp_path):
+    """A director's films with recurring cast and themes, none in a collection: no search, no discover, no group."""
+    cfg = _cfg(tmp_path)
+    films = [(11, ["nonlinear timeline", "magician", "trilogy"]), (12, ["dream", "heist", "family saga"]),
+             (13, ["space travel", "black hole", "sequel"]), (14, ["world war ii", "survival"]),
+             (15, ["time inversion", "espionage"])]
+    with db.session(cfg.db_path) as c:
+        for tid, kws in films:
+            c.execute("INSERT INTO lb_films(name,year,norm_title,tmdb_id,resolve_state,watched) VALUES(?,2010,?,?,1,1)",
+                      (f"N{tid}", f"n{tid}", tid))
+            c.execute("INSERT INTO tmdb_details(tmdb_id,json,fetched_at) VALUES(?,?,'x')", (tid, json.dumps(
+                {"id": tid, "release_date": "2010-01-01", "collection": None, "director_ids": [525],
+                 "cast_ids": [3894, 1892, 2037], "keywords": kws, "keyword_ids": [tid * 10 + i for i in range(len(kws))]})))
+
+    def handler(request):
+        raise AssertionError(f"unexpected TMDB call {request.url.path}")
+
+    assert await _runner(cfg, handler)() == []
+    with db.session(cfg.db_path) as c:
+        assert completion._raw_groups(c, {11, 12, 13, 14, 15}) == []
 
 
 # ---------------------------------------------------------------- groups
 
-def test_groups_franchise_curated_dedupe_and_ranking(cc):
+def test_groups_discovered_dedupe_and_ranking(cc):
     r = cc.get("/api/completions").json()
     keys = [g["key"] for g in r["groups"]]
-    # with available films first; then % seen (trio 1/3), then fewest missing, then mean TMDB rating (900 > fr)
-    assert keys == ["curated-trio", "collection-900", "franchise-fr", "collection-960"]
+    # groups with films in the library first, then by share seen: series 1/3, Alpha 1/4, franchise 1/6
+    assert keys == ["series-5001", "collection-900", "franchise-web-slinger", "collection-960"]
     assert [g["key"] for g in r["completed"]] == ["collection-970"]
-    # absorbed by the franchise (910, 920), replaced by curated (930), not started (940), too small (950), 404 (999)
-    all_keys = keys + [g["key"] for g in r["completed"]]
-    assert not {"collection-910", "collection-920", "collection-930", "collection-940", "collection-950",
-                "collection-999"} & set(all_keys)
-    assert r["counts"] == {"collection": 3, "franchise": 1, "curated": 1}
+    gone = {"collection-910", "collection-920", "collection-925",        # absorbed by the franchise
+            "collection-921", "collection-922",                          # not started (and never merged)
+            "collection-930",                                            # inside the series keyword
+            "series-5002", "series-5003",                                # a theme; inside collection 900
+            "collection-940", "collection-950", "collection-999"}        # not started, too small, 404
+    assert not gone & set(keys + [g["key"] for g in r["completed"]])
+    assert r["counts"] == {"collection": 3, "franchise": 1, "series": 1}
     assert r["hidden"] == [] and r["hidden_count"] == 0
 
-    fr = next(g for g in r["groups"] if g["key"] == "franchise-fr")
-    assert (fr["name"], fr["seen"], fr["total"], fr["available"], fr["missing"]) == ("Franchise", 1, 4, 1, 2)
-    trio = r["groups"][0]
-    assert (trio["seen"], trio["total"], trio["available"]) == (1, 3, 1)
-    assert [f["title"] for f in trio["films_preview"]] == ["Drama Three", "Curated Missing"]   # title from the file
+    fr = next(g for g in r["groups"] if g["key"] == "franchise-web-slinger")
+    assert (fr["name"], fr["seen"], fr["total"], fr["available"], fr["missing"]) == ("Web-Slinger", 1, 6, 1, 4)
+    assert [f["year"] for f in fr["films"]] == [2002, 2004, 2012, 2014, 2017, 2019]     # release order
+    assert "Venomous" not in {f["title"] for f in fr["films"]}
+
+    pint = next(g for g in r["groups"] if g["key"] == "series-5001")
+    assert pint["name"] == "Pint Trilogy" and pint["ordered"] is True
+    assert [(f["tmdb_id"], f["state"]) for f in pint["films"]] == [(113, "available"), (404, "seen"), (9301, "missing")]
 
 
-def test_film_states_preview_and_next(cc):
+def test_films_whole_group_in_order_with_states(cc):
     g = next(g for g in cc.get("/api/completions").json()["groups"] if g["key"] == "collection-900")
     assert g["name"] == "Alpha"                                   # " Collection" dropped
-    prev = g["films_preview"]
-    # available first, then missing by relevance (votes x rating): 9002 (90k votes) before 9001 (50 votes)
-    assert [(f["tmdb_id"], f["state"]) for f in prev] == [(111, "available"), (9002, "missing"), (9001, "missing")]
-    assert prev[0]["movie_id"] and "movie_id" not in prev[1]
-    assert g["next"]["title"] == "Film 111" and g["next"]["movie_id"] == prev[0]["movie_id"]
-    assert g["more"] == 0 and not any(f["state"] == "seen" for f in prev)
+    assert [(f["tmdb_id"], f["state"]) for f in g["films"]] == [
+        (101, "seen"), (111, "available"), (9001, "missing"), (9002, "missing")]
+    assert g["films"][1]["movie_id"] and "movie_id" not in g["films"][2]
+    assert g["next"]["title"] == "Film 111" and g["next"]["movie_id"] == g["films"][1]["movie_id"]
+    assert "films_preview" not in g and "more" not in g
+    # unordered groups (later phases) rank unseen films: library first, then missing by votes x rating
+    assert [f["tmdb_id"] for f in completion.ranked_unseen(g["films"])] == [111, 9002, 9001]
 
 
-def test_long_saga_caps_preview_and_full_list(cc):
+def test_long_saga_returns_every_film(cc):
     g = next(g for g in cc.get("/api/completions").json()["groups"] if g["key"] == "collection-960")
-    assert len(g["films_preview"]) == 5 and g["more"] == 24 and g["available"] == 0 and g["next"] is None
-    assert [f["vote_count"] for f in g["films_preview"]] == [128, 127, 126, 125, 124]
+    assert len(g["films"]) == 30 and g["available"] == 0 and g["next"] is None
     full = cc.get("/api/completions/collection-960").json()
-    assert len(full["films"]) == 30 and full["films"][0] == {**full["films"][0], "tmdb_id": 303, "state": "seen"}
+    assert full["films"] == g["films"] and full["films"][0]["tmdb_id"] == 303 and full["films"][0]["state"] == "seen"
     assert [f["year"] for f in full["films"]] == sorted(f["year"] for f in full["films"])
     assert cc.get("/api/completions/collection-12345").status_code == 404
 
 
 def test_kind_filter(cc):
-    r = cc.get("/api/completions", params={"kind": "curated"}).json()
-    assert [g["key"] for g in r["groups"]] == ["curated-trio"] and r["completed"] == []
-    assert cc.get("/api/completions", params={"kind": "nope"}).status_code == 422
+    r = cc.get("/api/completions", params={"kind": "series"}).json()
+    assert [g["key"] for g in r["groups"]] == ["series-5001"] and r["completed"] == []
+    assert cc.get("/api/completions", params={"kind": "curated"}).status_code == 422
 
 
 def test_hide_and_unhide(cc):
@@ -236,6 +330,7 @@ def test_seen_mark_moves_a_film_to_seen(cc):
     assert next(f["state"] for f in g["films"] if f["tmdb_id"] == 111) == "seen" and g["seen"] == 2
 
 
-def test_no_groups_without_collections(client):
+def test_no_groups_for_a_filmography_without_sagas(client):
+    """Seeded films share a director, an actor and keywords, but no collection or series keyword: no groups."""
     r = client.get("/api/completions").json()
-    assert [g["key"] for g in r["groups"] + r["completed"]] == []      # bundled curated films are not seen here
+    assert [g["key"] for g in r["groups"] + r["completed"]] == []

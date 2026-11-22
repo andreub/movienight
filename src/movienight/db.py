@@ -188,7 +188,7 @@ MIGRATIONS = [
     ALTER TABLE seen_pushes ADD COLUMN scrobbled_at TEXT;
     """,
     # 12: completionist. TMDB collections (sagas) cached with their parts ('{}' = TMDB has no such id), and the
-    # groups the user hid from the Complete view (keys like collection-556, franchise-spider-man, curated-cornetto).
+    # groups the user hid from the Complete view (keys like collection-556, franchise-spider-man, series-357318).
     """
     CREATE TABLE IF NOT EXISTS tmdb_collections (
         collection_id INTEGER PRIMARY KEY,
@@ -198,6 +198,16 @@ MIGRATIONS = [
     CREATE TABLE IF NOT EXISTS completion_hidden (
         group_key TEXT PRIMARY KEY,
         created_at TEXT NOT NULL
+    );
+    """,
+    # 13: completionist discovery. Cached TMDB lookups by key, refreshed after a TTL:
+    # 'collsearch:<stem>' (collections whose name matches a saga's stem, for franchises) and
+    # 'keyword:<id>' (the films of a series keyword such as "cornetto trilogy").
+    """
+    CREATE TABLE IF NOT EXISTS tmdb_lookups (
+        key TEXT PRIMARY KEY,
+        json TEXT NOT NULL,
+        fetched_at TEXT
     );
     """,
 ]

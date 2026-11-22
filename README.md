@@ -60,27 +60,46 @@ The RSS feed carries no tags, so new tags arrive with the next export.
 
 ## Completionist
 
-The **Complete** tab lists the sagas and trilogies you have started (at least one film seen), with
-your progress ("4 of 9 seen") and what is left. Each film is **seen** (Letterboxd, played on the media
-server, or marked seen here), **available** (in the library and unwatched: tap it to open the film)
-or **missing** (not in the library, greyed out).
+The **Complete** tab lists the sagas, franchises and series you have started (at least one film
+seen), with your progress ("4 of 9 seen") and what is left. Each film is **seen** (Letterboxd, played
+on the media server, or marked seen here), **available** (in the library and unwatched: tap it to
+open the film) or **missing** (not in the library, greyed out).
 
-- **Groups**: TMDB collections (sagas); **franchises**, several collections merged into one group
-  (Spider-Man = the Raimi, Amazing, MCU and Spider-Verse collections); and **curated** groups, plain
-  lists of TMDB ids for sagas TMDB does not have (the Three Flavours Cornetto and the Vengeance
-  trilogy). Both live in `src/movienight/data/completion_groups.json`. A collection that belongs to a
-  franchise only shows inside it; a curated group replaces a collection with the same films.
-- **Cards**: at most five unseen films each, those in the library first (saga order), then missing
-  ones by popularity × rating; "+N more · show all" opens the full list. Groups you can finish from
+Nothing is hand-written: groups are discovered from your own data and the TMDB cache.
+
+- **Sagas**: the TMDB collection a seen film belongs to.
+- **Franchises**: collections merged when one's stem names the others and most of their films
+  ("Spider-Man", from the Raimi collection, names the Amazing, MCU and Spider-Verse collections).
+  Siblings are found with a collection search on the stem. Collections with a far less popular
+  offshoot (TV films, animated spin-offs), a name without the stem (Venom) or a generic stem
+  ("Before", "Matrix") are not merged.
+- **Series**: a TMDB keyword on a seen film whose name ends in a series word, such as
+  `cornetto trilogy`, expanded to its films with TMDB's discover. Generic keywords ("trilogy",
+  "family saga") and keywords on more than 20 films (themes, not series) are skipped. Entries with
+  fewer than 20 votes (shorts, fan films) are dropped. A series whose films are all in a saga is
+  not shown twice. A saga inside a series gives way to the series.
+- A director's ordinary filmography, with recurring cast and themes, never becomes a group. Some
+  trilogies have no shared collection or keyword on TMDB (Park Chan-wook's Vengeance trilogy, for
+  example), so they do not show up.
+- **Cards**: posters fill the card's width. A saga shows every film in release order, seen ones
+  dimmed with a ✓, so you see where the gaps are. When it doesn't fit in about three rows, runs of
+  seen films fold into a "✓ 7 seen" tile (tap to open it). Unseen films and their neighbours always
+  stay visible, and "Show all" appears only if the card still overflows. Groups you can finish from
   the library come first, then by share seen, fewest missing and mean TMDB rating. Finished groups
   and hidden ones (the × on a card, with undo) stay folded at the bottom.
-- **Data**: the TMDB sync stores each film's collection (and director/cast ids) with its details,
-  then fetches the collections of seen films (plus franchise siblings) into `tmdb_collections`,
-  refreshed every 30 days. Details stored before this existed are backfilled once.
-- **API**: `GET /api/completions?kind=collection|franchise|curated&hidden=true` (groups with
-  `films_preview`, `more`, `seen`/`total`/`available`/`next`), `GET /api/completions/{key}` (every
-  film), `POST`/`DELETE /api/completions/{key}/hide`. Keys: `collection-556`,
-  `franchise-spider-man`, `curated-cornetto`.
+- **Data**: the TMDB sync stores each film's collection, keyword ids and director/cast ids with its
+  details (details stored before these fields existed are backfilled once). It then caches, for 30
+  days:
+  - the collection searches (`tmdb_lookups`);
+  - the collections (`tmdb_collections`);
+  - the films of each series keyword (`tmdb_lookups`).
+- **API**:
+  - `GET /api/completions?kind=collection|franchise|series&hidden=true` returns the groups with
+    `films` (the whole group in release order, each with its `state`), `ordered`, `seen`, `total`,
+    `available` and `next`.
+  - `GET /api/completions/{key}` returns one group.
+  - `POST` and `DELETE /api/completions/{key}/hide` hide and unhide a group.
+  - Keys look like `collection-556`, `franchise-spider-man` and `series-357318`.
 
 ## Quick start (Docker)
 

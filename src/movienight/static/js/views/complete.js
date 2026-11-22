@@ -1,7 +1,10 @@
-// "Complete": sagas, franchises and curated trilogies the user has started, as a single column of roomy cards.
-// A card shows its progress ("4 of 9 seen") and at most five unseen films: the ones in the library first (full
-// colour, tap opens the detail sheet), then missing ones (greyed). Seen films are only counted, never drawn,
-// until "+N more · show all" expands the whole list in saga order. Finished and hidden groups stay folded.
+// "Complete": sagas, franchises and series the user has started, discovered from what they watched, as a single
+// column of roomy cards. Posters fill the card's width (CSS grid, measured with a ResizeObserver) so covers stay
+// large. Sagas show the whole group in release order: seen films dimmed with a check, films in the library in
+// full colour with the accent ring (tap opens the detail sheet), missing ones greyed, so it is clear where the
+// gaps fall. When a saga does not fit in a few rows, long runs of seen films fold into a "✓ 7 seen" tile (tap
+// opens it); unseen films and their neighbours always stay. "Show all" appears only if it still overflows.
+// Groups without an order list unseen films first. Finished and hidden groups stay folded at the bottom.
 import { api } from '../api.js';
 import { go } from '../state.js';
 import { h, fill, icon, poster, errorBox, toast, announce, quoted } from '../dom.js';
@@ -9,7 +12,7 @@ import { h, fill, icon, poster, errorBox, toast, announce, quoted } from '../dom
 export const title = 'Complete';
 
 const KINDS = [
-  [null, 'All'], ['collection', 'Sagas'], ['franchise', 'Franchises'], ['curated', 'Trilogies'],
+  [null, 'All'], ['collection', 'Sagas'], ['franchise', 'Franchises'], ['series', 'Series'],
 ];
 
 const pct = (g) => (g.total ? Math.round((g.seen / g.total) * 100) : 0);
@@ -25,28 +28,80 @@ function progress(g) {
       g.available ? h('span', { class: 'cprog__avail', text: ` · ${g.available} in library` }) : null));
 }
 
-// One film of a strip or of the full list. Available films open the detail sheet; the others are not links.
-function film(f, { caption = false } = {}) {
-  const label = `${f.title}${f.year ? ` (${f.year})` : ''}${f.state === 'available' ? ', in your library' : f.state === 'seen' ? ', seen' : ', not in your library'}`;
+const STATE_LABEL = { available: 'in your library', seen: 'seen', missing: 'not in your library' };
+
+// One film tile. Available films open the detail sheet; the others are not links.
+function film(f) {
+  const label = `${f.title}${f.year ? ` (${f.year})` : ''}, ${STATE_LABEL[f.state]}`;
   const art = h('div', { class: 'cfilm__art' },
-    poster(f, { label: caption ? null : label }),
+    poster(f, { label }),
     f.state === 'available' ? h('span', { class: 'cfilm__badge', text: 'In library' }) : null,
-    f.state === 'seen' ? h('span', { class: 'cfilm__seen', title: 'Seen' }, icon('check')) : null);
-  const cap = caption ? h('span', { class: 'cfilm__cap' },
-    h('span', { class: 'cfilm__title', text: f.title }),
-    f.year ? h('span', { class: 'cfilm__year', text: String(f.year) }) : null) : null;
+    f.state === 'seen' ? h('span', { class: 'cfilm__seen', 'aria-hidden': 'true' }, icon('check')) : null);
   const body = f.state === 'available' && f.movie_id
-    ? h('button', { type: 'button', class: 'cfilm__btn', 'aria-label': caption ? null : label, title: f.title, onclick: () => go({ movie: f.movie_id }) }, art, cap)
-    : h('div', { class: 'cfilm__btn', title: f.title }, art, cap);
+    ? h('button', { type: 'button', class: 'cfilm__btn', 'aria-label': label, title: label, onclick: () => go({ movie: f.movie_id }) }, art)
+    : h('div', { class: 'cfilm__btn', title: label }, art);
   return h('li', { class: `cfilm cfilm--${f.state}` }, body);
 }
+
+// A run of seen films folded into one tile the size of a poster.
+function foldTile(run, onOpen) {
+  const first = run[0].year;
+  const last = run[run.length - 1].year;
+  const years = first && last ? (first === last ? String(first) : `${first}–${last}`) : '';
+  return h('li', { class: 'cfilm cfilm--fold' },
+    h('button', {
+      type: 'button', class: 'cfold-tile', onclick: onOpen,
+      'aria-label': `${run.length} seen films${years ? `, ${years}` : ''}. Show them`,
+    },
+    h('span', { class: 'cfold-tile__check' }, icon('check')),
+    h('span', { class: 'cfold-tile__n', text: String(run.length) }),
+    h('span', { class: 'cfold-tile__label', text: 'seen' }),
+    years ? h('span', { class: 'cfold-tile__years', text: years }) : null));
+}
+
+// The tiles of an ordered group for `cap` slots: every film when it fits; otherwise runs of seen films folded
+// (keeping the neighbours of unseen films, then without them), and cut at `cap` only as a last resort.
+// `open` holds the start index of runs the user unfolded; once one is open the card no longer truncates.
+export function sagaLayout(films, cap, open = new Set()) {
+  const all = films.map((f, i) => ({ film: f, i }));
+  if (films.length <= cap && !open.size) return { items: all, cut: 0 };
+  let items = all;
+  for (const neighbours of [true, false]) {
+    const keep = films.map((f) => f.state !== 'seen');
+    if (neighbours) films.forEach((f, i) => { if (f.state !== 'seen') { if (i > 0) keep[i - 1] = true; if (i + 1 < films.length) keep[i + 1] = true; } });
+    items = [];
+    let run = [];
+    const flush = () => {
+      if (run.length >= 2 && !open.has(run[0])) items.push({ fold: run.map((i) => films[i]), start: run[0] });
+      else for (const i of run) items.push({ film: films[i], i });
+      run = [];
+    };
+    films.forEach((f, i) => { if (keep[i]) { flush(); items.push({ film: f, i }); } else run.push(i); });
+    flush();
+    if (items.length <= cap || open.size) return { items, cut: 0 };
+  }
+  return { items: items.slice(0, cap), cut: items.length - cap };
+}
+
+// Unordered groups: unseen films first (the API already ranks them), then seen ones when expanded.
+function listLayout(films, cap, all) {
+  const unseen = films.filter((f) => f.state !== 'seen');
+  const items = (all ? [...unseen, ...films.filter((f) => f.state === 'seen')] : unseen).map((film) => ({ film }));
+  if (all || items.length <= cap) return { items, cut: 0 };
+  return { items: items.slice(0, cap), cut: items.length - cap };
+}
+
+// How many rows a card may fill before folding: sagas get 3 (a whole trilogy-of-trilogies fits unfolded);
+// unordered groups 2, or 3 when the card is wide.
+const rowsFor = (cols, ordered) => (ordered || cols >= 6 ? 3 : 2);
 
 export function mount(root) {
   let kind = null;
   let alive = true;
   let token = 0;
   let data = null;
-  const expanded = new Set(); // keys whose full list is open (kept across reloads)
+  const expanded = new Set(); // keys shown in full ("Show all"), kept across reloads
+  const observers = new Set();
 
   const chips = KINDS.map(([id, label]) => h('button', {
     type: 'button', class: 'chip chip--small', 'aria-pressed': String(id === kind), 'data-kind': id || '',
@@ -59,7 +114,7 @@ export function mount(root) {
   root.append(h('div', { class: 'complete' },
     h('div', { class: 'complete__top' },
       h('h1', { class: 'page-title', text: 'Complete' }),
-      h('p', { class: 'lede', text: 'Sagas and trilogies you have started. The ones you can finish from your library come first.' }),
+      h('p', { class: 'lede', text: 'Sagas, franchises and series you have started. The ones you can finish from your library come first.' }),
       h('div', { class: 'chips chips--scroll complete__kinds', role: 'group', 'aria-label': 'Kind of group' }, chips)),
     status, list, folds));
 
@@ -74,39 +129,47 @@ export function mount(root) {
   }
 
   function card(g) {
-    const all = h('div', { class: 'cgroup__all', hidden: true });
-    const strip = h('ul', { class: 'cstrip', 'aria-label': `Still to watch in ${g.name}` }, g.films_preview.map((f) => film(f)));
-    let open = false;
-    const moreBtn = h('button', { type: 'button', class: 'cmore', 'aria-expanded': 'false', onclick: () => toggle() });
-    const paintMore = () => {
-      moreBtn.textContent = open ? 'Show less' : g.more ? `+${g.more} more · show all` : 'Show all';
-      moreBtn.setAttribute('aria-expanded', String(open));
+    const grid = h('ul', { class: 'cgrid', 'aria-label': g.ordered ? `${g.name}, in release order` : `Still to watch in ${g.name}` });
+    const moreBtn = h('button', { type: 'button', class: 'cmore', hidden: true, onclick: () => { toggleAll(); } });
+    const open = new Set();
+    let cols = 0;
+
+    const toggleAll = () => {
+      if (expanded.has(g.key)) expanded.delete(g.key); else expanded.add(g.key);
+      render(true);
     };
-    async function toggle(force) {
-      open = force ?? !open;
-      paintMore();
-      strip.hidden = open;
-      all.hidden = !open;
-      if (open) expanded.add(g.key); else expanded.delete(g.key);
-      if (!open || all.dataset.loaded) return;
-      fill(all, h('ul', { class: 'cfull' }, Array.from({ length: Math.min(g.total, 10) }, () => h('li', { class: 'cfilm' }, h('div', { class: 'poster skel' })))));
-      try {
-        const full = await api.completion(g.key);
-        if (!alive) return;
-        all.dataset.loaded = '1';
-        fill(all, h('ul', { class: 'cfull', 'aria-label': `Every film in ${g.name}` }, full.films.map((f) => film(f, { caption: true }))));
-      } catch (err) {
-        fill(all, errorBox(err, () => { delete all.dataset.loaded; toggle(true); }));
-      }
+
+    function render(force = false) {
+      const style = getComputedStyle(grid);
+      const min = parseFloat(style.getPropertyValue('--tile-min')) || 112;
+      const gap = parseFloat(style.columnGap) || 12;
+      const width = grid.clientWidth;
+      if (!width) return;
+      const c = Math.max(1, Math.floor((width + gap) / (min + gap)));
+      if (c === cols && !force) return;
+      cols = c;
+      const cap = expanded.has(g.key) ? Infinity : c * rowsFor(c, g.ordered);
+      const { items, cut } = g.ordered ? sagaLayout(g.films, cap, open) : listLayout(g.films, cap, expanded.has(g.key));
+      fill(grid, items.map((it) => (it.fold ? foldTile(it.fold, () => { open.add(it.start); render(true); }) : film(it.film))));
+      const all = expanded.has(g.key);
+      moreBtn.hidden = !cut && !all;
+      if (all) moreBtn.textContent = 'Show less';
+      else if (g.ordered) moreBtn.textContent = `Show all ${g.total}`;
+      else moreBtn.textContent = `+${cut} more · show all`;
+      moreBtn.setAttribute('aria-expanded', String(all));
     }
-    paintMore();
+
+    const ro = new ResizeObserver(() => render());
+    ro.observe(grid);
+    observers.add(ro);
+
     const li = h('li', { class: 'cgroup', 'data-key': g.key },
       h('div', { class: 'cgroup__head' },
         h('h2', { class: 'cgroup__name', text: g.name }),
         h('button', { type: 'button', class: 'cgroup__hide', 'aria-label': `Hide ${g.name}`, title: 'Hide', onclick: () => hide(g, li) }, icon('close'))),
       progress(g),
-      h('div', { class: 'cgroup__films' }, strip, all, h('div', { class: 'cgroup__foot' }, moreBtn)));
-    if (expanded.has(g.key)) toggle(true);
+      grid,
+      h('div', { class: 'cgroup__foot' }, moreBtn));
     return li;
   }
 
@@ -141,8 +204,14 @@ export function mount(root) {
     return d;
   }
 
+  function disconnect() {
+    for (const ro of observers) ro.disconnect();
+    observers.clear();
+  }
+
   function paint() {
     paintChips();
+    disconnect();
     const groups = data.groups;
     fill(list, groups.map(card));
     if (!groups.length) {
@@ -151,7 +220,7 @@ export function mount(root) {
         h('p', { class: 'state__title', text: any ? 'All caught up' : 'Nothing started yet' }),
         h('p', { class: 'state__text', text: any
           ? 'Every saga you have started here is finished or hidden.'
-          : 'Watch one film of a saga or trilogy and it shows up here, with what is left to see.' })));
+          : 'Watch one film of a saga, franchise or trilogy and it shows up here, with what is left to see.' })));
     } else fill(status);
     const parts = [];
     if (data.completed.length) parts.push(folded(`Completed (${data.completed.length})`, data.completed.map((g) => row(g))));
@@ -174,7 +243,7 @@ export function mount(root) {
     const t = ++token;
     if (!data) fill(list, Array.from({ length: 3 }, () => h('li', { class: 'cgroup cgroup--skeleton', 'aria-hidden': 'true' },
       h('div', { class: 'skel skel--line skel--short' }), h('div', { class: 'skel skel--line' }),
-      h('div', { class: 'cgroup__films' }, h('ul', { class: 'cstrip' }, Array.from({ length: 5 }, () => h('li', { class: 'cfilm' }, h('div', { class: 'poster skel' }))))))));
+      h('ul', { class: 'cgrid cgrid--skeleton' }, Array.from({ length: 8 }, () => h('li', { class: 'cfilm' }, h('div', { class: 'poster skel' })))))));
     try {
       const r = await api.completions({ kind });
       if (!alive || t !== token) return;
@@ -193,6 +262,6 @@ export function mount(root) {
 
   return {
     update() {},
-    destroy() { alive = false; window.removeEventListener('movienight:seen', onSeen); },
+    destroy() { alive = false; disconnect(); window.removeEventListener('movienight:seen', onSeen); },
   };
 }

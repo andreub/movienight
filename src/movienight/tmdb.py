@@ -106,6 +106,20 @@ class Tmdb:
         raw = await self.get(f"/collection/{int(cid)}")
         return compact_collection(raw, today) if raw else None
 
+    async def search_collections(self, query: str) -> list[dict]:
+        """Collections whose name matches `query` (first page): [{id, name}]."""
+        data = await self.get("/search/collection", {"query": query, "include_adult": "false"})
+        return [{"id": r["id"], "name": r.get("name") or ""} for r in (data or {}).get("results") or [] if r.get("id")]
+
+    async def keyword_movies(self, kid: int, today: str | None = None) -> dict:
+        """Films tagged with a keyword (first page, oldest first): {total, parts} with parts shaped like a
+        collection's. `total` is TMDB's raw count, so a caller can tell a short series from a theme keyword."""
+        data = await self.get("/discover/movie", {"with_keywords": str(int(kid)), "include_adult": "false",
+                                                  "include_video": "false", "sort_by": "primary_release_date.asc"})
+        data = data or {}
+        return {"total": int(data.get("total_results") or 0),
+                "parts": compact_collection({"parts": data.get("results") or []}, today)["parts"]}
+
 
 def pick_search_result(data: dict | None, want_norm: str) -> int | None:
     results = (data or {}).get("results") or []
@@ -161,6 +175,8 @@ def compact_details(raw: dict) -> dict:
         # always present (null = no saga), so the sync can tell "no collection" from "fetched before this existed"
         "collection": {"id": coll["id"], "name": coll.get("name") or ""} if coll and coll.get("id") else None,
         "keywords": [k["name"] for k in kws if k.get("name")],
+        # parallel to `keywords`; always present, so the sync can backfill details stored before it existed
+        "keyword_ids": [k.get("id") for k in kws if k.get("name")],
         "language": raw.get("original_language") or None,
         "countries": [c["iso_3166_1"] for c in raw.get("production_countries") or [] if c.get("iso_3166_1")],
         "vote_average": raw.get("vote_average"),

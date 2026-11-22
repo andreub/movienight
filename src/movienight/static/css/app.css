@@ -982,19 +982,20 @@ html.kb-open .composer { bottom: var(--kb); padding-bottom: 8px; }
 .tags__editions .tags__name { font-weight: 400; }
 .tags__meta { color: var(--muted); font-size: .875rem; }
 
-/* ---------- complete: sagas, franchises, trilogies ---------- */
+/* ---------- complete: sagas, franchises, series ---------- */
 .complete { padding: 0 var(--gutter) 48px; }
-main > .complete { max-width: 800px; }
-.complete__top { display: grid; gap: 8px; margin-bottom: 20px; }
+main > .complete { max-width: 1040px; }
+.complete__top { display: grid; gap: 8px; margin-bottom: 20px; max-width: 760px; }
 .complete__top .page-title { margin-bottom: 0; }
 .complete__kinds { margin-top: 8px; }
 
 .cgroups { display: grid; gap: 16px; }
 .cgroup {
-  display: grid; gap: 14px; padding: 18px 18px 14px; border-radius: var(--r-l);
+  display: grid; gap: 14px; padding: 18px 18px 16px; border-radius: var(--r-l);
   background: var(--ink-2); border: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
   transition: opacity .2s, transform .2s var(--ease);
 }
+@media (max-width: 479px) { .cgroup { padding: 16px 14px 14px; } }
 .cgroup.is-leaving { opacity: 0; transform: scale(.98); }
 .cgroup--skeleton { gap: 10px; }
 .cgroup--skeleton .skel--line { margin: 0; }
@@ -1014,45 +1015,54 @@ main > .complete { max-width: 800px; }
 .cprog__label strong { color: var(--paper); }
 .cprog__avail { color: var(--bulb); }
 
-/* the strip: at most five unseen films, same width on every card */
-/* the strip and its "+N more" chip share a row while they fit; five posters fill a phone row and push it below */
-.cgroup__films { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 12px; container-type: inline-size; }
-.cstrip { display: flex; gap: 8px; }
-.cstrip .cfilm { width: calc((100cqw - 32px) / 5); }
-@media (min-width: 600px) { .cstrip { gap: 12px; } .cstrip .cfilm { width: 112px; } }
-.cgroup__all { flex: 1 0 100%; }
+/* the poster grid fills the card; the view reads --tile-min and the gap to count columns (ResizeObserver) */
+.cgrid {
+  --tile-min: 96px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--tile-min), 1fr)); gap: 12px 10px;
+}
+@media (min-width: 480px) { .cgrid { --tile-min: 120px; gap: 14px 12px; } }
+.cgrid--skeleton { grid-template-rows: auto; grid-auto-rows: 0; row-gap: 0; overflow: hidden; }
 .cfilm { min-width: 0; }
-.cfilm__btn { display: grid; gap: 6px; width: 100%; padding: 0; border: 0; background: none; color: inherit; text-align: left; align-content: start; }
+.cfilm__btn { display: block; width: 100%; padding: 0; border: 0; background: none; color: inherit; text-align: left; }
 button.cfilm__btn { cursor: pointer; }
-button.cfilm__btn:focus-visible { outline-offset: 2px; border-radius: var(--r-s); }
+button.cfilm__btn:focus-visible { outline-offset: 3px; border-radius: var(--r-s); }
 .cfilm__art { position: relative; }
-.cfilm__art .poster { transition: transform .15s var(--ease), box-shadow .15s; }
-.cfilm--available .poster { box-shadow: 0 0 0 2px var(--bulb); }
-.cfilm--available button.cfilm__btn:hover .poster { transform: translateY(-2px); box-shadow: 0 0 0 2px var(--bulb), 0 10px 24px rgb(0 0 0 / .4); }
-.cfilm--missing .poster { filter: grayscale(1) brightness(.7); opacity: .45; }
-.cfilm--seen .poster { opacity: .4; }
+.cfilm__art .poster { transition: transform .15s var(--ease), box-shadow .15s, opacity .15s, filter .15s; }
+.cfilm--available .poster { box-shadow: 0 0 0 2px var(--bulb), 0 6px 18px rgb(0 0 0 / .35); }
+.cfilm--available button.cfilm__btn:hover .poster { transform: translateY(-2px); box-shadow: 0 0 0 2px var(--bulb), 0 12px 26px rgb(0 0 0 / .45); }
+.cfilm--missing .poster { filter: grayscale(1) brightness(.9); opacity: .58; }
+.cfilm--seen .poster { opacity: .45; }
+.cfilm--missing .cfilm__btn:hover .poster, .cfilm--seen .cfilm__btn:hover .poster { opacity: .8; }
 .cfilm__badge {
-  position: absolute; left: 6px; top: 6px; max-width: calc(100% - 12px);
-  padding: 2px 7px; border-radius: 999px; background: var(--bulb); color: var(--bulb-ink);
-  font-size: .6875rem; font-weight: 700; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  position: absolute; left: 6px; bottom: 6px; max-width: calc(100% - 12px);
+  padding: 2px 8px; border-radius: 999px; background: var(--bulb); color: var(--bulb-ink);
+  font-size: .6875rem; font-weight: 700; line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   box-shadow: 0 2px 8px rgb(0 0 0 / .35);
 }
-/* phones: the strip's posters are small, so the badge becomes a dot (the gold ring already says it) */
-@media (max-width: 479px) { .cstrip .cfilm__badge { font-size: 0; width: 10px; height: 10px; padding: 0; left: auto; right: 5px; top: 5px; } }
+/* small tiles: the badge becomes a dot (the gold ring already says it) */
+@media (max-width: 479px) { .cfilm__badge { font-size: 0; width: 10px; height: 10px; padding: 0; left: auto; right: 6px; bottom: auto; top: 6px; } }
 .cfilm__seen {
   position: absolute; top: 6px; right: 6px; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%;
-  background: rgb(27 21 48 / .75); color: var(--ok);
+  background: rgb(27 21 48 / .8); color: var(--ok);
 }
 .cfilm__seen .icon { width: 14px; height: 14px; }
-.cfilm__cap { display: grid; line-height: 1.25; }
-.cfilm__title { font-size: .8125rem; font-weight: 700; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.cfilm__year { font-size: .75rem; color: var(--muted); }
-.cfilm--missing .cfilm__title, .cfilm--seen .cfilm__title { color: var(--muted); font-weight: 400; }
 
-.cfull { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 16px 10px; }
-@media (min-width: 600px) { .cfull { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 18px 12px; } }
+/* a run of seen films folded into one poster-sized tile */
+.cfold-tile {
+  position: relative; display: grid; place-content: center; justify-items: center; gap: 2px; width: 100%; aspect-ratio: 2 / 3;
+  padding: 8px; border-radius: var(--r-s); border: 1px dashed color-mix(in srgb, var(--line) 85%, transparent);
+  background: color-mix(in srgb, var(--ink-3) 55%, transparent); color: var(--muted); text-align: center;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.cfold-tile:hover { background: var(--ink-3); color: var(--paper); border-color: var(--muted); }
+.cfold-tile__check { display: grid; place-items: center; width: 26px; height: 26px; margin-bottom: 4px; border-radius: 50%; background: rgb(134 220 170 / .14); color: var(--ok); }
+.cfold-tile__check .icon { width: 15px; height: 15px; }
+.cfold-tile__n { font: 800 2rem/1 var(--font-display); color: var(--paper); }
+.cfold-tile__label { font-size: .8125rem; }
+.cfold-tile__years { margin-top: 6px; font-size: .75rem; opacity: .8; letter-spacing: .02em; }
 
-.cgroup__foot { display: flex; justify-content: flex-end; margin-left: auto; }
+.cgroup__foot { display: flex; justify-content: flex-end; }
+.cgroup__foot:has(.cmore[hidden]) { display: none; }
 .cmore {
   min-height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid transparent;
   background: rgb(255 255 255 / .05); color: var(--muted); font-size: .875rem;
