@@ -1085,3 +1085,91 @@ button.cfilm__btn:focus-visible { outline-offset: 3px; border-radius: var(--r-s)
 .crow__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .crow__meta { color: var(--muted); font-size: .875rem; white-space: nowrap; }
 .crow .linkbtn { min-height: 40px; }
+
+/* the "why" of a group's rank: one quiet hint beside the name */
+.cgroup__why {
+  flex: none; align-self: center; max-width: 45%; margin-top: 4px; padding: 2px 10px; border-radius: 999px;
+  background: rgb(255 255 255 / .05); color: var(--muted); font-size: .8125rem; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ---------- complete on the TV app (html.tv): one saga per screen, Tonight's hero look ---------- */
+main > .ctv { max-width: none; }
+.ctv { position: relative; height: calc(100dvh - 68px); overflow: hidden; }
+.ctv__stage { position: absolute; inset: 0; }
+.ctv__screen {
+  position: absolute; inset: 0; isolation: isolate; display: grid; align-items: end;
+  padding: 0 5vw 4vh;
+}
+.ctv__screen .ctv__backdrop {
+  position: absolute; inset: 0; aspect-ratio: auto; max-height: none; z-index: -1; -webkit-mask-image: none; mask-image: none;
+}
+.ctv__screen .ctv__backdrop::after {
+  background:
+    linear-gradient(90deg, var(--ink) 0%, rgb(27 21 48 / .82) 32%, rgb(27 21 48 / .15) 72%),
+    linear-gradient(to bottom, rgb(27 21 48 / .35) 0%, rgb(27 21 48 / 0) 25%, rgb(27 21 48 / .55) 60%, var(--ink) 100%);
+}
+.ctv__screen .pick__backdrop--gen { place-items: start end; padding: 4vh 4vw; }
+.ctv__inner { display: grid; gap: 1.4vh; min-width: 0; }
+.ctv__kicker {
+  display: flex; gap: 14px; color: var(--bulb); font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+  font-size: clamp(.8rem, 1.05vw, 1.25rem);
+}
+.ctv__kicker span + span { color: var(--muted); }
+.ctv__title {
+  max-width: 18ch; font: 800 clamp(3rem, 6.4vw, 8.5rem)/.88 var(--font-display); letter-spacing: -.005em;
+  text-wrap: balance; text-shadow: 0 2px 30px rgb(27 21 48 / .8);
+}
+.ctv__meta { display: flex; align-items: center; gap: 20px; font-size: clamp(1rem, 1.25vw, 1.5rem); color: var(--muted); }
+.ctv__bar { flex: none; width: clamp(160px, 16vw, 320px); height: 8px; }
+.ctv__count strong { color: var(--paper); }
+.ctv__why { padding: 4px 14px; border-radius: 999px; background: rgb(255 255 255 / .08); color: var(--paper); font-size: .9em; }
+.ctv__caption {
+  display: flex; align-items: baseline; gap: 16px; min-height: 1.6em; margin-top: 1vh;
+  font-size: clamp(1rem, 1.35vw, 1.625rem); color: var(--muted); white-space: nowrap; overflow: hidden;
+}
+.ctv__cap-title { color: var(--paper); font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
+.ctv__cap-state--available { color: var(--bulb); }
+.ctv__row {
+  display: flex; gap: 1.1vw; overflow-x: auto; scrollbar-width: none;
+  margin: 0 -5vw; padding: 2.4vh 5vw 2.6vh; scroll-padding-inline: 5vw;
+}
+.ctv__row::-webkit-scrollbar { display: none; }
+.ctv__item { flex: none; width: clamp(96px, 8.6vw, 190px); }
+.ctv__film { display: block; width: 100%; padding: 0; border: 0; background: none; color: inherit; border-radius: var(--r-s); }
+.ctv__art { position: relative; display: block; transition: transform .18s var(--ease); }
+.ctv__art .poster { transition: opacity .18s, filter .18s, box-shadow .18s; box-shadow: 0 10px 24px rgb(0 0 0 / .4); }
+.ctv__item.cfilm--seen .poster { opacity: .42; }
+.ctv__item.cfilm--missing .poster { filter: grayscale(1) brightness(.85); opacity: .55; }
+.ctv__item.cfilm--available .poster { box-shadow: 0 0 0 3px var(--bulb), 0 10px 24px rgb(0 0 0 / .45); }
+.ctv__item .cfilm__badge { font-size: clamp(.6875rem, .75vw, .9rem); }
+/* the focused film: lifted, in full colour and ringed (with a dark halo) so it reads from the sofa */
+html.tv .ctv__film:focus-visible, .ctv__film:focus { outline: none; box-shadow: none; }
+.ctv__film:focus .ctv__art { transform: scale(1.12); }
+.ctv__film:focus .poster {
+  opacity: 1; filter: none;
+  box-shadow: 0 0 0 5px var(--paper), 0 0 0 11px rgb(0 0 0 / .55), 0 18px 40px rgb(0 0 0 / .6);
+}
+.ctv__item.cfilm--available .ctv__film:focus .poster { box-shadow: 0 0 0 5px var(--bulb), 0 0 0 11px rgb(0 0 0 / .55), 0 18px 40px rgb(0 0 0 / .6); }
+.ctv__hint {
+  position: absolute; right: 5vw; top: 3vh; display: flex; align-items: center; gap: 8px;
+  color: var(--muted); font-size: clamp(.875rem, 1vw, 1.25rem);
+}
+.ctv__dots { position: absolute; right: 2vw; top: 50%; translate: 0 -50%; display: grid; gap: 10px; z-index: 2; }
+.ctv__dots li { width: 8px; height: 8px; border-radius: 50%; background: rgb(244 238 227 / .28); transition: height .25s var(--ease), background .25s; }
+.ctv__dots li.is-current { height: 26px; border-radius: 999px; background: var(--bulb); }
+.ctv__empty { padding-top: 20vh; }
+
+/* Down slides the next saga in from below; Up, the previous one from above */
+.ctv__screen.is-entering-up { animation: ctv-in-up .55s var(--ease) both; }
+.ctv__screen.is-entering-down { animation: ctv-in-down .55s var(--ease) both; }
+.ctv__screen.is-leaving-up { animation: ctv-out-up .45s var(--ease) both; pointer-events: none; }
+.ctv__screen.is-leaving-down { animation: ctv-out-down .45s var(--ease) both; pointer-events: none; }
+@keyframes ctv-in-up { from { opacity: 0; translate: 0 12vh; } }
+@keyframes ctv-in-down { from { opacity: 0; translate: 0 -12vh; } }
+@keyframes ctv-out-up { to { opacity: 0; translate: 0 -12vh; } }
+@keyframes ctv-out-down { to { opacity: 0; translate: 0 12vh; } }
+@media (prefers-reduced-motion: reduce) {
+  .ctv__art, .ctv__dots li { transition: none; }
+  .ctv__film:focus .ctv__art { transform: none; }
+}

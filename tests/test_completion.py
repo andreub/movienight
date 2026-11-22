@@ -1,7 +1,7 @@
 """Completionist: TMDB data, the discovery sync (collections, franchise searches, series keywords), group building
 (franchise merge, series keywords, dedupe), film states, ranking and hide/unhide. Synthetic data only."""
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -93,7 +93,7 @@ def test_compact_collection_sorts_and_drops_unreleased():
     c = tmdb.compact_collection(raw, today="2026-11-22")
     assert [p["id"] for p in c["parts"]] == [1, 2]
     assert c["parts"][0] == {"id": 1, "title": "One", "year": 2005, "release_date": "2005-01-01", "poster_path": None,
-                             "vote_count": 10, "vote_average": 7.5}
+                             "backdrop_path": None, "vote_count": 10, "vote_average": 7.5}
 
 
 def test_migrations_12_13_tables(cfg):
@@ -257,11 +257,18 @@ async def test_no_lookups_for_an_ordinary_filmography(tmp_path):
 
 # ---------------------------------------------------------------- groups
 
-def test_groups_discovered_dedupe_and_ranking(cc):
+def test_groups_discovered_dedupe_and_ranking(cc, monkeypatch):
+    monkeypatch.setattr(completion, "_today", lambda: date(2026, 11, 22))
     r = cc.get("/api/completions").json()
     keys = [g["key"] for g in r["groups"]]
-    # groups with films in the library first, then by share seen: series 1/3, Alpha 1/4, franchise 1/6
-    assert keys == ["series-5001", "collection-900", "franchise-web-slinger", "collection-960"]
+    # score: the long saga has unseen films from 2025-26 (recency wins); Alpha's seen film is rated 4.5 against a
+    # 3.5 mean; the series' 4.0; the franchise's seen film is rated 2.0, so it drops below the rest
+    assert keys == ["collection-960", "collection-900", "series-5001", "franchise-web-slinger"]
+    by = {g["key"]: g for g in r["groups"]}
+    assert [by[k]["reason"] for k in keys] == ["New · 2026", "You rated ★4.5", "In your library",
+                                               "In your library"]
+    assert by["collection-960"]["score"] > by["collection-900"]["score"] > by["series-5001"]["score"] > \
+        by["franchise-web-slinger"]["score"]
     assert [g["key"] for g in r["completed"]] == ["collection-970"]
     gone = {"collection-910", "collection-920", "collection-925",        # absorbed by the franchise
             "collection-921", "collection-922",                          # not started (and never merged)
@@ -334,3 +341,96 @@ def test_no_groups_for_a_filmography_without_sagas(client):
     """Seeded films share a director, an actor and keywords, but no collection or series keyword: no groups."""
     r = client.get("/api/completions").json()
     assert [g["key"] for g in r["groups"] + r["completed"]] == []
+
+
+# ---------------------------------------------------------------- ranking
+
+def _g(films, available=0):
+    return {"films": films, "seen": sum(f["state"] == "seen" for f in films), "total": len(films),
+            "available": available}
+
+
+def _f(tid, state, when):
+    return {"tmdb_id": tid, "state": state, "release_date": when, "year": int(when[:4])}
+
+
+TODAY = date(2026, 11, 22)
+
+
+def test_recency_full_then_fading():
+    def rec(when, state="missing"):
+        return completion.recency([_f(1, state, when)], TODAY)[0]
+    assert rec("2026-03-01") == rec("2025-06-01") == 1.0            # within ~18 months
+    assert 0 < rec("2022-06-01") < rec("2023-06-01") < 1             # fading
+    assert rec("2021-06-01") == 0.0                                  # past ~5 years
+    assert rec("2026-03-01", "seen") == 0.0                          # only unseen films count
+    assert rec("2027-01-01") == 0.0                                  # unreleased
+
+
+def test_taste_shrinks_few_ratings_towards_the_mean():
+    mu = 3.5
+    assert completion.taste([], mu) == 0.0
+    assert completion.taste([3.5, 3.5, 3.5], mu) == 0.0
+    one_five, three = completion.taste([5.0], mu), completion.taste([4.6, 4.6, 4.6], mu)
+    assert 0 < one_five < three                                      # one 5-star film says less than three at 4.6
+    assert completion.taste([5.0] * 50, mu) == 1.0                   # capped
+    assert completion.taste([1.0], mu) < 0                           # disliked
+
+
+def test_score_ordering_and_reasons():
+    mu = 3.5
+    ratings = {1: (4.5, True), 2: (4.5, True), 3: (2.0, True), 4: (4.0, False)}
+    groups = {
+        "new": _g([_f(3, "seen", "2015-01-01"), _f(10, "missing", "2026-05-01")]),          # disliked, but new
+        "loved": _g([_f(1, "seen", "2010-01-01"), _f(2, "seen", "2012-01-01"), _f(11, "missing", "2014-01-01")]),
+        "library": _g([_f(5, "seen", "2010-01-01"), _f(12, "available", "2012-01-01")], available=1),
+        "voted": _g([_f(4, "seen", "2010-01-01"), _f(13, "missing", "2012-01-01")]),
+        "plain": _g([_f(6, "seen", "2010-01-01"), _f(14, "missing", "2012-01-01"), _f(15, "missing", "2013-01-01")]),
+    }
+    scored = {k: completion.score(g, ratings, mu, TODAY) for k, g in groups.items()}
+    assert sorted(scored, key=lambda k: -scored[k][0]) == ["new", "loved", "library", "voted", "plain"]
+    assert scored["new"][1] == "New · 2026"
+    assert scored["loved"][1] == "You rated ★4.5"
+    assert scored["library"][1] == "In your library"
+    assert scored["plain"][1] is None
+    # an app vote stands in for a missing rating, but never shows as stars
+    votes_only = _g([_f(4, "seen", "2010-01-01"), _f(7, "seen", "2011-01-01"), _f(16, "missing", "2012-01-01")])
+    assert completion.score(votes_only, {4: (5.0, False), 7: (5.0, False)}, mu, TODAY)[1] == "You liked these"
+
+
+def test_user_ratings_prefers_letterboxd_over_votes(client):
+    st = client.app.state.engine.get()
+    ratings, mu = completion.user_ratings(st)
+    assert ratings[101] == (4.5, True) and ratings[202] == (2.0, True)
+    assert mu == pytest.approx(3.5)
+    c = next(c for c in st.cands if c.tmdb_id == 116)
+    c.vote = 2
+    assert completion.user_ratings(st)[0][116] == (4.5, False)
+
+
+def test_cards_carry_a_hero_backdrop(cc):
+    g = next(g for g in cc.get("/api/completions").json()["groups"] if g["key"] == "collection-900")
+    # parts carry no backdrop here: the next film (111, in the library) falls back to its cached TMDB details
+    assert g["backdrop_url"].endswith("/b111.jpg")
+    assert g["films"][1]["backdrop_url"].endswith("/b111.jpg") and g["films"][2]["backdrop_url"] is None
+
+
+async def test_collection_parts_without_backdrop_refetched_once(tmp_path):
+    cfg = _cfg(tmp_path)
+    fresh = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with db.session(cfg.db_path) as c:
+        c.execute("INSERT INTO lb_films(name,year,norm_title,tmdb_id,resolve_state,watched) VALUES('F1',2000,'f1',1,1,1)")
+        c.execute("INSERT INTO tmdb_details(tmdb_id,json,fetched_at) VALUES(1,?,'x')", (json.dumps(
+            {"id": 1, "release_date": "2000-01-01", "collection": {"id": 77, "name": "Gone Collection"},
+             "keyword_ids": []}),))
+        c.execute("INSERT INTO tmdb_collections(collection_id,json,fetched_at) VALUES(77,?,?)", (json.dumps(
+            {"id": 77, "name": "C", "parts": [{"id": 1, "title": "A", "release_date": "2000-01-01"}]}), fresh))
+
+    def handler(request):
+        assert request.url.path == "/3/collection/77"
+        return httpx.Response(200, json={"id": 77, "name": "C", "parts": [
+            {"id": 1, "title": "A", "release_date": "2000-01-01", "backdrop_path": None}]})
+
+    run = _runner(cfg, handler)
+    assert await run() == ["/3/collection/77"]           # stored before parts carried backdrop_path
+    assert await run() == []                             # a null backdrop is stored: no refetch loop

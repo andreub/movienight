@@ -506,8 +506,10 @@ class SyncManager:
         def cutoff(days):
             return (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+        # parts stored before they carried backdrop_path count as stale (once: a refetch stores the key, even null)
         fresh_lookups = {r[0] for r in conn.execute(
-            "SELECT key FROM tmdb_lookups WHERE fetched_at IS NOT NULL AND fetched_at >= ?",
+            "SELECT key FROM tmdb_lookups WHERE fetched_at IS NOT NULL AND fetched_at >= ?"
+            " AND NOT (key LIKE 'keyword:%' AND " + completion.STALE_PARTS_SQL + ")",
             (cutoff(completion.LOOKUP_TTL_DAYS),))}
 
         def store(key, value):
@@ -523,8 +525,8 @@ class SyncManager:
                                 lambda s, hits: store(completion.search_key(s), hits or []))
 
         fresh = {r[0] for r in conn.execute(
-            "SELECT collection_id FROM tmdb_collections WHERE fetched_at IS NOT NULL AND fetched_at >= ?",
-            (cutoff(completion.COLLECTION_TTL_DAYS),))}
+            "SELECT collection_id FROM tmdb_collections WHERE fetched_at IS NOT NULL AND fetched_at >= ?"
+            " AND NOT " + completion.STALE_PARTS_SQL, (cutoff(completion.COLLECTION_TTL_DAYS),))}
         ids = [c for c in completion.wanted_collections(conn, seen) if c not in fresh]
 
         def done(cid, coll):

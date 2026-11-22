@@ -20,6 +20,7 @@ import json
 import math
 import re
 import sqlite3
+from datetime import date, datetime, timezone
 
 from . import library, tmdb
 
@@ -37,6 +38,18 @@ SERIES_MIN_VOTES = 20      # drops shorts and fan films tagged with a series key
 # voted film must reach this share of the bigger one's (keeps animated spin-offs and TV films out)
 STEM_TITLE_SHARE = 2 / 3
 FRANCHISE_MIN_POPULARITY = 0.15
+# cached parts stored before they carried backdrop_path (refetched once; the refetch stores the key, even as null)
+STALE_PARTS_SQL = ("(COALESCE(json_array_length(json,'$.parts'),0) > 0"
+                   " AND json_type(json,'$.parts[0].backdrop_path') IS NULL)")
+
+# ranking: score = W_RECENT*recency + W_TASTE*taste + W_LIBRARY*library + W_PROGRESS*progress, each part in [0, 1]
+# (taste in [-1, 1])
+W_RECENT, W_TASTE, W_LIBRARY, W_PROGRESS = 3.0, 1.5, 0.75, 0.5
+RECENT_FULL_DAYS = 548       # ~18 months: an unseen film released since then earns the full recency bonus
+RECENT_ZERO_DAYS = 1826      # ~5 years: the bonus has faded linearly to 0
+TASTE_PRIOR = 2.0            # shrinkage: the user's overall mean counts as this many extra rated films
+TASTE_SPAN = 1.0             # a shrunk mean this many stars above the overall mean is the full taste bonus
+VOTE_AS_RATING = {-1: -1.5, 1: 0.5, 2: 1.0}     # an app vote (no rating), as stars relative to the overall mean
 
 
 def kind_of(key: str) -> str | None:
@@ -168,6 +181,7 @@ def _available(st) -> dict:
 def _film(p: dict) -> dict:
     return {"tmdb_id": p["id"], "title": p.get("title") or "", "year": p.get("year"),
             "release_date": p.get("release_date") or "", "poster_path": p.get("poster_path"),
+            "backdrop_path": p.get("backdrop_path"),
             "vote_count": p.get("vote_count") or 0, "vote_average": p.get("vote_average")}
 
 
@@ -252,7 +266,7 @@ def _raw_groups(conn: sqlite3.Connection, seen: set[int]) -> list[dict]:
     for cid, c in colls.items():
         if cid not in absorbed:
             groups.append({"key": f"collection-{cid}", "kind": "collection", "name": _clean_name(c.get("name")),
-                           "films": [_film(p) for p in c["parts"]]})
+                           "films": [_film(p) for p in c["parts"]], "backdrop_path": c.get("backdrop_path")})
 
     # series keywords: skipped when a saga already holds those films; a saga they contain gives way to them
     series: list[dict] = []
@@ -288,23 +302,32 @@ def ranked_unseen(films: list[dict]) -> list[dict]:
             + sorted((f for f in films if f["state"] == "missing"), key=lambda f: -_relevance(f)))
 
 
-def _decorate(g: dict, seen: set[int], avail: dict) -> dict:
+def _decorate(g: dict, seen: set[int], avail: dict, backdrops: dict[int, str] | None = None) -> dict:
+    backdrops = backdrops or {}
     films = []
     for f in g["films"]:
         c = avail.get(f["tmdb_id"])
         state = "seen" if f["tmdb_id"] in seen else "available" if c is not None else "missing"
         out = {k: f[k] for k in ("tmdb_id", "title", "year", "vote_count", "vote_average")}
+        out["release_date"] = f.get("release_date") or ""
         out["state"] = state
         out["poster_url"] = tmdb.poster_url(f.get("poster_path"))
+        out["backdrop_url"] = tmdb.backdrop_url(f.get("backdrop_path") or backdrops.get(f["tmdb_id"]))
         if c is not None:
             out["movie_id"] = c.id
             out["match"] = c.match
             out["poster_url"] = out["poster_url"] or library.poster_of(c)
+            out["backdrop_url"] = out["backdrop_url"] or library.backdrop_of(c)
         films.append(out)
     n_seen = sum(f["state"] == "seen" for f in films)
     avail_films = [f for f in films if f["state"] == "available"]
     votes = [f["vote_average"] for f in films if f.get("vote_average")]
     nxt = avail_films[0] if avail_films else None
+    # the film to watch next: the earliest unseen one (in the library first); its backdrop is the TV hero's
+    unseen = [f for f in films if f["state"] != "seen"]
+    up = nxt or (unseen[0] if unseen else None)
+    hero = next((f["backdrop_url"] for f in ([up] if up else []) + unseen + films if f["backdrop_url"]),
+                None) or tmdb.backdrop_url(g.get("backdrop_path"))
     return {
         "key": g["key"], "kind": g["kind"], "name": g["name"],
         "seen": n_seen, "total": len(films), "available": len(avail_films),
@@ -314,22 +337,114 @@ def _decorate(g: dict, seen: set[int], avail: dict) -> dict:
         # included, so the client can show where the gaps fall. Unordered groups list unseen films first, ranked.
         "ordered": True,
         "next": {k: nxt[k] for k in ("movie_id", "title", "year")} if nxt else None,
+        "backdrop_url": hero,
         "films": films,
         "_mean": sum(votes) / len(votes) if votes else 0.0,
     }
 
 
-def _rank(g: dict) -> tuple:
-    return (0 if g["available"] else 1, -g["seen"] / g["total"], g["missing"], -g["_mean"], g["name"].lower())
+# --------------------------------------------------------------------------- ranking
+
+def _today() -> date:
+    return datetime.now(timezone.utc).date()
+
+
+def _date(s: str | None) -> date | None:
+    try:
+        return date.fromisoformat((s or "")[:10])
+    except ValueError:
+        return None
+
+
+def user_ratings(st) -> tuple[dict[int, tuple[float, bool]], float]:
+    """tmdb id -> (stars, is a real rating), and the user's overall mean rating. A Letterboxd rating wins; a film
+    with only an app vote gets the overall mean shifted by VOTE_AS_RATING."""
+    mu = st.profile.mean_rating or 3.0
+    out: dict[int, tuple[float, bool]] = {}
+    for h in st.history:
+        if h.tmdb_id and h.rating is not None and not h.synthetic:
+            out[h.tmdb_id] = (float(h.rating), True)
+    for c in st.cands:
+        if not c.tmdb_id or c.tmdb_id in out:
+            continue
+        if c.my_rating is not None:
+            out[c.tmdb_id] = (float(c.my_rating), True)
+        elif c.vote in VOTE_AS_RATING:
+            out[c.tmdb_id] = (min(5.0, max(0.5, mu + VOTE_AS_RATING[c.vote])), False)
+    return out, mu
+
+
+def recency(films: list[dict], today: date) -> tuple[float, dict | None]:
+    """1 when an unseen, released film came out in the last ~18 months, fading linearly to 0 at ~5 years; and
+    that film (the newest one)."""
+    best, newest, film = 0.0, None, None
+    for f in films:
+        d = _date(f.get("release_date"))
+        if f["state"] == "seen" or d is None or d > today:
+            continue
+        age = (today - d).days
+        r = 1.0 if age <= RECENT_FULL_DAYS else max(0.0, (RECENT_ZERO_DAYS - age) / (RECENT_ZERO_DAYS - RECENT_FULL_DAYS))
+        if r > 0 and (newest is None or d > newest):
+            best, newest, film = r, d, f
+    return best, film
+
+
+def taste(stars: list[float], mu: float) -> float:
+    """The user's ratings of a group's seen films against their overall mean `mu`, in [-1, 1]. The mean is shrunk
+    towards `mu` as if TASTE_PRIOR more films had been rated at `mu`, so one rated film says little."""
+    if not stars:
+        return 0.0
+    shrunk = (sum(stars) + TASTE_PRIOR * mu) / (len(stars) + TASTE_PRIOR)
+    return max(-1.0, min(1.0, (shrunk - mu) / TASTE_SPAN))
+
+
+def _stars(x: float) -> str:
+    return "★" + f"{x:.1f}".rstrip("0").rstrip(".")
+
+
+def score(g: dict, ratings: dict[int, tuple[float, bool]], mu: float, today: date) -> tuple[float, str | None]:
+    """The group's rank score and a short "why" for the card. Recency weighs most, then taste, then a film in the
+    library, then the share seen."""
+    rec, recent = recency(g["films"], today)
+    rated = [ratings[f["tmdb_id"]] for f in g["films"] if f["state"] == "seen" and f["tmdb_id"] in ratings]
+    t = taste([r for r, _ in rated], mu)
+    lib = 1.0 if g["available"] else 0.0
+    progress = g["seen"] / g["total"] if g["total"] else 0.0
+    total = W_RECENT * rec + W_TASTE * t + W_LIBRARY * lib + W_PROGRESS * progress
+    real = [r for r, is_real in rated if is_real]
+    if recent is not None:
+        fresh = (today - _date(recent["release_date"])).days <= RECENT_FULL_DAYS
+        reason = f"{'New' if fresh else 'Recent'} · {recent['year'] or recent['release_date'][:4]}"
+    elif t >= 0.25:
+        reason = f"You rated {_stars(sum(real) / len(real))}" if real else "You liked these"
+    elif lib:
+        reason = "In your library"
+    elif progress >= 0.5:
+        reason = "Almost done"
+    else:
+        reason = None
+    return round(total, 3), reason
 
 
 def build(st, conn: sqlite3.Connection) -> list[dict]:
-    """Every started group, ranked; cached on the state (rebuilt whenever the state is)."""
+    """Every started group, ranked by score (best first); cached on the state (rebuilt whenever the state is)."""
     if "completion" in st.cache:
         return st.cache["completion"]
     seen = _seen(st)
     avail = _available(st)
-    out = sorted((_decorate(g, seen, avail) for g in _raw_groups(conn, seen)), key=_rank)
+    raw = _raw_groups(conn, seen)
+    need = {f["tmdb_id"] for g in raw for f in g["films"] if not f.get("backdrop_path")}
+    backdrops = {r[0]: r[1] for r in conn.execute(
+        "SELECT tmdb_id, json_extract(json,'$.backdrop_path') FROM tmdb_details"
+        " WHERE json_extract(json,'$.backdrop_path') IS NOT NULL") if r[0] in need} if need else {}
+    ratings, mu = user_ratings(st)
+    today = _today()
+    out = []
+    for g in raw:
+        d = _decorate(g, seen, avail, backdrops)
+        d["score"], d["reason"] = score(d, ratings, mu, today)
+        out.append(d)
+    out.sort(key=lambda g: (-g["score"], g["name"].lower()))
     st.cache["completion"] = out
     return out
 

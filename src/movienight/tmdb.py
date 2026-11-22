@@ -144,8 +144,8 @@ def compact_collection(raw: dict, today: str | None = None) -> dict:
             continue
         parts.append({"id": p["id"], "title": p.get("title") or p.get("original_title") or "",
                       "year": int(date[:4]) if date[:4].isdigit() else None, "release_date": date,
-                      "poster_path": p.get("poster_path"), "vote_count": p.get("vote_count") or 0,
-                      "vote_average": p.get("vote_average")})
+                      "poster_path": p.get("poster_path"), "backdrop_path": p.get("backdrop_path"),
+                      "vote_count": p.get("vote_count") or 0, "vote_average": p.get("vote_average")})
     parts.sort(key=lambda p: (p["release_date"], p["id"]))
     return {"id": raw.get("id"), "name": raw.get("name") or "", "poster_path": raw.get("poster_path"),
             "backdrop_path": raw.get("backdrop_path"), "parts": parts}

@@ -245,18 +245,18 @@ const SAGA_TITLES = ['Dawn', 'Ember', 'The Long Night', 'Ashfall', 'Crown of Sal
   'Duskmantle', 'The Second Sun', 'Highwatch', 'Homecoming'];
 const SAGA_STATES = 'ssssssssssss' + 'm' + 'sssssss' + 'a' + 'sssss' + 'm' + 'a' + 'mm'; // 30: a few gaps late in the saga
 const COMPLETIONS = [
-  { key: 'collection-9100', kind: 'collection', name: 'The Long Night Chronicles',
+  { key: 'collection-9100', kind: 'collection', name: 'The Long Night Chronicles', score: 1.9, reason: 'You rated \u26054.4',
     films: SAGA_TITLES.map((t, i) => [`The Long Night: ${t}`, 1988 + i, SAGA_STATES[i], 4000 + ((i * 3719) % 9000)]) },
-  { key: 'franchise-spider-man', kind: 'franchise', name: 'Spider-Man', films: [
+  { key: 'franchise-spider-man', kind: 'franchise', name: 'Spider-Man', score: 4.1, reason: 'New \u00b7 2026', films: [
     ['Spider-Man', 2002, 's', 19000], ['Spider-Man 2', 2004, 's', 15000], ['Spider-Man 3', 2007, 'a', 14000], ['The Amazing Spider-Man', 2012, 'm', 18000],
     ['The Amazing Spider-Man 2', 2014, 'm', 13000], ['Spider-Man: Homecoming', 2017, 's', 21000], ['Spider-Man: Into the Spider-Verse', 2018, 's', 16000],
     ['Spider-Man: Far From Home', 2019, 'm', 16000], ['Spider-Man: No Way Home', 2021, 's', 20000], ['Spider-Man: Across the Spider-Verse', 2023, 'a', 7000],
     ['Spider-Man: Brand New Day', 2026, 'm', 900]] },
-  { key: 'series-357318', kind: 'series', name: 'Cornetto Trilogy', films: [
+  { key: 'series-357318', kind: 'series', name: 'Cornetto Trilogy', score: 2.3, reason: 'You rated \u26054.5', films: [
     ['Shaun of the Dead', 2004, 's', 8000], ['Hot Fuzz', 2007, 's', 7600], ['The World’s End', 2013, 'a', 4300]] },
-  { key: 'collection-53159', kind: 'collection', name: 'Before', films: [
+  { key: 'collection-53159', kind: 'collection', name: 'Before', score: 0.9, reason: 'In your library', films: [
     ['Before Sunrise', 1995, 's', 4200], ['Before Sunset', 2004, 'a', 3400], ['Before Midnight', 2013, 'm', 2800]] },
-  { key: 'collection-2344', kind: 'collection', name: 'The Matrix', films: [
+  { key: 'collection-2344', kind: 'collection', name: 'The Matrix', score: 0.6, reason: 'Recent \u00b7 2021', films: [
     ['The Matrix', 1999, 's', 26000], ['The Matrix Reloaded', 2003, 's', 11000], ['The Matrix Revolutions', 2003, 'm', 9800], ['The Matrix Resurrections', 2021, 'm', 6200]] },
   { key: 'collection-263', kind: 'collection', name: 'The Dark Knight', films: [
     ['Batman Begins', 2005, 's', 21000], ['The Dark Knight', 2008, 's', 33000], ['The Dark Knight Rises', 2012, 's', 23000]] },
@@ -270,7 +270,7 @@ const completionMovies = [];
 let nextSagaId = 800;
 for (const g of COMPLETIONS) {
   g.films = g.films.map(([title, year, st, votes], i) => {
-    const f = { tmdb_id: 90000 + nextSagaId, title, year, state: { s: 'seen', a: 'available', m: 'missing' }[st], vote_count: votes, vote_average: 6.4 + ((i * 7) % 20) / 10, poster_url: null };
+    const f = { tmdb_id: 90000 + nextSagaId, title, year, release_date: `${year}-06-01`, backdrop_url: null, state: { s: 'seen', a: 'available', m: 'missing' }[st], vote_count: votes, vote_average: 6.4 + ((i * 7) % 20) / 10, poster_url: null };
     if (f.state === 'available') {
       f.movie_id = nextSagaId;
       completionMovies.push({ ...movies[1], id: nextSagaId, title, original_title: title, year, tmdb_id: f.tmdb_id, genres: ['Adventure'], directors: ['Saga Director'],
@@ -287,12 +287,12 @@ function completionGroup(g) {
   const next = avail[0];
   return { key: g.key, kind: g.kind, name: g.name, seen, total: films.length, available: avail.length,
     missing: films.filter((f) => f.state === 'missing').length, complete: seen === films.length, ordered: true,
-    next: next ? { movie_id: next.movie_id, title: next.title, year: next.year } : null, films, hidden: hiddenGroups.has(g.key) };
+    next: next ? { movie_id: next.movie_id, title: next.title, year: next.year } : null, films, hidden: hiddenGroups.has(g.key),
+    score: g.score ?? 0, reason: g.reason ?? null, backdrop_url: null };
 }
 function completions(p) {
   const all = FRESH ? [] : COMPLETIONS.map(completionGroup);
-  const rank = (g) => [g.available ? 0 : 1, -g.seen / g.total, g.missing];
-  all.sort((a, b) => { const x = rank(a), y = rank(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; });
+  all.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
   const visible = all.filter((g) => !g.hidden);
   const pick = (g) => !p.kind || g.kind === p.kind;
   const counts = { collection: 0, franchise: 0, series: 0 };

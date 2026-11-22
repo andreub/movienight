@@ -8,6 +8,8 @@
 import { api } from '../api.js';
 import { go } from '../state.js';
 import { h, fill, icon, poster, errorBox, toast, announce, quoted } from '../dom.js';
+import { TV } from '../tvnav.js';
+import { mountTv } from './completetv.js';
 
 export const title = 'Complete';
 
@@ -96,6 +98,7 @@ function listLayout(films, cap, all) {
 const rowsFor = (cols, ordered) => (ordered || cols >= 6 ? 3 : 2);
 
 export function mount(root) {
+  if (TV) return mountTv(root); // the Android TV app: one saga per screen (completetv.js)
   let kind = null;
   let alive = true;
   let token = 0;
@@ -114,7 +117,7 @@ export function mount(root) {
   root.append(h('div', { class: 'complete' },
     h('div', { class: 'complete__top' },
       h('h1', { class: 'page-title', text: 'Complete' }),
-      h('p', { class: 'lede', text: 'Sagas, franchises and series you have started. The ones you can finish from your library come first.' }),
+      h('p', { class: 'lede', text: 'Sagas, franchises and series you have started. New releases and the ones you rated highest come first.' }),
       h('div', { class: 'chips chips--scroll complete__kinds', role: 'group', 'aria-label': 'Kind of group' }, chips)),
     status, list, folds));
 
@@ -166,6 +169,7 @@ export function mount(root) {
     const li = h('li', { class: 'cgroup', 'data-key': g.key },
       h('div', { class: 'cgroup__head' },
         h('h2', { class: 'cgroup__name', text: g.name }),
+        g.reason ? h('span', { class: 'cgroup__why', text: g.reason }) : null,
         h('button', { type: 'button', class: 'cgroup__hide', 'aria-label': `Hide ${g.name}`, title: 'Hide', onclick: () => hide(g, li) }, icon('close'))),
       progress(g),
       grid,

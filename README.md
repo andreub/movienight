@@ -84,19 +84,31 @@ Nothing is hand-written: groups are discovered from your own data and the TMDB c
 - **Cards**: posters fill the card's width. A saga shows every film in release order, seen ones
   dimmed with a ✓, so you see where the gaps are. When it doesn't fit in about three rows, runs of
   seen films fold into a "✓ 7 seen" tile (tap to open it). Unseen films and their neighbours always
-  stay visible, and "Show all" appears only if the card still overflows. Groups you can finish from
-  the library come first, then by share seen, fewest missing and mean TMDB rating. Finished groups
-  and hidden ones (the × on a card, with undo) stay folded at the bottom.
+  stay visible, and "Show all" appears only if the card still overflows. Finished groups and hidden
+  ones (the × on a card, with undo) stay folded at the bottom.
+- **Order**: each group gets a score, and one quiet hint on its card says why ("New · 2026",
+  "You rated ★4.4", "In your library").
+  `score = 3 × recency + 1.5 × taste + 0.75 × library + 0.5 × share seen`.
+  - *Recency* is 1 when an unseen film came out in the last 18 months, fading to 0 at 5 years.
+  - *Taste* compares your ratings of the group's seen films (Letterboxd; an app vote when there is
+    no rating) with your overall mean. The mean is shrunk towards your overall mean as if two more
+    films had been rated at it, so a single rating counts for little.
+  - *Library* is 1 when an unseen film is playable now.
+- **Android TV**: in the TV app the tab shows one group per screen, in the look of Tonight: the
+  backdrop of the next film to watch, the name, progress, the hint and the whole saga as a poster
+  row. Left and right move through the films, OK opens one, down and up go to the next and previous
+  group. Browsers keep the cards.
 - **Data**: the TMDB sync stores each film's collection, keyword ids and director/cast ids with its
   details (details stored before these fields existed are backfilled once). It then caches, for 30
   days:
   - the collection searches (`tmdb_lookups`);
-  - the collections (`tmdb_collections`);
+  - the collections (`tmdb_collections`), with each film's backdrop (collections cached before
+    backdrops were kept are refetched once);
   - the films of each series keyword (`tmdb_lookups`).
 - **API**:
   - `GET /api/completions?kind=collection|franchise|series&hidden=true` returns the groups with
     `films` (the whole group in release order, each with its `state`), `ordered`, `seen`, `total`,
-    `available` and `next`.
+    `available`, `next`, `score`, `reason` and `backdrop_url`, best score first.
   - `GET /api/completions/{key}` returns one group.
   - `POST` and `DELETE /api/completions/{key}/hide` hide and unhide a group.
   - Keys look like `collection-556`, `franchise-spider-man` and `series-357318`.
