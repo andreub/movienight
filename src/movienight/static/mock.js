@@ -236,6 +236,79 @@ function feedback() {
   };
 }
 
+// ---- completionist (GET /api/completions): a 30-film saga, the Spider-Man franchise, two curated trilogies,
+// smaller sagas, finished ones and a hidden one. Films marked 'a' are in the library (they open the detail sheet).
+const SAGA_TITLES = ['Dawn', 'Ember', 'The Long Night', 'Ashfall', 'Crown of Salt', 'Iron Tide', 'The Hollow King', 'Starfall', 'Ravenmoor',
+  'The Glass Road', 'Thornwood', 'Winterhold', 'The Drowned Bell', 'Sunspear', 'Ninefold', 'The Pale Gate', 'Brightwater', 'Ironbark',
+  'The Last Lantern', 'Stormcrow', 'The Quiet Sea', 'Gloamreach', 'The Ninth Banner', 'Silverfall', 'Embermoor', 'The Wandering Keep',
+  'Duskmantle', 'The Second Sun', 'Highwatch', 'Homecoming'];
+const COMPLETIONS = [
+  { key: 'collection-9100', kind: 'collection', name: 'The Long Night Chronicles',
+    films: SAGA_TITLES.map((t, i) => [`The Long Night: ${t}`, 1988 + i, i < 7 ? 's' : [8, 12, 17].includes(i) ? 'a' : 'm', 4000 + ((i * 3719) % 9000)]) },
+  { key: 'franchise-spider-man', kind: 'franchise', name: 'Spider-Man', films: [
+    ['Spider-Man', 2002, 's', 19000], ['Spider-Man 2', 2004, 's', 15000], ['Spider-Man 3', 2007, 'a', 14000], ['The Amazing Spider-Man', 2012, 'm', 18000],
+    ['The Amazing Spider-Man 2', 2014, 'm', 13000], ['Spider-Man: Homecoming', 2017, 's', 21000], ['Spider-Man: Into the Spider-Verse', 2018, 's', 16000],
+    ['Spider-Man: Far From Home', 2019, 'm', 16000], ['Spider-Man: No Way Home', 2021, 'm', 20000], ['Spider-Man: Across the Spider-Verse', 2023, 'a', 7000],
+    ['Spider-Man: Brand New Day', 2026, 'm', 900]] },
+  { key: 'curated-cornetto', kind: 'curated', name: 'Three Flavours Cornetto', films: [
+    ['Shaun of the Dead', 2004, 's', 8000], ['Hot Fuzz', 2007, 's', 7600], ['The World’s End', 2013, 'a', 4300]] },
+  { key: 'curated-vengeance', kind: 'curated', name: 'The Vengeance Trilogy', films: [
+    ['Sympathy for Mr. Vengeance', 2002, 'm', 1500], ['Oldboy', 2003, 's', 9000], ['Lady Vengeance', 2005, 'm', 1600]] },
+  { key: 'collection-53159', kind: 'collection', name: 'Before', films: [
+    ['Before Sunrise', 1995, 's', 4200], ['Before Sunset', 2004, 'a', 3400], ['Before Midnight', 2013, 'm', 2800]] },
+  { key: 'collection-2344', kind: 'collection', name: 'The Matrix', films: [
+    ['The Matrix', 1999, 's', 26000], ['The Matrix Reloaded', 2003, 's', 11000], ['The Matrix Revolutions', 2003, 'm', 9800], ['The Matrix Resurrections', 2021, 'm', 6200]] },
+  { key: 'collection-263', kind: 'collection', name: 'The Dark Knight', films: [
+    ['Batman Begins', 2005, 's', 21000], ['The Dark Knight', 2008, 's', 33000], ['The Dark Knight Rises', 2012, 's', 23000]] },
+  { key: 'collection-10194', kind: 'collection', name: 'Toy Story', films: [
+    ['Toy Story', 1995, 's', 18000], ['Toy Story 2', 1999, 's', 14000], ['Toy Story 3', 2010, 's', 15000], ['Toy Story 4', 2019, 's', 9800]] },
+  { key: 'collection-295', kind: 'collection', name: 'Pirates of the Caribbean', films: [
+    ['The Curse of the Black Pearl', 2003, 's', 21000], ['Dead Man’s Chest', 2006, 'm', 16000], ['At World’s End', 2007, 'm', 14000]] },
+];
+const hiddenGroups = new Set(FRESH ? [] : ['collection-295']);
+const completionMovies = [];
+let nextSagaId = 800;
+for (const g of COMPLETIONS) {
+  g.films = g.films.map(([title, year, st, votes], i) => {
+    const f = { tmdb_id: 90000 + nextSagaId, title, year, state: { s: 'seen', a: 'available', m: 'missing' }[st], vote_count: votes, vote_average: 6.4 + ((i * 7) % 20) / 10, poster_url: null };
+    if (f.state === 'available') {
+      f.movie_id = nextSagaId;
+      completionMovies.push({ ...movies[1], id: nextSagaId, title, original_title: title, year, tmdb_id: f.tmdb_id, genres: ['Adventure'], directors: ['Saga Director'],
+        cast: ['Lead Actor'], overview: `Part of ${g.name}.`, tagline: null, match: 70 - (i % 5) * 4, on_watchlist: false, reasons: [] });
+    }
+    nextSagaId += 1;
+    return f;
+  });
+}
+function completionGroup(g) {
+  const films = g.films.map((f) => (f.state === 'available' && seenSet.has(f.movie_id) ? { ...f, state: 'seen' } : f));
+  const avail = films.filter((f) => f.state === 'available');
+  const missing = films.filter((f) => f.state === 'missing').sort((a, b) => Math.log1p(b.vote_count) * b.vote_average - Math.log1p(a.vote_count) * a.vote_average);
+  const seen = films.filter((f) => f.state === 'seen').length;
+  const unseen = [...avail, ...missing];
+  const next = avail[0];
+  return { key: g.key, kind: g.kind, name: g.name, seen, total: films.length, available: avail.length, missing: missing.length, complete: seen === films.length,
+    next: next ? { movie_id: next.movie_id, title: next.title, year: next.year } : null, films_preview: unseen.slice(0, 5), more: Math.max(0, unseen.length - 5),
+    hidden: hiddenGroups.has(g.key), films };
+}
+function completions(p) {
+  const all = FRESH ? [] : COMPLETIONS.map(completionGroup);
+  const rank = (g) => [g.available ? 0 : 1, -g.seen / g.total, g.missing];
+  all.sort((a, b) => { const x = rank(a), y = rank(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; });
+  const strip = ({ films, ...g }) => g;
+  const visible = all.filter((g) => !g.hidden);
+  const pick = (g) => !p.kind || g.kind === p.kind;
+  const counts = { collection: 0, franchise: 0, curated: 0 };
+  for (const g of visible) counts[g.kind] += 1;
+  return {
+    groups: visible.filter((g) => pick(g) && !g.complete).map(strip),
+    completed: visible.filter((g) => pick(g) && g.complete).map(strip),
+    hidden: p.hidden ? all.filter((g) => g.hidden && pick(g)).map(strip) : [],
+    hidden_count: all.filter((g) => g.hidden).length,
+    counts,
+  };
+}
+
 const ok = (body, status = 200) => ({ status, body });
 const err = (status, detail) => ({ status, body: { detail } });
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -244,6 +317,16 @@ export async function handle(method, path, p, body) {
   await wait(path === '/api/status' ? 120 : 350 + Math.random() * 300);
   const route = `${method} ${path.replace(/\/\d+(?=\/|$)/g, '/:id').replace(/^(\/api\/plex\/servers\/)[^/]+$/, '$1:id')}`;
   const id = Number((path.match(/\/(\d+)(?:\/|$)/) || [])[1]);
+
+  const comp = path.match(/^\/api\/completions\/([a-z0-9-]+)(\/hide)?$/);
+  if (comp) {
+    const g = COMPLETIONS.find((x) => x.key === comp[1]);
+    if (!g || FRESH) return err(404, 'Group not found');
+    if (!comp[2] && method === 'GET') return ok(completionGroup(g));
+    if (comp[2] && method === 'POST') { hiddenGroups.add(g.key); return ok({ ok: true }); }
+    if (comp[2] && method === 'DELETE') { hiddenGroups.delete(g.key); return ok({ ok: true }); }
+  }
+  if (route === 'GET /api/completions') return ok(completions(p));
 
   switch (route) {
     case 'GET /api/status': {
@@ -293,7 +376,7 @@ export async function handle(method, path, p, body) {
       return ok({ pick: view(pick), alternatives: list.filter((m) => m !== pick).slice(0, 3).map(view) });
     }
     case 'GET /api/movies/:id': {
-      const m = movies.find((x) => x.id === id);
+      const m = movies.find((x) => x.id === id) || completionMovies.find((x) => x.id === id);
       if (!m) return err(404, 'Movie not found.');
       return ok({ ...view(m), keywords: ['neo-noir', 'night', 'los angeles', 'loneliness', 'heist'], because: because(m) });
     }
@@ -308,7 +391,7 @@ export async function handle(method, path, p, body) {
       if (body.vote) votes.set(id, body.vote); else votes.delete(id);
       return ok({ ok: true });
     case 'POST /api/movies/:id/seen':
-      if (!movies.some((x) => x.id === id) && !triage.some((x) => x.id === id)) return err(404, 'Movie not found.');
+      if (![...movies, ...triage, ...completionMovies].some((x) => x.id === id)) return err(404, 'Movie not found.');
       if (body.vote !== undefined && body.vote !== null && ![-1, 0, 1, 2].includes(body.vote)) return err(422, 'Invalid vote');
       if (body.seen) { if (!seenSet.has(id)) seenAt.set(id, Date.now()); seenSet.add(id); } else { seenSet.delete(id); seenAt.delete(id); }
       if (body.vote !== undefined && body.vote !== null) { if (body.vote) votes.set(id, body.vote); else votes.delete(id); }

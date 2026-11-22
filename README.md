@@ -58,6 +58,30 @@ the ones I tagged X".
 
 The RSS feed carries no tags, so new tags arrive with the next export.
 
+## Completionist
+
+The **Complete** tab lists the sagas and trilogies you have started (at least one film seen), with
+your progress ("4 of 9 seen") and what is left. Each film is **seen** (Letterboxd, played on the media
+server, or marked seen here), **available** (in the library and unwatched: tap it to open the film)
+or **missing** (not in the library, greyed out).
+
+- **Groups**: TMDB collections (sagas); **franchises**, several collections merged into one group
+  (Spider-Man = the Raimi, Amazing, MCU and Spider-Verse collections); and **curated** groups, plain
+  lists of TMDB ids for sagas TMDB does not have (the Three Flavours Cornetto and the Vengeance
+  trilogy). Both live in `src/movienight/data/completion_groups.json`. A collection that belongs to a
+  franchise only shows inside it; a curated group replaces a collection with the same films.
+- **Cards**: at most five unseen films each, those in the library first (saga order), then missing
+  ones by popularity × rating; "+N more · show all" opens the full list. Groups you can finish from
+  the library come first, then by share seen, fewest missing and mean TMDB rating. Finished groups
+  and hidden ones (the × on a card, with undo) stay folded at the bottom.
+- **Data**: the TMDB sync stores each film's collection (and director/cast ids) with its details,
+  then fetches the collections of seen films (plus franchise siblings) into `tmdb_collections`,
+  refreshed every 30 days. Details stored before this existed are backfilled once.
+- **API**: `GET /api/completions?kind=collection|franchise|curated&hidden=true` (groups with
+  `films_preview`, `more`, `seen`/`total`/`available`/`next`), `GET /api/completions/{key}` (every
+  film), `POST`/`DELETE /api/completions/{key}/hide`. Keys: `collection-556`,
+  `franchise-spider-man`, `curated-cornetto`.
+
 ## Quick start (Docker)
 
 ```sh

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from . import jellyfin, letterboxd as lb, library, plex, plex_history, seenpush, servers
+from . import completion, jellyfin, letterboxd as lb, library, plex, plex_history, seenpush, servers
 from .config import Config
 from .db import client_id, connect, get_meta, set_meta
 from .tmdb import Tmdb, TmdbError
@@ -397,6 +397,7 @@ class SyncManager:
         try:
             await self._resolve(conn)
             await self._details(conn)
+            await self._collections(conn)
             await self._recs(conn)
         finally:
             conn.close()
@@ -479,6 +480,21 @@ class SyncManager:
             "SELECT m.tmdb_id FROM movies m JOIN tmdb_details d ON d.tmdb_id=m.tmdb_id"
             " WHERE d.json != '{}' AND json_extract(d.json,'$.release_date') IS NULL"
         ) if r[0] not in have]
+        have = set(ids)
+        # completionist: the films of curated groups the user has started, and a backfill of details stored
+        # before `collection` existed. json_type is NULL only when the key is absent: a film with no saga stores
+        # JSON null ('null') and is never refetched.
+        seen = completion.seen_tmdb_ids(conn)
+        curated = completion.started_curated_ids(seen)
+        ids += [t for t in curated if t not in have
+                and not conn.execute("SELECT 1 FROM tmdb_details WHERE tmdb_id=?", (t,)).fetchone()]
+        have = set(ids)
+        wanted = {r[0] for r in conn.execute(
+            "SELECT tmdb_id FROM lb_films WHERE tmdb_id IS NOT NULL AND (watched=1 OR liked=1)"
+            " UNION SELECT tmdb_id FROM movies WHERE tmdb_id IS NOT NULL")} | set(curated)
+        ids += [r[0] for r in conn.execute(
+            "SELECT tmdb_id FROM tmdb_details WHERE json != '{}' AND json_type(json,'$.collection') IS NULL"
+            " ORDER BY tmdb_id") if r[0] in wanted and r[0] not in have]
         if not ids:
             return
 
@@ -488,6 +504,23 @@ class SyncManager:
             conn.commit()
 
         await self._batches(ids, self.tmdb.details, done)
+        self.engine.invalidate()
+
+    async def _collections(self, conn) -> None:
+        """TMDB collections (sagas) of seen films, plus franchise siblings; refreshed after COLLECTION_TTL_DAYS."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=completion.COLLECTION_TTL_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        fresh = {r[0] for r in conn.execute(
+            "SELECT collection_id FROM tmdb_collections WHERE fetched_at IS NOT NULL AND fetched_at >= ?", (cutoff,))}
+        ids = [c for c in completion.wanted_collections(conn, completion.seen_tmdb_ids(conn)) if c not in fresh]
+        if not ids:
+            return
+
+        def done(cid, coll):
+            conn.execute("INSERT OR REPLACE INTO tmdb_collections(collection_id,json,fetched_at) VALUES(?,?,?)",
+                         (cid, json.dumps(coll or {}), now_iso()))
+            conn.commit()
+
+        await self._batches(ids, self.tmdb.collection, done)
         self.engine.invalidate()
 
     async def _recs(self, conn) -> None:

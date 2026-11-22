@@ -2,7 +2,7 @@
 // (plus tag=sitges2025 or tagf=sitges: "films like the ones I tagged", see /api/tags)
 // so a refresh (or a shared link) keeps the view, filters and open film.
 
-export const VIEWS = ['tonight', 'browse', 'ask', 'taste', 'setup', 'seen'];
+export const VIEWS = ['tonight', 'browse', 'complete', 'ask', 'taste', 'setup', 'seen'];
 export const SORTS = [
   ['match', 'Best match'], ['rating', 'TMDB rating'], ['recent', 'Recently added'], ['year', 'Newest'], ['runtime', 'Shortest'],
 ];

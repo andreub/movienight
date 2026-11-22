@@ -141,12 +141,14 @@ async def test_details_backfills_release_date_for_library_films_only(tmp_path):
     cfg = Config(data_dir=tmp_path / "d", letterboxd_dir=tmp_path / "nolb", tmdb_token="eyJtest", sync_on_start=False)
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     db.migrate(cfg.db_path)
-    old, new = json.dumps({"id": 1, "year": 2020}), json.dumps({"id": 2, "year": 2020, "release_date": ""})
+    # every row already has `collection` (null = no saga), so only the release_date backfill applies here
+    old = json.dumps({"id": 1, "year": 2020, "collection": None})
+    new = json.dumps({"id": 2, "year": 2020, "release_date": "", "collection": None})
     with db.session(cfg.db_path) as c:
         for tid in (1, 2, 3, 4):
             c.execute("INSERT INTO movies(dkey,tmdb_id) VALUES(?,?)", (f"k{tid}", tid))
         c.execute("INSERT INTO lb_films(name,year,norm_title,tmdb_id,resolve_state,watched) VALUES('L',2020,'l',5,1,1)")
-        for tid, js in ((1, old), (2, new), (3, "{}"), (4, json.dumps({"release_date": "2020-01-01"})), (5, old)):
+        for tid, js in ((1, old), (2, new), (3, "{}"), (4, json.dumps({"release_date": "2020-01-01", "collection": None})), (5, old)):
             c.execute("INSERT INTO tmdb_details(tmdb_id,json,fetched_at) VALUES(?,?,'x')", (tid, js))
     fetched = []
 

@@ -187,6 +187,19 @@ MIGRATIONS = [
     ALTER TABLE seen_pushes ADD COLUMN fixed_at TEXT;
     ALTER TABLE seen_pushes ADD COLUMN scrobbled_at TEXT;
     """,
+    # 12: completionist. TMDB collections (sagas) cached with their parts ('{}' = TMDB has no such id), and the
+    # groups the user hid from the Complete view (keys like collection-556, franchise-spider-man, curated-cornetto).
+    """
+    CREATE TABLE IF NOT EXISTS tmdb_collections (
+        collection_id INTEGER PRIMARY KEY,
+        json TEXT NOT NULL,
+        fetched_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS completion_hidden (
+        group_key TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL
+    );
+    """,
 ]
 
 # meta keys that belong to one media server type: removed when the app switches to the other one

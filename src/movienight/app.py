@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, cast, chat, db, letterboxd as lb, library, plex, queries, seenpush, servers, tags as lbtags, version
+from . import auth, cast, chat, completion, db, letterboxd as lb, library, plex, queries, seenpush, servers, tags as lbtags, version
 from .config import Config
 from .sync import SyncManager, history_token, plex_token, tmdb_counts
 from .util import now_iso, safe_error
@@ -673,6 +673,43 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
     def tags():
         """Letterboxd diary tags that can steer picks (tag / tag_family on /api/recommendations and /api/pick)."""
         return {"min_films": lbtags.MIN_GROUP_FILMS, "families": lbtags.usable(engine().get())}
+
+    # ---- completionist: sagas, franchises and curated trilogies the user has started
+    @app.get("/api/completions")
+    def completions(kind: Literal["collection", "franchise", "curated"] | None = None, hidden: bool = False):
+        st = engine().get()
+        c = conn()
+        try:
+            return completion.overview(st, c, kind=kind, show_hidden=hidden)
+        finally:
+            c.close()
+
+    @app.get("/api/completions/{key}")
+    def completion_group(key: str):
+        st = engine().get()
+        c = conn()
+        try:
+            g = completion.group(st, c, key)
+        finally:
+            c.close()
+        if g is None:
+            raise HTTPException(404, "Group not found")
+        return g
+
+    @app.post("/api/completions/{key}/hide")
+    def completion_hide(key: str):
+        st = engine().get()
+        with db.session(cfg.db_path) as c:
+            if not any(g["key"] == key for g in completion.build(st, c)):
+                raise HTTPException(404, "Group not found")
+            c.execute("INSERT OR REPLACE INTO completion_hidden(group_key, created_at) VALUES(?,?)", (key, now_iso()))
+        return {"ok": True}
+
+    @app.delete("/api/completions/{key}/hide")
+    def completion_unhide(key: str):
+        with db.session(cfg.db_path) as c:
+            c.execute("DELETE FROM completion_hidden WHERE group_key=?", (key,))
+        return {"ok": True}
 
     @app.get("/api/recommendations")
     def recommendations(
