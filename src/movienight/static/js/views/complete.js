@@ -264,14 +264,14 @@ export function mount(root) {
     }
   }
 
-  // A film marked seen (detail sheet) changes the counts: refresh quietly.
+  // A film marked, voted or unmarked in the panel (`movienight:marked`, fired once the server accepted it) changes the counts: refresh quietly.
   const onSeen = () => load();
-  window.addEventListener('movienight:seen', onSeen);
+  window.addEventListener('movienight:marked', onSeen);
   paintChips();
   load();
 
   return {
     update() {},
-    destroy() { alive = false; disconnect(); window.removeEventListener('movienight:seen', onSeen); },
+    destroy() { alive = false; disconnect(); window.removeEventListener('movienight:marked', onSeen); },
   };
 }

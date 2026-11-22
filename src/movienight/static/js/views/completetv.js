@@ -165,7 +165,7 @@ export function mountTv(root) {
 
   // A film marked (or unmarked) seen in the panel changes the counts: refresh, staying on the same saga and film.
   const onSeen = () => load();
-  window.addEventListener('movienight:seen', onSeen);
+  window.addEventListener('movienight:marked', onSeen);
   // Closing the panel (Back) gives focus back to the film it was opened from, even after a refresh.
   const dialog = document.getElementById('detail');
   const onClose = () => {
@@ -182,7 +182,7 @@ export function mountTv(root) {
     destroy() {
       alive = false;
       document.removeEventListener('keydown', onKey);
-      window.removeEventListener('movienight:seen', onSeen);
+      window.removeEventListener('movienight:marked', onSeen);
       dialog?.removeEventListener('close', onClose);
     },
   };

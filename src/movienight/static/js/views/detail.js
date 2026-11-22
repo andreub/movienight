@@ -91,8 +91,21 @@ async function setDismissed(m, days) {
   load();
 }
 
+// A panel opened from Complete closes once an action succeeds, and the saga view re-fetches (it listens to
+// `movienight:marked`, which fires only after the server accepted the change, so the refresh sees it).
+const fromComplete = () => parse().view === 'complete';
+
+function marked(detail, message) {
+  window.dispatchEvent(new CustomEvent('movienight:marked', { detail }));
+  if (!fromComplete()) return false;
+  if (message) toast(message);
+  onRequestClose();
+  return true;
+}
+
 async function markSeen(m, seen) {
   if (!(await setSeen(m, seen, 'sheet'))) return;
+  if (marked({ id: m.id, seen }, seen ? `Marked ${quoted(m)} as seen.` : `${quoted(m)} is no longer marked as seen.`)) return;
   // On Tonight the page itself replaces the film and offers the rating toast.
   if (seen && parse().view === 'tonight') { load(); return; }
   toast(seen ? `Marked ${quoted(m)} as seen.` : `${quoted(m)} is back in your picks.`);
@@ -130,7 +143,7 @@ function render(m) {
       matchStub(m.match)),
     h('div', { class: 'detail__actions' },
       playControl(m),
-      voteButtons(m),
+      voteButtons(m, { onVote: (v, done) => done.then((ok) => { if (ok) marked({ id: m.id, vote: v }, v ? `Saved your vote for ${quoted(m)}.` : `Cleared your vote for ${quoted(m)}.`); }) }),
       !m.watched ? h('button', { type: 'button', class: 'btn btn--ghost', onclick: () => markSeen(m, true) }, icon('eye'), 'Seen it') : null,
       m.letterboxd_url ? h('a', { class: 'btn btn--ghost', href: m.letterboxd_url, target: '_blank', rel: 'noopener' }, 'Letterboxd', icon('external', 'icon--end')) : null),
     m.seen_here ? h('p', { class: 'detail__seen' }, icon('check'), "You've seen this",
@@ -179,8 +192,11 @@ async function saveFilm(f, seen, vote, focus) {
     filmBusy = false;
   }
   window.dispatchEvent(new CustomEvent('movienight:seen', { detail: { id: `tmdb:${f.tmdb_id}`, tmdb_id: f.tmdb_id, seen, source: 'film' } }));
-  if (!seen) toast(`${quoted(f)} is no longer marked as seen.`);
-  else if (!f.seen) toast(`Marked ${quoted(f)} as seen.`);
+  const message = !seen ? `${quoted(f)} is no longer marked as seen.`
+    : !f.seen ? `Marked ${quoted(f)} as seen.` : `Saved your verdict for ${quoted(f)}.`;
+  if (marked({ id: `tmdb:${f.tmdb_id}`, tmdb_id: f.tmdb_id, seen }, message)) return;
+  if (!seen) toast(message);
+  else if (!f.seen) toast(message);
   load({ quiet: true, focus });
 }
 
