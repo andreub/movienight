@@ -3,15 +3,16 @@ import { initTvNav } from './tvnav.js';
 import { onRoute, start, go, href, parse } from './state.js';
 import { getChatStatus } from './api.js';
 import { subscribe, refreshStatus, syncPercent } from './status.js';
-import { initDetail, openDetail, closeDetail } from './views/detail.js';
+import { initDetail, openDetail, openFilm, closeDetail } from './views/detail.js';
 import * as tonight from './views/tonight.js';
 import * as browse from './views/browse.js';
 import * as ask from './views/ask.js';
 import * as taste from './views/taste.js';
 import * as setup from './views/setup.js';
 import * as seenView from './views/seen.js';
+import * as complete from './views/complete.js';
 
-const VIEWS = { tonight, browse, ask, taste, setup, seen: seenView };
+const VIEWS = { tonight, browse, complete, ask, taste, setup, seen: seenView };
 const main = document.getElementById('main');
 const tabs = [...document.querySelectorAll('.tab')];
 const pill = document.querySelector('.sync-pill');
@@ -33,9 +34,17 @@ initDetail(() => {
   else go({ movie: null }, { replace: true });
 });
 
+// The Complete tab exists unless the server turned it off (MOVIENIGHT_COMPLETIONIST=0).
+const completeTab = tabs.find((t) => t.dataset.view === 'complete');
+const completionist = (s) => s?.features?.completionist !== false;
+
 function render(route) {
-  if (status && !status.ready && (route.view === 'tonight' || route.view === 'browse' || route.view === 'seen')) {
+  if (status && !status.ready && ['tonight', 'browse', 'complete', 'seen'].includes(route.view)) {
     go({ view: 'setup', movie: null }, { replace: true });
+    return;
+  }
+  if (route.view === 'complete' && status && !completionist(status)) {
+    go({ view: 'tonight', movie: null }, { replace: true });
     return;
   }
   if (route.view !== current.name) {
@@ -60,6 +69,7 @@ function render(route) {
   }
 
   if (route.movie) openDetail(route.movie);
+  else if (route.film) openFilm(route.film);
   else closeDetail();
 }
 
@@ -67,6 +77,7 @@ subscribe((s) => {
   const wasReady = status?.ready;
   status = s;
   if (!s) return;
+  completeTab.hidden = !completionist(s);
   const running = s.sync?.running;
   pill.hidden = !running;
   if (running) {

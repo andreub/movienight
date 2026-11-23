@@ -96,6 +96,13 @@ export const api = {
   pick: (params) => request('GET', '/api/pick', { params }),
   recommendations: (params) => request('GET', '/api/recommendations', { params }),
   movie: (id) => request('GET', `/api/movies/${id}`),
+  // any film by TMDB id, in the library or not (Complete); seen + optional vote stored as `tmdb:<id>`
+  film: (tmdbId) => request('GET', `/api/films/${tmdbId}`),
+  filmSeen: (tmdbId, seen, vote) => request('POST', `/api/films/${tmdbId}/seen`, { json: vote === undefined ? { seen } : { seen, vote } }),
+  completions: (params) => request('GET', '/api/completions', { params }),
+  completion: (key) => request('GET', `/api/completions/${encodeURIComponent(key)}`),
+  hideCompletion: (key) => request('POST', `/api/completions/${encodeURIComponent(key)}/hide`),
+  unhideCompletion: (key) => request('DELETE', `/api/completions/${encodeURIComponent(key)}/hide`),
   dismiss: (id, days) => request('POST', `/api/movies/${id}/dismiss`, { json: { days } }),
   undismiss: (id) => request('DELETE', `/api/movies/${id}/dismiss`),
   profile: () => request('GET', '/api/profile'),
