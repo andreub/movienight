@@ -5,7 +5,7 @@ import { playControl } from '../play.js';
 import { go, apiFilters, hasQuickFilters, setFilters, CLEAR_QUICK } from '../state.js';
 import { endsAt } from '../clock.js';
 import { initialRuntime, rememberRuntime } from '../timecontrol.js';
-import { voteButtons, setVote } from '../vote.js';
+import { voteButtons, setVote, voteOf } from '../vote.js';
 import { setSeen } from '../seen.js';
 import { serverName } from '../status.js';
 
@@ -186,9 +186,11 @@ export function mount(root, route) {
             toast(vote > 1 ? `Noted: ${quoted(m)} is a favourite.` : vote > 0 ? `Noted: you liked ${quoted(m)}.` : `Noted: less like ${quoted(m)}.`, { timeout: 3000 });
           },
         }, icon(name))));
-    toast(`Marked ${quoted(m)} as seen. Did you like it?`, {
-      timeout: 8000,
-      extra: quick,
+    // Already rated (e.g. from the sheet): no need to ask again.
+    const rated = voteOf(m) !== 0;
+    toast(rated ? `Marked ${quoted(m)} as seen.` : `Marked ${quoted(m)} as seen. Did you like it?`, {
+      timeout: rated ? 6000 : 8000,
+      extra: rated ? null : quick,
       action: {
         label: 'Undo',
         run: async () => {

@@ -31,9 +31,10 @@ export function announceVote(id, vote) {
 }
 
 // `onVote(vote, done)` runs after the optimistic flip; `done` resolves true once the server accepted it.
+// `save(movie, vote)` replaces the default `setVote` and must return a Promise<boolean>.
 // `love` adds the heart button. Without it (compact cards) a loved film shows a heart on its thumbs-up button,
 // and tapping that clears the vote.
-export function voteButtons(movie, { compact = false, love = !compact, onVote = null } = {}) {
+export function voteButtons(movie, { compact = false, love = !compact, onVote = null, save = setVote } = {}) {
   let vote = voteOf(movie);
   const make = (value, name, iconName, label) => h('button', {
     type: 'button', class: `votes__btn votes__btn--${name}`, title: label, 'aria-label': label, 'aria-pressed': 'false',
@@ -41,7 +42,7 @@ export function voteButtons(movie, { compact = false, love = !compact, onVote = 
       e.stopPropagation();
       const active = vote === value || (!love && value === 1 && vote === LOVE);
       const next = active ? 0 : value;
-      const done = setVote(movie, next);
+      const done = save(movie, next);
       onVote?.(next, done);
     },
   }, icon(iconName));
