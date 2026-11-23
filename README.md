@@ -32,6 +32,8 @@ on a private network.
   favourite. One tap saves the mark and the vote together (`POST /api/movies/{id}/seen` with
   `{"seen": true, "vote": 2}`); tapping the chosen verdict again removes both. The "Already
   marked" tab (`GET /api/seen-marked`, newest mark first) lets you rate films marked earlier.
+- Films outside the library can be marked too, from the Complete tab (`POST /api/films/{tmdb_id}/seen`,
+  same body): the mark and vote wait under `tmdb:<id>` and apply when the film reaches the library.
 - With `MOVIENIGHT_PUSH_SEEN` on, marks are also set as played on Plex or Jellyfin, whichever way they are
   made. Only items the app marked itself are ever set back to unplayed.
 
@@ -57,6 +59,83 @@ the ones I tagged X".
   what I saw at Sitges 2025").
 
 The RSS feed carries no tags, so new tags arrive with the next export.
+
+## Completionist
+
+The **Complete** tab lists the sagas, franchises and series you have started (at least one film
+seen), with your progress ("4 of 9 seen") and what is left. Each film is **seen** (Letterboxd, played
+on the media server, or marked seen here), **available** (in the library and unwatched: tap it to
+open the film) or **missing** (not in the library, greyed out).
+
+Nothing is hand-written: groups are discovered from your own data and the TMDB cache.
+
+- **Sagas**: the TMDB collection a seen film belongs to.
+- **Franchises**: collections merged when one's stem names the others and most of their films
+  ("Spider-Man", from the Raimi collection, names the Amazing, MCU and Spider-Verse collections).
+  Siblings are found with a collection search on the stem. Collections with a far less popular
+  offshoot (TV films, animated spin-offs), a name without the stem (Venom) or a generic stem
+  ("Before", "Matrix") are not merged.
+- **Series**: a TMDB keyword on a seen film whose name ends in a series word, such as
+  `cornetto trilogy`, expanded to its films with TMDB's discover. Generic keywords ("trilogy",
+  "family saga") and keywords on more than 20 films (themes, not series) are skipped. Entries with
+  fewer than 20 votes (shorts, fan films) are dropped. A series whose films are all in a saga is
+  not shown twice. A saga inside a series gives way to the series.
+- A director's ordinary filmography, with recurring cast and themes, never becomes a group. Some
+  trilogies have no shared collection or keyword on TMDB (Park Chan-wook's Vengeance trilogy, for
+  example), so they do not show up.
+- **Cards**: posters fill the card's width. A saga shows every film in release order, seen ones
+  dimmed with a ✓, so you see where the gaps are. When it doesn't fit in about three rows, runs of
+  seen films fold into a "✓ 7 seen" tile (tap to open it). Unseen films and their neighbours always
+  stay visible, and "Show all" appears only if the card still overflows. Finished groups and hidden
+  ones (the × on a card, with undo) stay folded at the bottom.
+- **Order**: each group gets a score, and one quiet hint on its card says why ("New · 2026",
+  "You rated ★4.4", "In your library").
+  `score = 3 × recency + 1.5 × taste + 0.75 × library + 0.5 × share seen`.
+  - *Recency* is 1 when an unseen film came out in the last 18 months, fading to 0 at 5 years.
+  - *Taste* compares your ratings of the group's seen films (Letterboxd; an app vote when there is
+    no rating) with your overall mean. The mean is shrunk towards your overall mean as if two more
+    films had been rated at it, so a single rating counts for little.
+  - *Library* is 1 when an unseen film is playable now.
+- **Android TV**: in the TV app the tab shows one group per screen, in the look of Tonight: the
+  backdrop of the next film to watch, the name, progress, the hint and the whole saga as a poster
+  row. Left and right move through the films, OK opens the side panel of any of them, down and up
+  go to the next and previous group.
+- **List / Screen toggle**: in a browser, a toggle in the tab's header switches between the cards
+  (List, the default) and that one-group-per-screen layout (Screen: click a film, arrow keys and
+  Enter, the arrows by the dots, the wheel or a vertical swipe change group); the browser remembers
+  the choice. The TV app always shows Screen, without the toggle.
+- **Any film opens a panel**, seen, in the library or missing. A film in the library to watch opens
+  the usual detail sheet (Play lives there). Any other one opens a lighter panel built from TMDB
+  (title, year, poster, overview; details are fetched once on demand when not cached):
+  - **Not seen**: the four verdicts of "Seen these?" (👎 · ✓ · 👍 · ❤). The mark and the vote are
+    stored under `tmdb:<id>`, like every seen mark and vote, so a film outside the library counts as
+    seen in its saga at once and, when it later arrives in the library, it is seen there too and the
+    vote teaches the recommender. Until then the vote already counts for the saga's taste score.
+  - **Marked seen here**: the verdict can be changed, or "Unmark as seen" removes the mark and vote.
+    If `MOVIENIGHT_PUSH_SEEN` had set it played on Plex or Jellyfin, that is undone too, at once.
+  - **Seen on Letterboxd** or **seen on Plex/Jellyfin** (played there, not by MovieNight): shown as
+    such, with no unmark. It can only be unmarked where it was logged or played.
+- **Off switch**: `MOVIENIGHT_COMPLETIONIST=0` hides the tab (browser and TV), answers 404 on every
+  `/api/completions*` route and skips the TMDB lookups above (`features.completionist` in
+  `/api/status` tells the frontend).
+- **Data**: the TMDB sync stores each film's collection, keyword ids and director/cast ids with its
+  details (details stored before these fields existed are backfilled once). It then caches, for 30
+  days:
+  - the collection searches (`tmdb_lookups`);
+  - the collections (`tmdb_collections`), with each film's backdrop (collections cached before
+    backdrops were kept are refetched once);
+  - the films of each series keyword (`tmdb_lookups`).
+- **API**:
+  - `GET /api/completions?kind=collection|franchise|series&hidden=true` returns the groups with
+    `films` (the whole group in release order, each with its `state`), `ordered`, `seen`, `total`,
+    `available`, `next`, `score`, `reason` and `backdrop_url`, best score first.
+  - `GET /api/completions/{key}` returns one group.
+  - `POST` and `DELETE /api/completions/{key}/hide` hide and unhide a group.
+  - `GET /api/films/{tmdb_id}` returns a film by TMDB id, in the library or not, with `seen_via`
+    (`letterboxd`, `server`, `here`), `can_unmark`, `my_vote` and `movie_id` when it is in the
+    library. `POST /api/films/{tmdb_id}/seen` takes `{"seen": true, "vote": 2}` like the library
+    route; unmarking a film seen on Letterboxd or played on the server answers 409.
+  - Keys look like `collection-556`, `franchise-spider-man` and `series-357318`.
 
 ## Quick start (Docker)
 
@@ -100,6 +179,7 @@ The UI can run without a backend in mock mode at http://localhost:8080/?mock=1.
 | `MOVIENIGHT_PUSH_SEEN` | off | `1`/`true`/`yes`: marks films you flag "seen it" as played on the media server (writes to that account). `MOVIENIGHT_PLEX_PUSH_SEEN` is the older name and still works |
 | `MOVIENIGHT_LOGIN` | `plex` (Plex), empty (Jellyfin) | Login methods, comma-separated: `plex`, `oidc`, or `none`. See [Login](#login) |
 | `MOVIENIGHT_PLEX_OWNER` | empty | Plex login only: the account id, username or email allowed in; empty = the first sign-in (or the account of the stored token) |
+| `MOVIENIGHT_COMPLETIONIST` | on | The Complete tab (sagas, franchises, series). `0`/`false`/`no`: tab hidden, `/api/completions*` answers 404, and the sync skips the collection, collection-search and keyword lookups |
 | `MOVIENIGHT_PORT` | `8080` | Compose only: host port |
 | `TZ` | `Europe/Madrid` | Compose only: container timezone |
 

@@ -4,19 +4,12 @@
 // and films already marked (newest mark first), so earlier marks can be rated afterwards.
 import { api } from '../api.js';
 import { h, fill, icon, poster, num, stars, errorBox, announce } from '../dom.js';
-import { setSeenVote, isSeen } from '../seen.js';
+import { setSeenVote, isSeen, OUTCOMES } from '../seen.js';
 import { voteOf, LOVE } from '../vote.js';
 
 export const title = 'Seen these?';
 const PAGE = 60;
 
-// value = the vote stored with the seen mark
-const OUTCOMES = [
-  { key: 'down', vote: -1, icon: 'thumbdown', label: "Seen it, didn't like it", short: "Didn't like it" },
-  { key: 'seen', vote: 0, icon: 'check', label: 'Seen it, no opinion', short: 'Seen' },
-  { key: 'up', vote: 1, icon: 'thumbup', label: 'Seen it, liked it', short: 'Liked it' },
-  { key: 'love', vote: LOVE, icon: 'heart', label: 'Seen it, a favourite', short: 'A favourite' },
-];
 
 const TABS = {
   check: {

@@ -1,8 +1,9 @@
 // Route + filter state lives in the URL hash: #/browse?mood=tense&rt=90&wl=1&genre=Horror&q=&sort=year&movie=42
+// (`film=603` instead of `movie` opens a film by TMDB id, in the library or not: Complete's saga films)
 // (plus tag=sitges2025 or tagf=sitges: "films like the ones I tagged", see /api/tags)
 // so a refresh (or a shared link) keeps the view, filters and open film.
 
-export const VIEWS = ['tonight', 'browse', 'ask', 'taste', 'setup', 'seen'];
+export const VIEWS = ['tonight', 'browse', 'complete', 'ask', 'taste', 'setup', 'seen'];
 export const SORTS = [
   ['match', 'Best match'], ['rating', 'TMDB rating'], ['recent', 'Recently added'], ['year', 'Newest'], ['runtime', 'Shortest'],
 ];
@@ -27,6 +28,7 @@ export function parse() {
       sort: SORTS.some(([id]) => id === p.get('sort')) ? p.get('sort') : 'match',
     },
     movie: toInt(p.get('movie')),
+    film: p.get('movie') ? null : toInt(p.get('film')),
   };
 }
 
@@ -43,9 +45,10 @@ export function filterQuery(f) {
   return p;
 }
 
-export function href(view, filters = parse().filters, movie = null) {
+export function href(view, filters = parse().filters, movie = null, film = null) {
   const p = filterQuery(filters);
   if (movie) p.set('movie', movie);
+  else if (film) p.set('film', film);
   const s = p.toString();
   return `#/${view}${s ? `?${s}` : ''}`;
 }
@@ -63,14 +66,21 @@ window.addEventListener('popstate', emit);
 window.addEventListener('hashchange', emit);
 
 // Filter tweaks replace history (Back should not replay every chip); views and films push.
-export function go({ view, filters, movie } = {}, { replace = false } = {}) {
+// `movie` (library id) and `film` (TMDB id) share the detail sheet: opening one closes the other, and
+// `movie: null` closes either.
+export function go({ view, filters, movie, film } = {}, { replace = false } = {}) {
   const cur = parse();
-  const nextMovie = movie === undefined ? cur.movie : movie;
-  const next = href(view ?? cur.view, { ...cur.filters, ...filters }, nextMovie);
+  let nextMovie = movie === undefined ? cur.movie : movie;
+  let nextFilm = film === undefined ? cur.film : film;
+  if (movie) nextFilm = null;
+  else if (film) nextMovie = null;
+  else if (movie === null && film === undefined) nextFilm = null;
+  const next = href(view ?? cur.view, { ...cur.filters, ...filters }, nextMovie, nextFilm);
   if (next === location.hash) return;
+  const open = Boolean(nextMovie || nextFilm);
   // Remember entries that opened a film so closing it can simply go Back.
-  if (replace) history.replaceState(nextMovie ? history.state : null, '', next);
-  else history.pushState({ detail: Boolean(nextMovie && !cur.movie) }, '', next);
+  if (replace) history.replaceState(open ? history.state : null, '', next);
+  else history.pushState({ detail: open && !(cur.movie || cur.film) }, '', next);
   emit();
 }
 export function start() { emit(); }

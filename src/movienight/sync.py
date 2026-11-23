@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from . import jellyfin, letterboxd as lb, library, plex, plex_history, seenpush, servers
+from . import completion, jellyfin, letterboxd as lb, library, plex, plex_history, seenpush, servers
 from .config import Config
 from .db import client_id, connect, get_meta, set_meta
 from .tmdb import Tmdb, TmdbError
@@ -397,6 +397,8 @@ class SyncManager:
         try:
             await self._resolve(conn)
             await self._details(conn)
+            if self.cfg.completionist:          # MOVIENIGHT_COMPLETIONIST=0: no collection/search/keyword lookups
+                await self._collections(conn)
             await self._recs(conn)
         finally:
             conn.close()
@@ -479,6 +481,16 @@ class SyncManager:
             "SELECT m.tmdb_id FROM movies m JOIN tmdb_details d ON d.tmdb_id=m.tmdb_id"
             " WHERE d.json != '{}' AND json_extract(d.json,'$.release_date') IS NULL"
         ) if r[0] not in have]
+        have = set(ids)
+        # completionist: backfill details stored before `collection` / `keyword_ids` existed. json_type is NULL
+        # only when the key is absent: a film with no saga stores JSON null and is never refetched.
+        if self.cfg.completionist:
+            wanted = {r[0] for r in conn.execute(
+                "SELECT tmdb_id FROM lb_films WHERE tmdb_id IS NOT NULL AND (watched=1 OR liked=1)"
+                " UNION SELECT tmdb_id FROM movies WHERE tmdb_id IS NOT NULL")}
+            ids += [r[0] for r in conn.execute(
+                "SELECT tmdb_id FROM tmdb_details WHERE json != '{}' AND (json_type(json,'$.collection') IS NULL"
+                " OR json_type(json,'$.keyword_ids') IS NULL) ORDER BY tmdb_id") if r[0] in wanted and r[0] not in have]
         if not ids:
             return
 
@@ -489,6 +501,54 @@ class SyncManager:
 
         await self._batches(ids, self.tmdb.details, done)
         self.engine.invalidate()
+
+    async def _collections(self, conn) -> None:
+        """Completionist data, each item refreshed after its TTL (30 days): collection searches on the stems of
+        the seen films' sagas (franchise siblings), those collections, and the films of series keywords."""
+        def cutoff(days):
+            return (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # parts stored before they carried backdrop_path count as stale (once: a refetch stores the key, even null)
+        fresh_lookups = {r[0] for r in conn.execute(
+            "SELECT key FROM tmdb_lookups WHERE fetched_at IS NOT NULL AND fetched_at >= ?"
+            " AND NOT (key LIKE 'keyword:%' AND " + completion.STALE_PARTS_SQL + ")",
+            (cutoff(completion.LOOKUP_TTL_DAYS),))}
+
+        def store(key, value):
+            conn.execute("INSERT OR REPLACE INTO tmdb_lookups(key,json,fetched_at) VALUES(?,?,?)",
+                         (key, json.dumps(value), now_iso()))
+            conn.commit()
+
+        seen = completion.seen_tmdb_ids(conn)
+        changed = False
+        stems = [s for s in completion.wanted_searches(conn, seen) if completion.search_key(s) not in fresh_lookups]
+        if stems:
+            await self._batches(stems, self.tmdb.search_collections,
+                                lambda s, hits: store(completion.search_key(s), hits or []))
+
+        fresh = {r[0] for r in conn.execute(
+            "SELECT collection_id FROM tmdb_collections WHERE fetched_at IS NOT NULL AND fetched_at >= ?"
+            " AND NOT " + completion.STALE_PARTS_SQL, (cutoff(completion.COLLECTION_TTL_DAYS),))}
+        ids = [c for c in completion.wanted_collections(conn, seen) if c not in fresh]
+
+        def done(cid, coll):
+            conn.execute("INSERT OR REPLACE INTO tmdb_collections(collection_id,json,fetched_at) VALUES(?,?,?)",
+                         (cid, json.dumps(coll or {}), now_iso()))
+            conn.commit()
+
+        if ids:
+            await self._batches(ids, self.tmdb.collection, done)
+            changed = True
+
+        kws = [(kid, name) for kid, name in completion.wanted_keywords(conn, seen)
+               if f"keyword:{kid}" not in fresh_lookups]
+        if kws:
+            await self._batches(kws, lambda kw: self.tmdb.keyword_movies(kw[0]),
+                                lambda kw, res: store(f"keyword:{kw[0]}", {"id": kw[0], "name": kw[1], **(res or {})}))
+            changed = True
+        if changed:
+            self.engine.invalidate()
+
 
     async def _recs(self, conn) -> None:
         ids = [r[0] for r in conn.execute(

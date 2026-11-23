@@ -477,6 +477,65 @@ def movie_detail_json(c: rec.Cand, st: State, dismissed: dict) -> dict:
     return d
 
 
+def film_json(conn: sqlite3.Connection, st: State, tmdb_id: int, base: dict | None = None) -> dict | None:
+    """A film by TMDB id, in the library or not (Complete: seen and missing saga films), with how it was seen.
+
+    Info comes from the library entry, else the cached TMDB details, else `base` (the film as a group lists it:
+    title, year, poster). None when nothing is known. `seen_via` lists letterboxd (watched there), server
+    (played on the media server by the user, not a push by this app) and here (a local "seen it" mark, key
+    `tmdb:<id>`, which a library film later added with that TMDB id picks up). Only a mark made here, on a film
+    not also seen another way, can be undone (`can_unmark`); undoing it also undoes the app's own push to the
+    media server (seenpush.unpush). A Letterboxd log or a play made on the server itself stays.
+    """
+    c = max((x for x in st.cands if x.tmdb_id == tmdb_id), key=lambda x: x.match, default=None)
+    row = conn.execute("SELECT json FROM tmdb_details WHERE tmdb_id=?", (tmdb_id,)).fetchone()
+    det = json.loads(row[0]) if row else {}
+    det = det if det.get("title") else {}
+    base = base or {}
+    if c is None and not det and not base.get("title"):
+        return None
+    m = c.meta if c is not None else det
+    key = f"tmdb:{tmdb_id}"
+    lb = conn.execute("SELECT watched, rating, liked FROM lb_films WHERE tmdb_id=? ORDER BY watched DESC, rating IS NULL"
+                      " LIMIT 1", (tmdb_id,)).fetchone()
+    here = conn.execute("SELECT 1 FROM seen WHERE key=?", (key,)).fetchone() is not None
+    vote = conn.execute("SELECT vote FROM votes WHERE key=?", (key,)).fetchone()
+    lb_watched = c.lb_watched if c is not None else bool(lb and lb["watched"])
+    server = bool(c is not None and c.plex_watched)
+    via = [name for name, on in (("letterboxd", lb_watched), ("server", server), ("here", here)) if on]
+    year = (c.year if c is not None else None) or m.get("year") or base.get("year")
+    return {
+        "tmdb_id": tmdb_id,
+        "movie_id": c.id if c is not None else None,
+        "title": (c.title if c is not None else None) or m.get("title") or base.get("title") or "",
+        "original_title": m.get("original_title") or None,
+        "year": year,
+        "runtime": m.get("runtime"),
+        "tagline": m.get("tagline") or "",
+        "overview": m.get("overview") or "",
+        "genres": m.get("genres") or [],
+        "directors": m.get("directors") or [],
+        "cast": (m.get("cast") or [])[:12],
+        "language": m.get("language"),
+        "countries": m.get("countries") or [],
+        "poster_url": (poster_of(c) if c is not None else tmdb.poster_url(m.get("poster_path"))) or base.get("poster_url"),
+        "backdrop_url": (backdrop_of(c) if c is not None else tmdb.backdrop_url(m.get("backdrop_path")))
+        or base.get("backdrop_url"),
+        "tmdb_rating": m.get("vote_average") if m.get("vote_average") is not None else base.get("vote_average"),
+        "tmdb_votes": m.get("vote_count") or base.get("vote_count"),
+        "letterboxd_url": f"https://letterboxd.com/tmdb/{tmdb_id}",
+        "in_library": c is not None,
+        "seen": bool(via),
+        "seen_via": via,
+        "can_unmark": here and not lb_watched and not server,
+        "pushed": here and conn.execute("SELECT 1 FROM seen_pushes WHERE key=?", (key,)).fetchone() is not None,
+        "my_vote": c.vote if c is not None else (vote[0] if vote else None),
+        "my_rating": c.my_rating if c is not None else (lb["rating"] if lb else None),
+        "liked": c.liked if c is not None else bool(lb and lb["liked"]),
+        "details": bool(det) or c is not None,
+    }
+
+
 def seen_candidates(st: State, dismissed: dict, limit: int, offset: int, min_age_years: int = 3) -> tuple[list, int]:
     """Unwatched, not dismissed library films most likely to have been seen already.
 
