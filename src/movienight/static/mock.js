@@ -34,6 +34,7 @@ const FILMS = [
   ['Past Lives', 2023, 106, ['Drama', 'Romance'], 'Celine Song', ['Greta Lee', 'Teo Yoo', 'John Magaro'], 7.8, 'Two childhood friends reunite in New York decades after one of them emigrated.'],
   ['Some Like It Hot', 1959, 121, ['Comedy', 'Romance', 'Crime'], 'Billy Wilder', ['Marilyn Monroe', 'Tony Curtis', 'Jack Lemmon'], 8.2, 'Two musicians who witnessed a mob hit hide out in an all-female band.'],
   ['The Long Quiet Weekend at the Lighthouse Keeper’s Cottage', 2024, null, ['Drama'], 'Anna Lind', ['Mia Holm'], null, null],
+  ['Salt Line', 2026, 109, ['Thriller', 'Crime', 'Drama'], 'Marit Voss', ['Elena Marsh', 'Tomas Reyes', 'Idris Okoye'], 7.2, 'A harbour inspector who finds a sealed container that should not exist has one night to decide who to tell.', 'en', null, '2026-09-18'],
 ];
 
 const MOODS = [
@@ -60,7 +61,7 @@ const eraTest = (id) => {
 };
 function eras() {
   const out = [];
-  if (movies.some(isRecent)) out.push({ id: 'recent', label: 'Something recent', description: 'Released in the last 18 months' });
+  if (movies.some(isRecent)) out.push({ id: 'recent', label: 'Fresh off the reel', description: 'Released in the last 18 months' });
   const decades = [...new Set(movies.filter((m) => m.year >= 1980).map((m) => Math.floor(m.year / 10) * 10))].sort((a, b) => b - a);
   for (const d of decades) out.push({ id: `${d}s`, label: `${d}s`, description: `Released in the ${d}s` });
   if (movies.some((m) => m.year <= 1979)) out.push({ id: 'classic', label: 'Classic', description: 'Before 1980' });
@@ -131,10 +132,10 @@ function reasonsFor(m, i) {
   return r.slice(0, 4);
 }
 
-const movies = FILMS.map(([title, year, runtime, genres, director, cast, rating, overview, language = 'en', original], i) => {
+const movies = FILMS.map(([title, year, runtime, genres, director, cast, rating, overview, language = 'en', original, release_date = null], i) => {
   const id = 100 + i;
   const m = {
-    id, title, original_title: original || title, year, runtime, tagline: i % 5 === 0 ? 'Some nights call for exactly this.' : null, overview,
+    id, title, original_title: original || title, year, release_date, runtime, tagline: i % 5 === 0 ? 'Some nights call for exactly this.' : null, overview,
     genres, directors: [director], cast, language, countries: [{ en: 'US', ja: 'JP', fr: 'FR', zh: 'HK' }[language]],
     poster_url: null, backdrop_url: null,
     tmdb_rating: rating, tmdb_votes: rating ? 4000 + ((i * 7919) % 30000) : null, tmdb_id: 1000 + i,
