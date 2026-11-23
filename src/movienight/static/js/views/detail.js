@@ -2,7 +2,7 @@
 import { api } from '../api.js';
 import { h, icon, poster, hueOf, runtime, stars, matchStub, reasonList, errorBox, toast, quoted, num } from '../dom.js';
 import { playControl } from '../play.js';
-import { voteButtons, setVote } from '../vote.js';
+import { voteButtons, setVote, voteOf } from '../vote.js';
 import { setSeen, setSeenVote, isSeen } from '../seen.js';
 import { parse } from '../state.js';
 import { serverName } from '../status.js';
@@ -97,8 +97,10 @@ function voteFromSheet(movie, vote) {
 
 function votesControl(m) {
   let wasSeen = false;
+  let previousVote = 0;
   const save = (movie, vote) => {
     wasSeen = isSeen(movie) || Boolean(movie.watched);
+    previousVote = voteOf(movie);
     return voteFromSheet(movie, vote);
   };
   const onVote = async (vote, done) => {
@@ -110,7 +112,7 @@ function votesControl(m) {
     if (parse().view === 'tonight') return; // Tonight shows its own toast for the seen mark
     toast(`Seen · ${what}`, {
       timeout: 3000,
-      action: { label: 'Undo', run: () => setSeenVote(m, false, 0, 'undo') },
+      action: { label: 'Undo', run: () => setSeenVote(m, false, previousVote, 'undo') },
     });
   };
   return voteButtons(m, { save, onVote });
