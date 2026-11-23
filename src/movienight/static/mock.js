@@ -61,7 +61,7 @@ const eraTest = (id) => {
 };
 function eras() {
   const out = [];
-  if (movies.some(isRecent)) out.push({ id: 'recent', label: 'Fresh off the reel', description: 'Released in the last 18 months' });
+  if (movies.some(isRecent)) out.push({ id: 'recent', label: 'Fresh releases', description: 'Released in the last 18 months' });
   const decades = [...new Set(movies.filter((m) => m.year >= 1980).map((m) => Math.floor(m.year / 10) * 10))].sort((a, b) => b - a);
   for (const d of decades) out.push({ id: `${d}s`, label: `${d}s`, description: `Released in the ${d}s` });
   if (movies.some((m) => m.year <= 1979)) out.push({ id: 'classic', label: 'Classic', description: 'Before 1980' });

@@ -134,7 +134,7 @@ def eras_public(cands: list[Cand]) -> list[dict]:
     """Eras present in the library: Recent, decades from 1980 (newest first), Classic."""
     out = []
     if any(era_matches(c, "recent") for c in cands):
-        out.append({"id": "recent", "label": "Fresh off the reel", "description": "Released in the last 18 months"})
+        out.append({"id": "recent", "label": "Fresh releases", "description": "Released in the last 18 months"})
     years = {c.year or c.meta.get("year") for c in cands}
     decades = sorted({y // 10 * 10 for y in years if y and y >= FIRST_DECADE}, reverse=True)
     for d in decades:
