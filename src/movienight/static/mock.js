@@ -45,6 +45,7 @@ const MOODS = [
   { id: 'epic', label: 'Something epic', emoji: '🏔️', description: 'Big, long adventures', test: (m) => hasAny(m, ['Adventure', 'Action']) || (m.runtime || 0) > 140 },
   { id: 'heartfelt', label: 'Heartfelt', emoji: '💛', description: 'Drama and romance', test: (m) => hasAny(m, ['Romance', 'Drama']) },
   { id: 'short', label: 'Short one', emoji: '⏱️', description: 'Under 95 minutes', test: (m) => m.runtime && m.runtime < 100 },
+  { id: 'just-arrived', label: 'Just arrived', emoji: '🆕', description: 'Added to your library in the last 30 days', test: (m) => Date.now() - Date.parse(m.added_at) <= 30 * 86400000 },
 ];
 
 // Eras (GET /api/eras): Recent, decades from 1980 (newest first), Classic.
@@ -132,6 +133,9 @@ function reasonsFor(m, i) {
   return r.slice(0, 4);
 }
 
+// Only these were added in the last 30 days (days ago); every other film was added at least 40 days ago.
+const JUST_ARRIVED = { 'Salt Line': 2, 'Arrival': 6, 'Heat': 11, 'Get Out': 19 };
+
 const movies = FILMS.map(([title, year, runtime, genres, director, cast, rating, overview, language = 'en', original, release_date = null], i) => {
   const id = 100 + i;
   const m = {
@@ -142,7 +146,7 @@ const movies = FILMS.map(([title, year, runtime, genres, director, cast, rating,
     letterboxd_url: `https://letterboxd.com/tmdb/${1000 + i}`,
     match: Math.max(4, Math.round(97 - i * 2.9 - (i % 3) * 2)),
     on_watchlist: i % 4 === 2, watched: false, my_rating: null, liked: false, dismissed_until: null,
-    added_at: new Date(Date.now() - i * 86400000 * 3).toISOString(),
+    added_at: new Date(Date.now() - (title in JUST_ARRIVED ? JUST_ARRIVED[title] : 40 + i * 3) * 86400000).toISOString(),
     plex: JELLYFIN
       ? [{ server: 'Den', server_id: 'jf:f00dcafe', resolution: i % 3 === 0 ? '4k' : '1080', url: `${JF_BASE}/web/#/details?id=item${id}&serverId=f00dcafe` }]
       : [{ server: 'Home', server_id: 'home1', resolution: i % 3 === 0 ? '4k' : '1080', url: `https://app.plex.tv/desktop/#!/server/home1/details?key=%2Flibrary%2Fmetadata%2F${id}`, mobile_url: `https://watch.plex.tv/movie/mock-film-${id}` }],

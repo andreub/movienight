@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 import random
-from datetime import date
+from datetime import date, timezone
 from dataclasses import dataclass, field
 
 from .recommender import Cand
@@ -51,6 +51,8 @@ MOODS: list[dict] = [
      "not_genres": ["Horror", "Thriller", "War"]},
     {"id": "short", "label": "Short (under 95 min)", "emoji": "⏱️", "description": "Done before you know it",
      "max_runtime": 94},
+    {"id": "just-arrived", "label": "Just arrived", "emoji": "🆕",
+     "description": "Added to your library in the last 30 days", "added_within_days": 30},
 ]
 MOOD_BY_ID = {m["id"]: m for m in MOODS}
 
@@ -88,6 +90,12 @@ def mood_matches(mood: dict, c: Cand) -> bool:
         return False
     if "min_year" in mood and not (year and year >= mood["min_year"]):
         return False
+    if "added_within_days" in mood:
+        if not c.added_at:
+            return False
+        added = c.added_at.astimezone(timezone.utc).date() if c.added_at.tzinfo else c.added_at.date()
+        if not 0 <= (today() - added).days <= mood["added_within_days"]:
+            return False
     content = ("genres" in mood) or ("keywords" in mood) or ("genre_sets" in mood)
     if not content:
         return True

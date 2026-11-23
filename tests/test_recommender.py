@@ -236,3 +236,22 @@ def test_decade_and_classic_eras_and_public_list(monkeypatch):
     by_id[100].year, by_id[100].meta["year"] = 1965, 1965
     assert queries.era_matches(by_id[100], "classic") and not queries.era_matches(by_id[100], "1960s")
     assert queries.eras_public(cands)[-1]["id"] == "classic"
+
+
+def test_just_arrived_mood(monkeypatch):
+    from datetime import date
+    hist, cands = world()
+    rec.score_candidates(hist, cands, now=NOW)
+    monkeypatch.setattr(queries, "today", lambda: date(2025, 6, 30))
+    at = lambda d: datetime(2025, 6, 30, 12, tzinfo=timezone.utc) - timedelta(days=d)
+    for c in cands:
+        c.added_at = None
+    a, b, n, none = cands[:4]
+    a.added_at, b.added_at = at(10), at(40)
+    n.added_at = at(10).replace(tzinfo=None)        # naive stamps work too
+    a.year = b.year = 2012
+    a.meta["year"] = b.meta["year"] = 2012
+    ids = lambda **kw: {c.id for c in queries.apply_filters(cands, queries.Filters(**kw), {})}
+    assert ids(mood="just-arrived") == {a.id, n.id}   # 40 days old and no added_at are out
+    assert a.id in ids(mood="just-arrived", era="2010s") and b.id not in ids(mood="just-arrived", era="2010s")
+    assert a.id not in ids(mood="just-arrived", era="1990s")

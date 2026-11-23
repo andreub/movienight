@@ -14,7 +14,8 @@ def test_health_status_moods(client):
     assert "SECRET" not in client.get("/api/status").text
     moods = client.get("/api/moods").json()
     ids = {m["id"] for m in moods}
-    assert {"light", "short"} <= ids and not ids & {"classic", "recent"}
+    assert {"light", "short", "just-arrived"} <= ids and not ids & {"classic", "recent"}
+    assert client.get("/api/recommendations", params={"mood": "just-arrived"}).status_code == 200
     assert client.get("/api/recommendations", params={"mood": "recent"}).status_code == 200   # legacy -> era
 
 
