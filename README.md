@@ -99,7 +99,11 @@ Nothing is hand-written: groups are discovered from your own data and the TMDB c
 - **Android TV**: in the TV app the tab shows one group per screen, in the look of Tonight: the
   backdrop of the next film to watch, the name, progress, the hint and the whole saga as a poster
   row. Left and right move through the films, OK opens the side panel of any of them, down and up
-  go to the next and previous group. Browsers keep the cards.
+  go to the next and previous group.
+- **List / Screen toggle**: in a browser, a toggle in the tab's header switches between the cards
+  (List, the default) and that one-group-per-screen layout (Screen: click a film, arrow keys and
+  Enter, the arrows by the dots, the wheel or a vertical swipe change group); the browser remembers
+  the choice. The TV app always shows Screen, without the toggle.
 - **Any film opens a panel**, seen, in the library or missing. A film in the library to watch opens
   the usual detail sheet (Play lives there). Any other one opens a lighter panel built from TMDB
   (title, year, poster, overview; details are fetched once on demand when not cached):

@@ -230,6 +230,8 @@ main > .tonight { max-width: none; }
 }
 .seg__input:checked + span { background: var(--paper); color: var(--ink); font-weight: 700; }
 .seg__input:focus-visible + span { outline: 3px solid var(--bulb); outline-offset: 1px; }
+.seg--small .seg__item > span { gap: 6px; min-height: 32px; padding: 0 12px; font-size: .8125rem; }
+.seg--small .seg__item > span .icon { min-height: 0; padding: 0; width: 1.05em; height: 1.05em; }
 
 /* ---------- inputs ---------- */
 
@@ -987,6 +989,8 @@ html.kb-open .composer { bottom: var(--kb); padding-bottom: 8px; }
 main > .complete { max-width: 1040px; }
 .complete__top { display: grid; gap: 8px; margin-bottom: 20px; max-width: 760px; }
 .complete__top .page-title { margin-bottom: 0; }
+.complete__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.complete__head .complete__layout { margin-top: 8px; }
 .complete__kinds { margin-top: 8px; }
 
 .cgroups { display: grid; gap: 16px; }
@@ -1093,7 +1097,7 @@ button.cfilm__btn:focus-visible { outline-offset: 3px; border-radius: var(--r-s)
   overflow: hidden; text-overflow: ellipsis;
 }
 
-/* ---------- complete on the TV app (html.tv): one saga per screen, Tonight's hero look ---------- */
+/* ---------- complete on the TV app (html.tv) and the browser's Screen layout: one saga per screen, Tonight's hero look ---------- */
 main > .ctv { max-width: none; }
 .ctv { position: relative; height: calc(100dvh - 68px); overflow: hidden; }
 .ctv__stage { position: absolute; inset: 0; }
@@ -1172,6 +1176,39 @@ html.tv .ctv__film:focus-visible, .ctv__film:focus { outline: none; box-shadow: 
 @media (prefers-reduced-motion: reduce) {
   .ctv__art, .ctv__dots li { transition: none; }
   .ctv__film:focus .ctv__art { transform: none; }
+}
+
+/* the same screen in a browser (Complete's "Screen" layout, .ctv--web): no html.tv, so it sizes itself between
+   the top bar and the phone tab bar, takes clicks, and adds arrows beside the dots and the layout toggle */
+.ctv--web { height: calc(100dvh - 56px - env(safe-area-inset-top) - var(--tabbar) - env(safe-area-inset-bottom)); min-height: 420px; touch-action: pan-x; }
+@media (min-width: 768px) { .ctv--web { height: calc(100dvh - 68px); } }
+.ctv__toolbar { position: absolute; top: 3vh; left: 5vw; z-index: 3; }
+.ctv__toolbar .seg { background: rgb(36 29 61 / .8); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.ctv__nav { position: absolute; right: 1.6vw; top: 50%; translate: 0 -50%; z-index: 2; display: grid; justify-items: center; gap: 12px; }
+.ctv__nav .ctv__dots { position: static; translate: none; }
+.ctv__step {
+  display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border-radius: 50%;
+  border: 1px solid var(--line); background: rgb(27 21 48 / .6); color: var(--muted);
+}
+.ctv__step:hover:not(:disabled) { color: var(--paper); border-color: var(--muted); }
+.ctv__step:disabled { opacity: .3; cursor: default; }
+.ctv__step--prev .icon { rotate: 180deg; }
+.ctv--web .ctv__film { cursor: pointer; }
+.ctv--web .ctv__film:hover:not(:focus) .poster { opacity: .9; filter: none; }
+.ctv--web .ctv__film:hover:not(:focus) .ctv__art { transform: translateY(-4px); }
+@media (max-width: 767px) {
+  .ctv--web .ctv__screen { padding: 0 var(--gutter) 12px; }
+  .ctv--web .ctv__inner { gap: 8px; }
+  .ctv--web .ctv__title { font-size: clamp(2.25rem, 11vw, 3rem); }
+  .ctv--web .ctv__meta { flex-wrap: wrap; gap: 6px 14px; font-size: .9375rem; }
+  .ctv--web .ctv__bar { width: 120px; }
+  .ctv--web .ctv__caption { gap: 10px; margin-top: 4px; font-size: .9375rem; }
+  .ctv--web .ctv__row { gap: 10px; margin: 0 calc(-1 * var(--gutter)); padding: 14px var(--gutter) 12px; scroll-padding-inline: var(--gutter); }
+  .ctv--web .ctv__item { width: 96px; }
+  .ctv--web .ctv__film:focus .ctv__art { transform: scale(1.06); }
+  .ctv--web .ctv__hint, .ctv--web .ctv__dots { display: none; }
+  .ctv--web .ctv__toolbar { top: 12px; left: var(--gutter); }
+  .ctv--web .ctv__nav { top: 12px; right: var(--gutter); translate: none; grid-auto-flow: column; gap: 8px; }
 }
 
 /* saga films that are not playable now open a panel too: the same hover lift */

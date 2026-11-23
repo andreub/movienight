@@ -3,15 +3,21 @@
 // poster row in release order. D-pad: Left/Right walk the films, OK opens the film's side panel (the detail sheet
 // with Play for one in the library; for a seen or missing one, its info, the four verdicts and Unmark),
 // Down/Up move to the next/previous saga with a slide. Up on the first saga leaves for the tabs (tvnav.js).
-// Browsers never load this: complete.js hands over only when tvnav.js detected the TV app.
+// The TV app always gets this layout. In a browser it is the "Screen" layout of Complete (`web: true`), without the
+// TV mode of tvnav.js: a click opens a film, the arrows beside the dots, the wheel (one saga per gesture) and a
+// vertical swipe change saga, and the arrow keys and Enter work as on the remote while nothing else has the keys.
 import { api } from '../api.js';
-import { h, fill, icon, poster, hueOf, errorBox, announce } from '../dom.js';
+import { h, fill, icon, poster, hueOf, errorBox, announce, isTyping } from '../dom.js';
 import { openSagaFilm } from './complete.js';
 
 const KIND_LABEL = { collection: 'Saga', franchise: 'Franchise', series: 'Series' };
 const STATE_TEXT = { available: 'In your library · OK to open', seen: 'Seen · OK for details', missing: 'Not in your library · OK to mark seen' };
+const STATE_TEXT_WEB = { available: 'In your library · Enter to open', seen: 'Seen · Enter for details', missing: 'Not in your library · Enter to mark seen' };
 
-export function mountTv(root) {
+const ARROWS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
+
+// `web`: the browser's Screen layout; `toolbar`: a node laid over the top-left corner (the layout toggle).
+export function mountTv(root, { web = false, toolbar = null } = {}) {
   let alive = true;
   let groups = [];
   let index = 0;
@@ -19,8 +25,15 @@ export function mountTv(root) {
   let lastFilm = null; // the film focused last: kept across reloads and given focus back when the panel closes
   const stage = h('div', { class: 'ctv__stage' });
   const dots = h('ol', { class: 'ctv__dots', 'aria-hidden': 'true' });
-  const el = h('section', { class: 'ctv', 'aria-roledescription': 'carousel', 'aria-label': 'Sagas you have started' },
-    h('h1', { class: 'sr-only', text: 'Complete' }), stage, dots);
+  const navBtn = (dir, label) => h('button', {
+    type: 'button', class: `ctv__step ctv__step--${dir > 0 ? 'next' : 'prev'}`, 'aria-label': label, title: label,
+    onclick: () => step(dir),
+  }, icon('chevron'));
+  const prevBtn = web ? navBtn(-1, 'Previous saga') : null;
+  const nextBtn = web ? navBtn(1, 'Next saga') : null;
+  const nav = web ? h('div', { class: 'ctv__nav' }, prevBtn, dots, nextBtn) : dots;
+  const el = h('section', { class: `ctv${web ? ' ctv--web' : ''}`, 'aria-roledescription': 'carousel', 'aria-label': 'Sagas you have started' },
+    h('h1', { class: 'sr-only', text: 'Complete' }), stage, nav, toolbar ? h('div', { class: 'ctv__toolbar' }, toolbar) : null);
   root.append(el);
 
   const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -40,17 +53,19 @@ export function mountTv(root) {
     return g.films.find((f) => f.state === 'available') || g.films.find((f) => f.state !== 'seen') || g.films[0];
   }
 
+  const stateText = web ? STATE_TEXT_WEB : STATE_TEXT;
+
   function tile(f, caption) {
     const label = `${f.title}${f.year ? ` (${f.year})` : ''}, ${STATE_TEXT[f.state].split(' · ')[0].toLowerCase()}`;
     const btn = h('button', {
       type: 'button', class: 'ctv__film', 'aria-label': label,
-      onclick: () => openSagaFilm(f),
+      onclick: () => { lastFilm = f.tmdb_id; openSagaFilm(f); },
       onfocus: () => {
         lastFilm = f.tmdb_id;
         fill(caption,
           h('span', { class: 'ctv__cap-title', text: f.title }),
           f.year ? h('span', { text: String(f.year) }) : null,
-          h('span', { class: `ctv__cap-state ctv__cap-state--${f.state}`, text: STATE_TEXT[f.state] }));
+          h('span', { class: `ctv__cap-state ctv__cap-state--${f.state}`, text: stateText[f.state] }));
         const smooth = !reduced();
         btn.closest('li').scrollIntoView({ block: 'nearest', inline: 'center', behavior: smooth ? 'smooth' : 'auto' });
       },
@@ -93,6 +108,15 @@ export function mountTv(root) {
 
   function paintDots() {
     fill(dots, groups.map((g, i) => h('li', { class: i === index ? 'is-current' : null })));
+    if (prevBtn) { nav.hidden = groups.length < 2; prevBtn.disabled = index <= 0; nextBtn.disabled = index >= groups.length - 1; }
+  }
+
+  // Next (1) or previous (-1) saga, if there is one.
+  function step(dir) {
+    const to = index + dir;
+    if (!screen || to < 0 || to >= groups.length) return false;
+    show(to, dir);
+    return true;
   }
 
   // Show saga `i`; `dir` is 1 (down, next), -1 (up, previous) or 0 (first paint, no slide).
@@ -120,10 +144,30 @@ export function mountTv(root) {
     announce(`${g.name}. ${g.seen} of ${g.total} seen.${g.reason ? ` ${g.reason}.` : ''}`);
   }
 
+  // In a browser the keys also work when focus is nowhere in particular (the page, the hero itself, or the arrows
+  // beside the dots for the arrow keys), so a click on the backdrop does not strand them; never in a field, the
+  // layout toggle, the tabs or an open dialog.
+  function webTarget(e) {
+    if (!web || !screen || isTyping(e)) return null;
+    const a = document.activeElement;
+    const idle = !a || a === document.body || a.id === 'main' || a === el;
+    const onNav = Boolean(a?.closest?.('.ctv__nav')) && e.key !== 'Enter';
+    if (!idle && !onNav) return null;
+    const tiles = [...screen.querySelectorAll('.ctv__film')];
+    const i = groups[index]?.films.findIndex((f) => f.tmdb_id === lastFilm) ?? -1;
+    return tiles[i] || tiles[groups[index]?.films.indexOf(nextFilm(groups[index]))] || tiles[0] || null;
+  }
+
   function onKey(e) {
     if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || document.querySelector('dialog[open]')) return;
-    const film = document.activeElement?.closest?.('.ctv__film');
-    if (!film || !screen?.contains(film)) return;
+    let film = document.activeElement?.closest?.('.ctv__film');
+    if (!film || !screen?.contains(film)) {
+      if (!ARROWS.has(e.key) && e.key !== 'Enter') return;
+      film = webTarget(e);
+      if (!film) return;
+      if (e.key === 'Enter') { e.preventDefault(); film.click(); return; }
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); film.focus({ preventScroll: true }); return; }
+    }
     const tiles = [...screen.querySelectorAll('.ctv__film')];
     const at = tiles.indexOf(film);
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
@@ -141,6 +185,39 @@ export function mountTv(root) {
   }
   document.addEventListener('keydown', onKey);
 
+  // Wheel and trackpad (browser only): one saga per gesture. A gesture ends after a short quiet spell, so the
+  // momentum tail of a trackpad flick does not skip ahead. Mostly horizontal scrolls are left to the poster row.
+  let wheelAcc = 0;
+  let wheelLocked = false;
+  let wheelQuiet = 0;
+  function onWheel(e) {
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.ctrlKey) return;
+    e.preventDefault();
+    clearTimeout(wheelQuiet);
+    wheelQuiet = setTimeout(() => { wheelLocked = false; wheelAcc = 0; }, 240);
+    if (wheelLocked) return;
+    wheelAcc += e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1);
+    if (Math.abs(wheelAcc) < 24) return;
+    wheelLocked = true;
+    step(wheelAcc > 0 ? 1 : -1);
+    wheelAcc = 0;
+  }
+  // Touch (phones): a mostly vertical swipe changes saga; sideways swipes scroll the poster row.
+  let touch = null;
+  const onTouchStart = (e) => { touch = e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null; };
+  const onTouchEnd = (e) => {
+    if (!touch || !e.changedTouches.length) return;
+    const dx = e.changedTouches[0].clientX - touch.x;
+    const dy = e.changedTouches[0].clientY - touch.y;
+    touch = null;
+    if (Math.abs(dy) > 50 && Math.abs(dy) > Math.abs(dx) * 1.5) step(dy < 0 ? 1 : -1);
+  };
+  if (web) {
+    el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchend', onTouchEnd, { passive: true });
+  }
+
   async function load() {
     const focusKey = document.activeElement?.closest?.('.ctv') || document.querySelector('dialog[open]') ? lastFilm : null;
     const key = groups[index]?.key;
@@ -151,6 +228,7 @@ export function mountTv(root) {
       groups = r.groups;
       if (!groups.length) {
         fill(dots);
+        if (prevBtn) nav.hidden = true;
         fill(stage, h('div', { class: 'state ctv__empty' },
           h('p', { class: 'state__title', text: r.completed.length || r.hidden_count ? 'All caught up' : 'Nothing started yet' }),
           h('p', { class: 'state__text', text: 'Watch one film of a saga, franchise or trilogy and it shows up here.' })));
@@ -181,6 +259,7 @@ export function mountTv(root) {
     update() {},
     destroy() {
       alive = false;
+      clearTimeout(wheelQuiet);
       document.removeEventListener('keydown', onKey);
       window.removeEventListener('movienight:marked', onSeen);
       dialog?.removeEventListener('close', onClose);

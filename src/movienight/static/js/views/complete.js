@@ -6,6 +6,8 @@
 // gaps fall. When a saga does not fit in a few rows, long runs of seen films fold into a "✓ 7 seen" tile (tap
 // opens it); unseen films and their neighbours always stay. "Show all" appears only if it still overflows.
 // Groups without an order list unseen films first. Finished and hidden groups stay folded at the bottom.
+// Two layouts: this "List" and "Screen" (completetv.js, one saga per screen). A toggle in the header switches
+// between them in place and the browser remembers the choice; the TV app always gets Screen, with no toggle.
 import { api } from '../api.js';
 import { go } from '../state.js';
 import { h, fill, icon, poster, errorBox, toast, announce, quoted } from '../dom.js';
@@ -103,8 +105,47 @@ function listLayout(films, cap, all) {
 // unordered groups 2, or 3 when the card is wide.
 const rowsFor = (cols, ordered) => (ordered || cols >= 6 ? 3 : 2);
 
+const LAYOUT_KEY = 'movienight.completeLayout';
+const LAYOUTS = [['list', 'List', 'list'], ['screen', 'Screen', 'screen']];
+
+function storedLayout() {
+  try { return localStorage.getItem(LAYOUT_KEY) === 'screen' ? 'screen' : 'list'; } catch { return 'list'; }
+}
+
+function storeLayout(layout) {
+  try { localStorage.setItem(LAYOUT_KEY, layout); } catch { /* storage unavailable */ }
+}
+
+// The List / Screen segmented control.
+function layoutToggle(layout, onPick) {
+  const items = LAYOUTS.map(([value, label, glyph]) => {
+    const input = h('input', {
+      type: 'radio', name: 'complete-layout', value, class: 'seg__input', checked: value === layout,
+      onchange: () => onPick(value),
+    });
+    return h('label', { class: 'seg__item' }, input, h('span', {}, icon(glyph), label));
+  });
+  return h('fieldset', { class: 'seg seg--small complete__layout' }, h('legend', { class: 'sr-only', text: 'Layout' }), items);
+}
+
 export function mount(root) {
-  if (TV) return mountTv(root); // the Android TV app: one saga per screen (completetv.js)
+  if (TV) return mountTv(root); // the Android TV app: always one saga per screen, no toggle
+  let inner = null;
+  function render(layout, { refocus = false } = {}) {
+    inner?.destroy();
+    root.replaceChildren();
+    const toggle = layoutToggle(layout, (next) => { storeLayout(next); render(next, { refocus: true }); });
+    inner = layout === 'screen' ? mountTv(root, { web: true, toolbar: toggle }) : mountList(root, toggle);
+    if (refocus) toggle.querySelector('input:checked')?.focus({ preventScroll: true });
+  }
+  render(storedLayout());
+  return {
+    update(route) { inner.update(route); },
+    destroy() { inner.destroy(); },
+  };
+}
+
+function mountList(root, toggle) {
   let kind = null;
   let alive = true;
   let token = 0;
@@ -122,7 +163,7 @@ export function mount(root) {
 
   root.append(h('div', { class: 'complete' },
     h('div', { class: 'complete__top' },
-      h('h1', { class: 'page-title', text: 'Complete' }),
+      h('div', { class: 'complete__head' }, h('h1', { class: 'page-title', text: 'Complete' }), toggle),
       h('p', { class: 'lede', text: 'Sagas, franchises and series you have started. New releases and the ones you rated highest come first.' }),
       h('div', { class: 'chips chips--scroll complete__kinds', role: 'group', 'aria-label': 'Kind of group' }, chips)),
     status, list, folds));
