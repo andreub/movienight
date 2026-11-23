@@ -1,4 +1,4 @@
-// Route + filter state lives in the URL hash: #/browse?mood=tense&rt=90&wl=1&genre=Horror&q=&sort=year&movie=42
+// Route + filter state lives in the URL hash: #/browse?mood=tense&era=1990s&rt=90&wl=1&genre=Horror&q=&sort=year&movie=42
 // (plus tag=sitges2025 or tagf=sitges: "films like the ones I tagged", see /api/tags)
 // so a refresh (or a shared link) keeps the view, filters and open film.
 
@@ -14,10 +14,13 @@ export function parse() {
   const raw = location.hash.replace(/^#\/?/, '');
   const [path, qs = ''] = raw.split('?');
   const p = new URLSearchParams(qs);
+  // old links used mood=recent|classic; those are eras now
+  const legacy = ['recent', 'classic'].includes(p.get('mood')) ? p.get('mood') : null;
   return {
     view: VIEWS.includes(path) ? path : 'tonight',
     filters: {
-      mood: p.get('mood') || null,
+      mood: legacy ? null : p.get('mood') || null,
+      era: p.get('era') || legacy,
       tag: p.get('tag') || null,
       tagf: p.get('tag') ? null : p.get('tagf') || null,
       rt: toInt(p.get('rt')),
@@ -33,6 +36,7 @@ export function parse() {
 export function filterQuery(f) {
   const p = new URLSearchParams();
   if (f.mood) p.set('mood', f.mood);
+  if (f.era) p.set('era', f.era);
   if (f.tag) p.set('tag', f.tag);
   else if (f.tagf) p.set('tagf', f.tagf);
   if (f.rt) p.set('rt', f.rt);
@@ -76,15 +80,15 @@ export function go({ view, filters, movie } = {}, { replace = false } = {}) {
 export function start() { emit(); }
 
 export function setFilters(patch) { go({ filters: patch }, { replace: true }); }
-export const EMPTY_FILTERS = { mood: null, tag: null, tagf: null, rt: null, wl: false, genres: [], q: '' };
-export const CLEAR_QUICK = { mood: null, tag: null, tagf: null, rt: null, wl: false };
+export const EMPTY_FILTERS = { mood: null, era: null, tag: null, tagf: null, rt: null, wl: false, genres: [], q: '' };
+export const CLEAR_QUICK = { mood: null, era: null, tag: null, tagf: null, rt: null, wl: false };
 
 // Tonight only uses the quick filters; Browse adds genres and search.
 export function apiFilters(f, { full = false } = {}) {
-  const out = { mood: f.mood, tag: f.tag, tag_family: f.tag ? null : f.tagf, max_runtime: f.rt, watchlist_only: f.wl || null };
+  const out = { mood: f.mood, era: f.era, tag: f.tag, tag_family: f.tag ? null : f.tagf, max_runtime: f.rt, watchlist_only: f.wl || null };
   if (full) Object.assign(out, { genre: f.genres, q: f.q });
   return out;
 }
 
-export function hasQuickFilters(f) { return Boolean(f.mood || f.tag || f.tagf || f.rt || f.wl); }
+export function hasQuickFilters(f) { return Boolean(f.mood || f.era || f.tag || f.tagf || f.rt || f.wl); }
 export function hasAnyFilters(f) { return hasQuickFilters(f) || f.genres.length > 0 || Boolean(f.q); }

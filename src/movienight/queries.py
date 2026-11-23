@@ -51,10 +51,6 @@ MOODS: list[dict] = [
      "not_genres": ["Horror", "Thriller", "War"]},
     {"id": "short", "label": "Short (under 95 min)", "emoji": "⏱️", "description": "Done before you know it",
      "max_runtime": 94},
-    {"id": "classic", "label": "A classic (before 1980)", "emoji": "🎞️", "description": "From the golden decades",
-     "max_year": 1979},
-    {"id": "recent", "label": "Something recent", "emoji": "🆕", "description": "Released in the last 18 months",
-     "recent": True},
 ]
 MOOD_BY_ID = {m["id"]: m for m in MOODS}
 
@@ -74,8 +70,8 @@ def _is_recent(c: Cand, year) -> bool:
     # exact TMDB release date when known; otherwise only the year: year >= year of the cutoff date
     d = _release_date(c)
     if d:
-        return d >= recent_cutoff()
-    return bool(year and year >= recent_cutoff().year)
+        return recent_cutoff() <= d <= today()
+    return bool(year and recent_cutoff().year <= year <= today().year)
 
 
 def mood_matches(mood: dict, c: Cand) -> bool:
@@ -90,8 +86,6 @@ def mood_matches(mood: dict, c: Cand) -> bool:
         return False
     if "max_year" in mood and not (year and year <= mood["max_year"]):
         return False
-    if mood.get("recent") and not _is_recent(c, year):
-        return False
     if "min_year" in mood and not (year and year >= mood["min_year"]):
         return False
     content = ("genres" in mood) or ("keywords" in mood) or ("genre_sets" in mood)
@@ -104,9 +98,56 @@ def mood_matches(mood: dict, c: Cand) -> bool:
     return any(set(s) <= genres for s in mood.get("genre_sets", []))
 
 
+# --------------------------------------------------------------------------- eras
+
+FIRST_DECADE = 1980
+CLASSIC_MAX_YEAR = 1979
+
+
+def parse_era(era: str | None) -> tuple[str, int] | None:
+    """("recent"|"classic", 0) or ("decade", start); None when malformed."""
+    if era in ("recent", "classic"):
+        return era, 0
+    if era and len(era) == 5 and era[:4].isdigit() and era[4] == "s":
+        start = int(era[:4])
+        if start % 10 == 0 and start >= FIRST_DECADE:
+            return "decade", start
+    return None
+
+
+def era_matches(c: Cand, era: str) -> bool:
+    parsed = parse_era(era)
+    if parsed is None:
+        return False
+    kind, start = parsed
+    year = c.year or c.meta.get("year")
+    if kind == "recent":
+        return _is_recent(c, year)
+    if not year:
+        return False
+    if kind == "classic":
+        return year <= CLASSIC_MAX_YEAR
+    return start <= year <= start + 9
+
+
+def eras_public(cands: list[Cand]) -> list[dict]:
+    """Eras present in the library: Recent, decades from 1980 (newest first), Classic."""
+    out = []
+    if any(era_matches(c, "recent") for c in cands):
+        out.append({"id": "recent", "label": "Something recent", "description": "Released in the last 18 months"})
+    years = {c.year or c.meta.get("year") for c in cands}
+    decades = sorted({y // 10 * 10 for y in years if y and y >= FIRST_DECADE}, reverse=True)
+    for d in decades:
+        out.append({"id": f"{d}s", "label": f"{d}s", "description": f"Released in the {d}s"})
+    if any(y and y <= CLASSIC_MAX_YEAR for y in years):
+        out.append({"id": "classic", "label": "Classic", "description": "Before 1980"})
+    return out
+
+
 @dataclass
 class Filters:
     mood: str | None = None
+    era: str | None = None
     genres: list = field(default_factory=list)
     max_runtime: int | None = None
     min_year: int | None = None
@@ -148,6 +189,8 @@ def apply_filters(cands: list[Cand], f: Filters, dismissed: dict, skip_genre: bo
             if q not in c.nt:
                 continue
         if mood and not mood_matches(mood, c):
+            continue
+        if f.era and not era_matches(c, f.era):
             continue
         out.append(c)
     return out

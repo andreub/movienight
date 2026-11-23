@@ -91,6 +91,7 @@ async function request(method, path, { params, json, form } = {}) {
 export const api = {
   status: () => request('GET', '/api/status'),
   moods: () => request('GET', '/api/moods'),
+  eras: () => request('GET', '/api/eras'),
   tags: () => request('GET', '/api/tags'),
   pick: (params) => request('GET', '/api/pick', { params }),
   recommendations: (params) => request('GET', '/api/recommendations', { params }),
@@ -125,6 +126,12 @@ let moodsPromise = null;
 export function getMoods() {
   moodsPromise ??= api.moods().catch((e) => { moodsPromise = null; throw e; });
   return moodsPromise;
+}
+
+let erasPromise = null;
+export function getEras() {
+  erasPromise ??= api.eras().catch((e) => { erasPromise = null; throw e; });
+  return erasPromise;
 }
 
 // Letterboxd tags that can steer picks, fetched once. Any failure means "no tag chips".

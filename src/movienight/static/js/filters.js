@@ -1,5 +1,5 @@
 // Quick filters shared by Tonight and Browse: mood, Letterboxd tag, runtime, watchlist only.
-import { getMoods, getTags } from './api.js';
+import { getMoods, getEras, getTags } from './api.js';
 import { h, icon } from './dom.js';
 import { RUNTIMES, setFilters, hasQuickFilters, CLEAR_QUICK } from './state.js';
 import { timeControl, rememberRuntime } from './timecontrol.js';
@@ -11,6 +11,7 @@ export function filterBar({ time = false } = {}) {
   const timeCtl = time ? timeControl() : null;
   const name = `rt-${++uid}`;
   const moods = h('div', { class: 'chips chips--scroll', role: 'group', 'aria-label': 'Mood' });
+  const eras = h('div', { class: 'chips chips--scroll', role: 'group', 'aria-label': 'Era' });
   // One chip per tag family ("Like my Sitges"); its editions open in a second short row when picked.
   const editions = h('div', { class: 'chips chips--scroll chips--sub', role: 'group', 'aria-label': 'Tag edition', hidden: true });
   const runtimeInputs = RUNTIMES.map(([value, label]) => {
@@ -28,6 +29,7 @@ export function filterBar({ time = false } = {}) {
 
   const el = h('div', { class: 'filters' },
     moods,
+    eras,
     editions,
     h('div', { class: 'filters__row' },
       timeCtl ? timeCtl.chip : h('fieldset', { class: 'seg' }, h('legend', { class: 'sr-only', text: 'Length' }), runtimeInputs.map(([, l]) => l)),
@@ -37,6 +39,7 @@ export function filterBar({ time = false } = {}) {
 
   let state = null;
   let moodButtons = [];
+  let eraButtons = [];
   let families = [];
   let familyButtons = [];
 
@@ -58,6 +61,15 @@ export function filterBar({ time = false } = {}) {
     if (state) sync(state);
   }).catch(() => moods.remove());
 
+  getEras().then((list) => {
+    eraButtons = list.map((e) => h('button', {
+      type: 'button', class: 'chip', 'aria-pressed': 'false', title: e.description || null, 'data-id': e.id,
+      onclick: () => setFilters({ era: state?.era === e.id ? null : e.id }),
+    }, e.label));
+    eras.replaceChildren(...eraButtons);
+    if (state) sync(state);
+  }).catch(() => eras.remove());
+
   function syncEditions(f) {
     const fam = familyOf(f);
     const eds = fam?.editions || [];
@@ -75,6 +87,7 @@ export function filterBar({ time = false } = {}) {
   function sync(f) {
     state = f;
     for (const b of moodButtons) b.setAttribute('aria-pressed', String(b.dataset.id === f.mood));
+    for (const b of eraButtons) b.setAttribute('aria-pressed', String(b.dataset.id === f.era));
     const fam = familyOf(f);
     for (const b of familyButtons) b.setAttribute('aria-pressed', String(b.dataset.family === fam?.family));
     syncEditions(f);

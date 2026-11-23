@@ -13,10 +13,27 @@ def test_health_status_moods(client):
     assert s["tmdb"]["configured"] is False
     assert "SECRET" not in client.get("/api/status").text
     moods = client.get("/api/moods").json()
-    assert {"light", "short", "classic", "recent"} <= {m["id"] for m in moods}
-    assert next(m for m in moods if m["id"] == "recent") == {
-        "id": "recent", "label": "Something recent", "emoji": "🆕", "description": "Released in the last 18 months"}
-    assert client.get("/api/recommendations", params={"mood": "recent"}).status_code == 200
+    ids = {m["id"] for m in moods}
+    assert {"light", "short"} <= ids and not ids & {"classic", "recent"}
+    assert client.get("/api/recommendations", params={"mood": "recent"}).status_code == 200   # legacy -> era
+
+
+def test_eras_and_era_param(client):
+    eras = client.get("/api/eras").json()
+    ids = [e["id"] for e in eras]
+    assert ids[-1] == "classic" and all(set(e) == {"id", "label", "description"} for e in eras)
+    decades = [i for i in ids if i not in ("recent", "classic")]
+    assert decades == sorted(decades, reverse=True) and all(d >= "1980s" for d in decades)
+    g = lambda path, **p: client.get(path, params=p)
+    assert [m["title"] for m in g("/api/recommendations", era="classic").json()["items"]] == ["Horror Short"]
+    assert [m["title"] for m in g("/api/recommendations", mood="classic").json()["items"]] == ["Horror Short"]
+    assert g("/api/recommendations", era="classic", mood="scary").json()["total"] == 1
+    assert g("/api/recommendations", era="classic", mood="light").json()["total"] == 0
+    assert g("/api/pick", era="classic").json()["pick"]["title"] == "Horror Short"
+    assert g("/api/pick", era="1960s").status_code == 400
+    for bad in ("1960s", "abc", "1990", "recent!"):
+        assert g("/api/recommendations", era=bad).status_code == 400
+        assert g("/api/pick", era=bad).status_code == 400
 
 
 def test_recommendations_shape_and_ranking(client):
@@ -45,7 +62,7 @@ def test_filters_and_sorts(client):
     g = lambda **p: client.get("/api/recommendations", params=p).json()
     assert [m["title"] for m in g(watchlist_only="true")["items"]] == ["Epsilon Future"]
     assert [m["title"] for m in g(mood="short")["items"]] == ["Horror Short"]
-    assert [m["title"] for m in g(mood="classic")["items"]] == ["Horror Short"]
+    assert [m["title"] for m in g(era="classic")["items"]] == ["Horror Short"]
     assert {m["title"] for m in g(include_watched="true")["items"]} >= {"Gamma", "Plex Watched"}
     assert [m["title"] for m in g(genre="Horror")["items"]] == ["Horror Short"]
     assert g(max_runtime=90)["total"] == 1
