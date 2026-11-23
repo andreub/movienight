@@ -2,6 +2,7 @@
 import { getMoods, getEras, getTags } from './api.js';
 import { h, icon } from './dom.js';
 import { RUNTIMES, setFilters, hasQuickFilters, CLEAR_QUICK } from './state.js';
+import { dropdown } from './dropdown.js';
 import { timeControl, rememberRuntime } from './timecontrol.js';
 
 let uid = 0;
@@ -11,7 +12,6 @@ export function filterBar({ time = false } = {}) {
   const timeCtl = time ? timeControl() : null;
   const name = `rt-${++uid}`;
   const moods = h('div', { class: 'chips chips--scroll', role: 'group', 'aria-label': 'Mood' });
-  const eras = h('div', { class: 'chips chips--scroll', role: 'group', 'aria-label': 'Era' });
   // One chip per tag family ("Like my Sitges"); its editions open in a second short row when picked.
   const editions = h('div', { class: 'chips chips--scroll chips--sub', role: 'group', 'aria-label': 'Tag edition', hidden: true });
   const runtimeInputs = RUNTIMES.map(([value, label]) => {
@@ -27,19 +27,29 @@ export function filterBar({ time = false } = {}) {
     onclick: () => { rememberRuntime(null); setFilters(CLEAR_QUICK); },
   }, 'Clear');
 
+  // Era: a compact menu beside the length control. Hidden until the list loads (and removed if it fails or is empty).
+  let eraList = [];
+  const eraCtl = dropdown({
+    iconName: 'calendar',
+    build: () => h('ul', null,
+      eraCtl.item('Any era', null, !state?.era, () => setFilters({ era: null })),
+      eraList.map((e) => eraCtl.item(e.label, null, state?.era === e.id, () => setFilters({ era: e.id })))),
+  });
+  eraCtl.chip.hidden = true;
+  eraCtl.label.textContent = 'Any era';
+
   const el = h('div', { class: 'filters' },
     moods,
-    eras,
     editions,
     h('div', { class: 'filters__row' },
       timeCtl ? timeCtl.chip : h('fieldset', { class: 'seg' }, h('legend', { class: 'sr-only', text: 'Length' }), runtimeInputs.map(([, l]) => l)),
+      eraCtl.chip,
       watchlist,
       reset),
     timeCtl?.note);
 
   let state = null;
   let moodButtons = [];
-  let eraButtons = [];
   let families = [];
   let familyButtons = [];
 
@@ -62,13 +72,10 @@ export function filterBar({ time = false } = {}) {
   }).catch(() => moods.remove());
 
   getEras().then((list) => {
-    eraButtons = list.map((e) => h('button', {
-      type: 'button', class: 'chip', 'aria-pressed': 'false', title: e.description || null, 'data-id': e.id,
-      onclick: () => setFilters({ era: state?.era === e.id ? null : e.id }),
-    }, e.label));
-    eras.replaceChildren(...eraButtons);
+    eraList = list || [];
+    if (eraList.length) eraCtl.chip.hidden = false; else eraCtl.chip.remove();
     if (state) sync(state);
-  }).catch(() => eras.remove());
+  }).catch(() => eraCtl.chip.remove());
 
   function syncEditions(f) {
     const fam = familyOf(f);
@@ -87,7 +94,8 @@ export function filterBar({ time = false } = {}) {
   function sync(f) {
     state = f;
     for (const b of moodButtons) b.setAttribute('aria-pressed', String(b.dataset.id === f.mood));
-    for (const b of eraButtons) b.setAttribute('aria-pressed', String(b.dataset.id === f.era));
+    eraCtl.label.textContent = eraList.find((e) => e.id === f.era)?.label || (f.era ? String(f.era) : 'Any era');
+    eraCtl.button.classList.toggle('is-active', !!f.era);
     const fam = familyOf(f);
     for (const b of familyButtons) b.setAttribute('aria-pressed', String(b.dataset.family === fam?.family));
     syncEditions(f);
