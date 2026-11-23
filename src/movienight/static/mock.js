@@ -44,9 +44,28 @@ const MOODS = [
   { id: 'epic', label: 'Something epic', emoji: '🏔️', description: 'Big, long adventures', test: (m) => hasAny(m, ['Adventure', 'Action']) || (m.runtime || 0) > 140 },
   { id: 'heartfelt', label: 'Heartfelt', emoji: '💛', description: 'Drama and romance', test: (m) => hasAny(m, ['Romance', 'Drama']) },
   { id: 'short', label: 'Short one', emoji: '⏱️', description: 'Under 95 minutes', test: (m) => m.runtime && m.runtime < 100 },
-  { id: 'classic', label: 'A classic', emoji: '🎞️', description: 'Before 1980', test: (m) => m.year < 1980 },
-  { id: 'recent', label: 'Something recent', emoji: '🆕', description: 'Released in the last 18 months', test: (m) => { const c = new Date(); c.setMonth(c.getMonth() - 18); return m.release_date ? new Date(m.release_date) >= c : m.year >= c.getFullYear(); } },
 ];
+
+// Eras (GET /api/eras): Recent, decades from 1980 (newest first), Classic.
+const isRecent = (m) => {
+  const now = new Date(), c = new Date(); c.setMonth(c.getMonth() - 18);
+  if (m.release_date) { const d = new Date(m.release_date); return d >= c && d <= now; }
+  return m.year >= c.getFullYear() && m.year <= now.getFullYear();
+};
+const eraTest = (id) => {
+  if (id === 'recent') return isRecent;
+  if (id === 'classic') return (m) => m.year <= 1979;
+  const d = /^(\d{3})0s$/.test(id || '') ? Number(id.slice(0, 4)) : null;
+  return d && d >= 1980 ? (m) => m.year >= d && m.year <= d + 9 : () => false;
+};
+function eras() {
+  const out = [];
+  if (movies.some(isRecent)) out.push({ id: 'recent', label: 'Something recent', description: 'Released in the last 18 months' });
+  const decades = [...new Set(movies.filter((m) => m.year >= 1980).map((m) => Math.floor(m.year / 10) * 10))].sort((a, b) => b - a);
+  for (const d of decades) out.push({ id: `${d}s`, label: `${d}s`, description: `Released in the ${d}s` });
+  if (movies.some((m) => m.year <= 1979)) out.push({ id: 'classic', label: 'Classic', description: 'Before 1980' });
+  return out;
+}
 
 // Letterboxd diary tags (GET /api/tags): a festival with editions, and a tag without a year.
 const TAGS = [
@@ -163,11 +182,15 @@ function view(m) {
 function filter(p) {
   const genres = [].concat(p.genre || []);
   const q = (p.q || '').toLowerCase();
-  const mood = MOODS.find((x) => x.id === p.mood);
+  const legacy = ['recent', 'classic'].includes(p.mood) ? p.mood : null;
+  const mood = legacy ? null : MOODS.find((x) => x.id === p.mood);
+  const era = p.era || legacy;
+  const eraT = era ? eraTest(era) : null;
   const tagTest = TAG_TESTS[p.tag || p.tag_family];
   return movies.filter((m) => (p.include_dismissed || !isDismissed(m))
     && (p.include_watched || !seenSet.has(m.id))
     && (!mood || mood.test(m))
+    && (!eraT || eraT(m))
     && (!tagTest || tagTest(m))
     && (!p.max_runtime || (m.runtime && m.runtime <= p.max_runtime))
     && (!p.watchlist_only || m.on_watchlist)
@@ -272,6 +295,7 @@ export async function handle(method, path, p, body) {
       });
     }
     case 'GET /api/moods': return ok(MOODS.map(({ test, ...m }) => m));
+    case 'GET /api/eras': return ok(eras());
     case 'GET /api/tags': return ok({ min_films: 3, families: FRESH ? [] : TAGS });
     case 'GET /api/recommendations': {
       const list = filter(p).sort(SORTERS[p.sort] || SORTERS.match);
