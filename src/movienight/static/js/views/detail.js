@@ -3,8 +3,8 @@
 import { api } from '../api.js';
 import { h, icon, poster, hueOf, runtime, stars, matchStub, reasonList, errorBox, toast, quoted, num } from '../dom.js';
 import { playControl } from '../play.js';
-import { voteButtons, LOVE } from '../vote.js';
-import { setSeen, OUTCOMES } from '../seen.js';
+import { voteButtons, setVote, voteOf, LOVE } from '../vote.js';
+import { setSeen, setSeenVote, isSeen, OUTCOMES } from '../seen.js';
 import { parse } from '../state.js';
 import { serverName } from '../status.js';
 import { TV } from '../tvnav.js';
@@ -105,11 +105,51 @@ function marked(detail, message) {
 
 async function markSeen(m, seen) {
   if (!(await setSeen(m, seen, 'sheet'))) return;
-  if (marked({ id: m.id, seen }, seen ? `Marked ${quoted(m)} as seen.` : `${quoted(m)} is no longer marked as seen.`)) return;
-  // On Tonight the page itself replaces the film and offers the rating toast.
-  if (seen && parse().view === 'tonight') { load(); return; }
-  toast(seen ? `Marked ${quoted(m)} as seen.` : `${quoted(m)} is back in your picks.`);
-  load();
+  window.dispatchEvent(new CustomEvent('movienight:marked', { detail: { id: m.id, seen } }));
+  if (!seen) {
+    toast(`${quoted(m)} is back in your picks.`);
+    load();
+    return;
+  }
+  // Close first (same path as the X button, so the route follows), then toast. On Tonight the page
+  // itself replaces the film and offers its own toast through movienight:seen-saved.
+  onRequestClose();
+  if (parse().view === 'tonight') return;
+  toast(`Marked ${quoted(m)} as seen.`, {
+    timeout: 3000,
+    action: { label: 'Undo', run: () => setSeen(m, false, 'undo') },
+  });
+}
+
+// A vote from the sheet also marks an unseen film as seen (one request). Clearing a vote never un-marks it.
+function voteFromSheet(movie, vote) {
+  if (vote !== 0 && !isSeen(movie) && !movie.watched) return setSeenVote(movie, true, vote, 'sheet');
+  return setVote(movie, vote);
+}
+
+function votesControl(m) {
+  let wasSeen = false;
+  let previousVote = 0;
+  const save = (movie, vote) => {
+    wasSeen = isSeen(movie) || Boolean(movie.watched);
+    previousVote = voteOf(movie);
+    return voteFromSheet(movie, vote);
+  };
+  const onVote = async (vote, done) => {
+    const markedSeen = !wasSeen; // the save above also marked it seen when it was not
+    if (!(await done)) return; // refused (helpers already rolled back and toasted)
+    window.dispatchEvent(new CustomEvent('movienight:marked', { detail: { id: m.id, vote } }));
+    if (vote === 0) return; // cleared
+    onRequestClose();
+    const what = vote > 1 ? `${quoted(m)} is a favourite.` : vote > 0 ? `you liked ${quoted(m)}.` : `less like ${quoted(m)}.`;
+    if (!markedSeen) { toast(`Noted: ${what}`, { timeout: 3000 }); return; }
+    if (parse().view === 'tonight') return; // Tonight shows its own toast for the seen mark
+    toast(`Seen · ${what}`, {
+      timeout: 3000,
+      action: { label: 'Undo', run: () => setSeenVote(m, false, previousVote, 'undo') },
+    });
+  };
+  return voteButtons(m, { save, onVote });
 }
 
 function render(m) {
@@ -143,8 +183,8 @@ function render(m) {
       matchStub(m.match)),
     h('div', { class: 'detail__actions' },
       playControl(m),
-      voteButtons(m, { onVote: (v, done) => done.then((ok) => { if (ok) marked({ id: m.id, vote: v }, v ? `Saved your vote for ${quoted(m)}.` : `Cleared your vote for ${quoted(m)}.`); }) }),
       !m.watched ? h('button', { type: 'button', class: 'btn btn--ghost', onclick: () => markSeen(m, true) }, icon('eye'), 'Seen it') : null,
+      votesControl(m),
       m.letterboxd_url ? h('a', { class: 'btn btn--ghost', href: m.letterboxd_url, target: '_blank', rel: 'noopener' }, 'Letterboxd', icon('external', 'icon--end')) : null),
     m.seen_here ? h('p', { class: 'detail__seen' }, icon('check'), "You've seen this",
       h('button', { type: 'button', class: 'linkbtn', onclick: () => markSeen(m, false) }, 'Undo')) : null,
