@@ -14,6 +14,7 @@ const KIND_LABEL = { collection: 'Saga', franchise: 'Franchise', series: 'Series
 const STATE_TEXT = { available: 'In your library · OK to open', seen: 'Seen · OK for details', missing: 'Not in your library · OK to mark seen' };
 const STATE_TEXT_WEB = { available: 'In your library · Enter to open', seen: 'Seen · Enter for details', missing: 'Not in your library · Enter to mark seen' };
 
+const DOTS = 9;
 const ARROWS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
 
 // `web`: the browser's Screen layout; `toolbar`: a node laid over the top-left corner (the layout toggle).
@@ -55,6 +56,17 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
 
   const stateText = web ? STATE_TEXT_WEB : STATE_TEXT;
 
+  // Centres a tile in its poster row by scrolling only the row sideways: scrollIntoView would also scroll the
+  // hero (and the page) vertically while the next saga slides in.
+  function centre(li) {
+    const row = li?.parentElement;
+    if (!row) return;
+    const r = li.getBoundingClientRect();
+    const box = row.getBoundingClientRect();
+    const left = row.scrollLeft + (r.left - box.left) - (row.clientWidth - r.width) / 2;
+    row.scrollTo({ left: Math.max(0, left), behavior: reduced() ? 'auto' : 'smooth' });
+  }
+
   function tile(f, caption) {
     const label = `${f.title}${f.year ? ` (${f.year})` : ''}, ${STATE_TEXT[f.state].split(' · ')[0].toLowerCase()}`;
     const btn = h('button', {
@@ -66,8 +78,7 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
           h('span', { class: 'ctv__cap-title', text: f.title }),
           f.year ? h('span', { text: String(f.year) }) : null,
           h('span', { class: `ctv__cap-state ctv__cap-state--${f.state}`, text: stateText[f.state] }));
-        const smooth = !reduced();
-        btn.closest('li').scrollIntoView({ block: 'nearest', inline: 'center', behavior: smooth ? 'smooth' : 'auto' });
+        centre(btn.closest('li'));
       },
     },
     h('span', { class: 'ctv__art' },
@@ -106,8 +117,18 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
       after ? [icon('chevron'), `Next: ${after.name}`] : null));
   }
 
+  // At most DOTS dots: a window around the current saga, its outer two shrinking when more lie beyond.
   function paintDots() {
-    fill(dots, groups.map((g, i) => h('li', { class: i === index ? 'is-current' : null })));
+    const n = groups.length;
+    const start = Math.max(0, Math.min(index - Math.floor(DOTS / 2), n - DOTS));
+    const end = Math.min(n, start + DOTS);
+    const cls = (i) => {
+      if (i === index) return 'is-current';
+      if ((i === start && start > 0) || (i === end - 1 && end < n)) return 'is-edge';
+      if ((i === start + 1 && start > 0) || (i === end - 2 && end < n)) return 'is-near-edge';
+      return null;
+    };
+    fill(dots, groups.slice(start, end).map((g, k) => h('li', { class: cls(start + k) })));
     if (prevBtn) { nav.hidden = groups.length < 2; prevBtn.disabled = index <= 0; nextBtn.disabled = index >= groups.length - 1; }
   }
 
@@ -128,16 +149,20 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
     const old = screen;
     screen = next;
     if (old && dir && !reduced()) {
+      old.inert = true; // leaving: out of reach of focus, clicks and the scroll of its row
       old.classList.add(dir > 0 ? 'is-leaving-up' : 'is-leaving-down');
       next.classList.add(dir > 0 ? 'is-entering-up' : 'is-entering-down');
       stage.append(next);
-      const done = () => old.remove();
+      const done = () => { if (old.isConnected) old.remove(); };
       old.addEventListener('animationend', done, { once: true });
       setTimeout(done, 700);
+      // only the leaving screen and the new one: drop any older one still fading out after fast steps
+      for (const s of [...stage.children]) if (s !== old && s !== next) s.remove();
     } else {
       fill(stage, next);
     }
     paintDots();
+    el.scrollTop = 0; // never left scrolled (overflow: clip in CSS; this covers engines without it)
     const tiles = [...next.querySelectorAll('.ctv__film')];
     const start = focusKey != null ? g.films.findIndex((f) => f.tmdb_id === focusKey) : g.films.indexOf(nextFilm(g));
     tiles[Math.max(0, start)]?.focus({ preventScroll: true });
@@ -185,20 +210,38 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
   }
   document.addEventListener('keydown', onKey);
 
-  // Wheel and trackpad (browser only): one saga per gesture. A gesture ends after a short quiet spell, so the
-  // momentum tail of a trackpad flick does not skip ahead. Mostly horizontal scrolls are left to the poster row.
+  // Wheel and trackpad (browser only): one saga per gesture, up and down alike, wherever focus is. Listened to on
+  // the window while mounted and taken whenever the pointer is over the layout (only an open dialog stops it), so
+  // it never depends on what was clicked last. A gesture ends after a short quiet spell, or when the deltas grow
+  // again after the momentum tail of a trackpad flick died down; mostly horizontal scrolls are left to the row.
   let wheelAcc = 0;
-  let wheelLocked = false;
+  let wheelLocked = 0; // time the current gesture changed saga; 0 = not locked
+  let wheelLast = 0; // |delta| of the previous event
   let wheelQuiet = 0;
+  function overLayout(e) {
+    if (e.target instanceof Node && el.contains(e.target)) return true;
+    const r = el.getBoundingClientRect();
+    return e.clientX >= r.left && e.clientX < r.right && e.clientY >= r.top && e.clientY < r.bottom;
+  }
   function onWheel(e) {
-    if (Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.ctrlKey) return;
+    if (!alive || e.ctrlKey || !overLayout(e) || document.querySelector('dialog[open]')) return;
+    const dy = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1);
+    if (Math.abs(e.deltaX) > Math.abs(dy)) {
+      // sideways: the poster row scrolls; anywhere else it must not scroll the page or swipe back in history
+      if (!(e.target instanceof Element && e.target.closest('.ctv__screen:not([inert]) .ctv__row'))) e.preventDefault();
+      return;
+    }
     e.preventDefault();
+    const size = Math.abs(dy);
     clearTimeout(wheelQuiet);
-    wheelQuiet = setTimeout(() => { wheelLocked = false; wheelAcc = 0; }, 240);
-    if (wheelLocked) return;
-    wheelAcc += e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1);
+    wheelQuiet = setTimeout(() => { wheelLocked = 0; wheelAcc = 0; wheelLast = 0; }, 240);
+    const fresh = wheelLocked && performance.now() - wheelLocked > 350 && size > wheelLast * 1.5 + 4;
+    wheelLast = size;
+    if (wheelLocked && !fresh) return;
+    if (fresh) { wheelLocked = 0; wheelAcc = 0; }
+    wheelAcc += dy;
     if (Math.abs(wheelAcc) < 24) return;
-    wheelLocked = true;
+    wheelLocked = performance.now();
     step(wheelAcc > 0 ? 1 : -1);
     wheelAcc = 0;
   }
@@ -213,7 +256,7 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
     if (Math.abs(dy) > 50 && Math.abs(dy) > Math.abs(dx) * 1.5) step(dy < 0 ? 1 : -1);
   };
   if (web) {
-    el.addEventListener('wheel', onWheel, { passive: false });
+    window.addEventListener('wheel', onWheel, { passive: false });
     el.addEventListener('touchstart', onTouchStart, { passive: true });
     el.addEventListener('touchend', onTouchEnd, { passive: true });
   }
@@ -260,6 +303,7 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
     destroy() {
       alive = false;
       clearTimeout(wheelQuiet);
+      window.removeEventListener('wheel', onWheel);
       document.removeEventListener('keydown', onKey);
       window.removeEventListener('movienight:marked', onSeen);
       dialog?.removeEventListener('close', onClose);

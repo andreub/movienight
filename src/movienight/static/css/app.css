@@ -1099,8 +1099,8 @@ button.cfilm__btn:focus-visible { outline-offset: 3px; border-radius: var(--r-s)
 
 /* ---------- complete on the TV app (html.tv) and the browser's Screen layout: one saga per screen, Tonight's hero look ---------- */
 main > .ctv { max-width: none; }
-.ctv { position: relative; height: calc(100dvh - 68px); overflow: hidden; }
-.ctv__stage { position: absolute; inset: 0; }
+.ctv { position: relative; height: calc(100dvh - 68px); overflow: hidden; overflow: clip; }
+.ctv__stage { position: absolute; inset: 0; overflow: hidden; overflow: clip; }
 .ctv__screen {
   position: absolute; inset: 0; isolation: isolate; display: grid; align-items: end;
   padding: 0 5vw 4vh;
@@ -1139,6 +1139,7 @@ main > .ctv { max-width: none; }
   margin: 0 -5vw; padding: 2.4vh 5vw 2.6vh; scroll-padding-inline: 5vw;
 }
 .ctv__row::-webkit-scrollbar { display: none; }
+.ctv__row { overscroll-behavior-x: contain; }
 .ctv__item { flex: none; width: clamp(96px, 8.6vw, 190px); }
 .ctv__film { display: block; width: 100%; padding: 0; border: 0; background: none; color: inherit; border-radius: var(--r-s); }
 .ctv__art { position: relative; display: block; transition: transform .18s var(--ease); }
@@ -1159,9 +1160,11 @@ html.tv .ctv__film:focus-visible, .ctv__film:focus { outline: none; box-shadow: 
   position: absolute; right: 5vw; top: 3vh; display: flex; align-items: center; gap: 8px;
   color: var(--muted); font-size: clamp(.875rem, 1vw, 1.25rem);
 }
-.ctv__dots { position: absolute; right: 2vw; top: 50%; translate: 0 -50%; display: grid; gap: 10px; z-index: 2; }
-.ctv__dots li { width: 8px; height: 8px; border-radius: 50%; background: rgb(244 238 227 / .28); transition: height .25s var(--ease), background .25s; }
+.ctv__dots { position: absolute; right: 2vw; top: 50%; translate: 0 -50%; display: grid; justify-items: center; gap: 10px; z-index: 2; }
+.ctv__dots li { width: 8px; height: 8px; border-radius: 50%; background: rgb(244 238 227 / .28); transition: width .25s var(--ease), height .25s var(--ease), background .25s; }
 .ctv__dots li.is-current { height: 26px; border-radius: 999px; background: var(--bulb); }
+.ctv__dots li.is-near-edge { width: 6px; height: 6px; }
+.ctv__dots li.is-edge { width: 4px; height: 4px; }
 .ctv__empty { padding-top: 20vh; }
 
 /* Down slides the next saga in from below; Up, the previous one from above */
@@ -1180,6 +1183,7 @@ html.tv .ctv__film:focus-visible, .ctv__film:focus { outline: none; box-shadow: 
 
 /* the same screen in a browser (Complete's "Screen" layout, .ctv--web): no html.tv, so it sizes itself between
    the top bar and the phone tab bar, takes clicks, and adds arrows beside the dots and the layout toggle */
+html:has(.ctv--web), html:has(.ctv--web) body { overscroll-behavior-x: none; } /* body's overflow-x: hidden already reaches the viewport */
 .ctv--web { height: calc(100dvh - 56px - env(safe-area-inset-top) - var(--tabbar) - env(safe-area-inset-bottom)); min-height: 420px; touch-action: pan-x; }
 @media (min-width: 768px) { .ctv--web { height: calc(100dvh - 68px); } }
 .ctv__toolbar { position: absolute; top: 3vh; left: 5vw; z-index: 3; }

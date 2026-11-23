@@ -266,6 +266,11 @@ const COMPLETIONS = [
   { key: 'collection-295', kind: 'collection', name: 'Pirates of the Caribbean', films: [
     ['The Curse of the Black Pearl', 2003, 's', 21000], ['Dead Man’s Chest', 2006, 'm', 16000], ['At World’s End', 2007, 'm', 14000]] },
 ];
+// ?mock=1&sagas=N pads the list with generated trilogies up to N groups (long lists: the Screen layout's dots).
+for (let n = COMPLETIONS.length; n < Math.min(200, Number(params.get('sagas')) || 0); n += 1) {
+  COMPLETIONS.push({ key: `collection-${70000 + n}`, kind: 'collection', name: `Filler Saga ${n}`, score: 0.1, films: [
+    [`Filler ${n}: One`, 1990 + (n % 30), 's', 1000], [`Filler ${n}: Two`, 1992 + (n % 30), 'm', 800], [`Filler ${n}: Three`, 1994 + (n % 30), 'a', 600]] });
+}
 const hiddenGroups = new Set(FRESH ? [] : ['collection-295']);
 const completionMovies = [];
 // How a seen saga film was seen: 's' Letterboxd, 'p' played on Plex itself, 'h' marked seen here (can be undone).
