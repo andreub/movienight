@@ -210,6 +210,17 @@ MIGRATIONS = [
         fetched_at TEXT
     );
     """,
+    # 14: completionist filmographies. A person's TMDB film credits (directed, and billed in the top 5), cached for
+    # the directors and actors the user has seen several films of ('{}' = TMDB has no such person).
+    """
+    CREATE TABLE IF NOT EXISTS tmdb_person_credits (
+        person_id INTEGER PRIMARY KEY,
+        name TEXT,
+        profile_path TEXT,
+        json TEXT NOT NULL,
+        fetched_at TEXT
+    );
+    """,
 ]
 
 # meta keys that belong to one media server type: removed when the app switches to the other one

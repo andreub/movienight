@@ -675,11 +675,11 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         """Letterboxd diary tags that can steer picks (tag / tag_family on /api/recommendations and /api/pick)."""
         return {"min_films": lbtags.MIN_GROUP_FILMS, "families": lbtags.usable(engine().get())}
 
-    # ---- completionist: sagas, franchises and series the user has started (discovered from the TMDB cache)
+    # ---- completionist: sagas, franchises, series and director/actor filmographies (discovered from the TMDB cache)
     # (MOVIENIGHT_COMPLETIONIST=0: not mounted, so every /api/completions* answers 404)
     if cfg.completionist:
         @app.get("/api/completions")
-        def completions(kind: Literal["collection", "franchise", "series"] | None = None, hidden: bool = False):
+        def completions(kind: Literal["collection", "franchise", "series", "director", "actor"] | None = None, hidden: bool = False):
             st = engine().get()
             c = conn()
             try:

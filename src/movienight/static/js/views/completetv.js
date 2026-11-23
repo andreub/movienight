@@ -6,11 +6,15 @@
 // The TV app always gets this layout. In a browser it is the "Screen" layout of Complete (`web: true`), without the
 // TV mode of tvnav.js: a click opens a film, the arrows beside the dots, the wheel (one saga per gesture) and a
 // vertical swipe change saga, and the arrow keys and Enter work as on the remote while nothing else has the keys.
+// The kind chips (All, Sagas, ..., Directors, Actors) sit at the top, beside the layout toggle in a browser: a chip
+// starts over at the first group of its kind, and the browser remembers it. On the TV, Up on the first group
+// reaches them (dimmed until then), Left/Right walk them, OK applies one and Down goes back to the films.
+// Directors and actors have no order: their row lists the films to see first, then the seen ones.
 import { api } from '../api.js';
 import { h, fill, icon, poster, hueOf, errorBox, announce, isTyping } from '../dom.js';
-import { openSagaFilm } from './complete.js';
+import { openSagaFilm, KINDS, storedKind, storeKind } from './complete.js';
 
-const KIND_LABEL = { collection: 'Saga', franchise: 'Franchise', series: 'Series' };
+const KIND_LABEL = { collection: 'Saga', franchise: 'Franchise', series: 'Series', director: 'Director', actor: 'Actor' };
 const STATE_TEXT = { available: 'In your library · OK to open', seen: 'Seen · OK for details', missing: 'Not in your library · OK to mark seen' };
 const STATE_TEXT_WEB = { available: 'In your library · Enter to open', seen: 'Seen · Enter for details', missing: 'Not in your library · Enter to mark seen' };
 
@@ -20,7 +24,10 @@ const ARROWS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
 // `web`: the browser's Screen layout; `toolbar`: a node laid over the top-left corner (the layout toggle).
 export function mountTv(root, { web = false, toolbar = null } = {}) {
   let alive = true;
-  let groups = [];
+  let everything = []; // every group in progress, all kinds
+  let groups = []; // those of the chosen kind
+  let counts = null; // kind -> groups in progress
+  let kind = storedKind();
   let index = 0;
   let screen = null;
   let lastFilm = null; // the film focused last: kept across reloads and given focus back when the panel closes
@@ -33,9 +40,48 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
   const prevBtn = web ? navBtn(-1, 'Previous saga') : null;
   const nextBtn = web ? navBtn(1, 'Next saga') : null;
   const nav = web ? h('div', { class: 'ctv__nav' }, prevBtn, dots, nextBtn) : dots;
+  const chips = KINDS.map(([id, label]) => h('button', {
+    type: 'button', class: 'chip chip--small', 'aria-pressed': String(id === kind), 'data-kind': id || '',
+    onclick: () => pick(id),
+  }, h('span', { text: label }), h('span', { class: 'chip__count' })));
+  const kinds = h('div', { class: 'chips ctv__kinds', role: 'group', 'aria-label': 'Kind of group' }, chips);
   const el = h('section', { class: `ctv${web ? ' ctv--web' : ''}`, 'aria-roledescription': 'carousel', 'aria-label': 'Sagas you have started' },
-    h('h1', { class: 'sr-only', text: 'Complete' }), stage, nav, toolbar ? h('div', { class: 'ctv__toolbar' }, toolbar) : null);
+    h('h1', { class: 'sr-only', text: 'Complete' }), stage, nav, h('div', { class: 'ctv__toolbar' }, toolbar, kinds));
   root.append(el);
+
+  const ofKind = (g) => !kind || g.kind === kind;
+  const shownChips = () => chips.filter((c) => !c.hidden);
+
+  function paintChips() {
+    for (const c of chips) {
+      const id = c.dataset.kind || null;
+      c.setAttribute('aria-pressed', String(id === kind));
+      const n = counts ? (id ? counts[id] || 0 : everything.length) : null;
+      c.querySelector('.chip__count').textContent = n == null ? '' : String(n);
+      c.hidden = Boolean(id) && Boolean(counts) && !counts[id] && id !== kind;
+    }
+  }
+
+  // A chip: the first group of that kind, focus left on the chip (Down goes to the films).
+  function pick(id) {
+    if (id === kind) return;
+    kind = id;
+    storeKind(id);
+    groups = everything.filter(ofKind);
+    paintChips();
+    if (groups.length) show(0, 0, null, false);
+    else empty();
+  }
+
+  function empty() {
+    fill(dots);
+    screen = null;
+    if (prevBtn) nav.hidden = true;
+    const label = KINDS.find(([id]) => id === kind)?.[1].toLowerCase();
+    fill(stage, h('div', { class: 'state ctv__empty' },
+      h('p', { class: 'state__title', text: everything.length && kind ? `No ${label} in progress` : 'Nothing started yet' }),
+      h('p', { class: 'state__text', text: 'Watch one film of a saga, franchise or trilogy, or a few by the same director or actor, and it shows up here.' })));
+  }
 
   const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -90,7 +136,8 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
 
   function build(g, i) {
     const caption = h('p', { class: 'ctv__caption', 'aria-hidden': 'true' });
-    const row = h('ul', { class: 'ctv__row', 'aria-label': `${g.name}, in release order` }, g.films.map((f) => tile(f, caption)));
+    const row = h('ul', { class: 'ctv__row', 'aria-label': g.ordered ? `${g.name}, in release order` : `${g.name}: still to watch, then seen` },
+      g.films.map((f) => tile(f, caption)));
     const pct = g.total ? Math.round((g.seen / g.total) * 100) : 0;
     const after = groups[i + 1];
     return h('article', {
@@ -140,8 +187,9 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
     return true;
   }
 
-  // Show saga `i`; `dir` is 1 (down, next), -1 (up, previous) or 0 (first paint, no slide).
-  function show(i, dir = 0, focusKey = null) {
+  // Show saga `i`; `dir` is 1 (down, next), -1 (up, previous) or 0 (first paint, no slide). `focus`: give the
+  // film focus (not when a chip was just picked).
+  function show(i, dir = 0, focusKey = null, focus = true) {
     const g = groups[i];
     if (!g) return;
     index = i;
@@ -165,7 +213,8 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
     el.scrollTop = 0; // never left scrolled (overflow: clip in CSS; this covers engines without it)
     const tiles = [...next.querySelectorAll('.ctv__film')];
     const start = focusKey != null ? g.films.findIndex((f) => f.tmdb_id === focusKey) : g.films.indexOf(nextFilm(g));
-    tiles[Math.max(0, start)]?.focus({ preventScroll: true });
+    if (focus) tiles[Math.max(0, start)]?.focus({ preventScroll: true });
+    else lastFilm = g.films[Math.max(0, start)]?.tmdb_id ?? null;
     announce(`${g.name}. ${g.seen} of ${g.total} seen.${g.reason ? ` ${g.reason}.` : ''}`);
   }
 
@@ -183,8 +232,33 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
     return tiles[i] || tiles[groups[index]?.films.indexOf(nextFilm(groups[index]))] || tiles[0] || null;
   }
 
+  // The film to go back to from the chips: the one focused last, else the next one to watch.
+  function currentTile() {
+    if (!screen) return null;
+    const tiles = [...screen.querySelectorAll('.ctv__film')];
+    const g = groups[index];
+    const i = g?.films.findIndex((f) => f.tmdb_id === lastFilm) ?? -1;
+    return tiles[i] || tiles[g?.films.indexOf(nextFilm(g))] || tiles[0] || null;
+  }
+
+  // On a chip: Left/Right walk the chips, Down returns to the films; OK (Enter) is the button's own click and Up is
+  // left to tvnav.js (the tabs).
+  function chipKey(e, chip) {
+    const shown = shownChips();
+    const at = shown.indexOf(chip);
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      shown[at + (e.key === 'ArrowRight' ? 1 : -1)]?.focus({ preventScroll: true });
+    } else if (e.key === 'ArrowDown') {
+      const t = currentTile();
+      if (t) { e.preventDefault(); t.focus({ preventScroll: true }); }
+    }
+  }
+
   function onKey(e) {
     if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || document.querySelector('dialog[open]')) return;
+    const chip = document.activeElement?.closest?.('.ctv__kinds .chip');
+    if (chip && kinds.contains(chip)) { chipKey(e, chip); return; }
     let film = document.activeElement?.closest?.('.ctv__film');
     if (!film || !screen?.contains(film)) {
       if (!ARROWS.has(e.key) && e.key !== 'Enter') return;
@@ -205,8 +279,11 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
     } else if (e.key === 'ArrowUp' && index > 0) {
       e.preventDefault();
       show(index - 1, -1);
+    } else if (e.key === 'ArrowUp') {
+      // Up on the first group: the kind chips (on the current one); Up again leaves for the tabs (tvnav.js)
+      const on = chips.find((c) => c.getAttribute('aria-pressed') === 'true' && !c.hidden) || shownChips()[0];
+      if (on) { e.preventDefault(); on.focus({ preventScroll: true }); }
     }
-    // Up on the first saga: not handled here, so tvnav.js moves focus to the tabs.
   }
   document.addEventListener('keydown', onKey);
 
@@ -268,13 +345,21 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
     try {
       const r = await api.completions({});
       if (!alive) return;
-      groups = r.groups;
+      everything = r.groups;
+      counts = {};
+      for (const g of everything) counts[g.kind] = (counts[g.kind] || 0) + 1;
+      if (kind && !counts[kind] && !groups.length) kind = null; // a remembered kind with nothing left: All
+      groups = everything.filter(ofKind);
+      paintChips();
       if (!groups.length) {
-        fill(dots);
-        if (prevBtn) nav.hidden = true;
-        fill(stage, h('div', { class: 'state ctv__empty' },
-          h('p', { class: 'state__title', text: r.completed.length || r.hidden_count ? 'All caught up' : 'Nothing started yet' }),
-          h('p', { class: 'state__text', text: 'Watch one film of a saga, franchise or trilogy and it shows up here.' })));
+        if (!everything.length) {
+          fill(dots);
+          screen = null;
+          if (prevBtn) nav.hidden = true;
+          fill(stage, h('div', { class: 'state ctv__empty' },
+            h('p', { class: 'state__title', text: r.completed.length || r.hidden_count ? 'All caught up' : 'Nothing started yet' }),
+            h('p', { class: 'state__text', text: 'Watch one film of a saga, franchise or trilogy, or a few by the same director or actor, and it shows up here.' })));
+        } else empty();
         return;
       }
       const keep = groups.findIndex((g) => g.key === key);
@@ -296,6 +381,7 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
     if (tile) setTimeout(() => tile.focus({ preventScroll: true }), 0);
   };
   dialog?.addEventListener('close', onClose);
+  paintChips();
   load();
 
   return {

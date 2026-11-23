@@ -10,9 +10,14 @@ Three signals, in this order:
   through a cached /discover/movie?with_keywords. Generic ones ("trilogy", "family saga") and keywords on many
   films (themes, not series) are skipped; obscure entries (shorts, fan films) are dropped by vote count.
 
+Then filmographies, which have no order of their own:
+- **director**: someone who directed DIRECTOR_MIN_SEEN films the user has seen; **actor**: someone billed in the
+  top 5 of ACTOR_MIN_SEEN seen films. Their credits (cached /person/{id}?append_to_response=movie_credits) skip
+  documentaries, TV films, unreleased and little-voted films, unless seen. Someone eligible as both is a director.
+
 Groups are built from the engine state plus the cached TMDB tables (tmdb_collections, tmdb_lookups,
-tmdb_details), memoised on the state like tags.py. Keys are path-safe: collection-556, franchise-spider-man,
-series-357318.
+tmdb_details, tmdb_person_credits), memoised on the state like tags.py. Keys are path-safe: collection-556,
+franchise-spider-man, series-357318, director-525, actor-6193.
 """
 from __future__ import annotations
 
@@ -24,9 +29,22 @@ from datetime import date, datetime, timezone
 
 from . import library, tmdb
 
-KINDS = ("collection", "franchise", "series")
+SAGA_KINDS = ("collection", "franchise", "series")
+PEOPLE_KINDS = ("director", "actor")
+KINDS = SAGA_KINDS + PEOPLE_KINDS
 COLLECTION_TTL_DAYS = 30
 LOOKUP_TTL_DAYS = 30
+PERSON_TTL_DAYS = 30
+
+# filmographies: a director with this many films seen, an actor with this many seen in the top 5 billing (cast_ids)
+DIRECTOR_MIN_SEEN = 3
+ACTOR_MIN_SEEN = 4
+PEOPLE_MAX = 40            # of each kind, most films seen first: at most 2 x 40 credit lookups per sync
+PERSON_MIN_VOTES = 100     # obscure credits (shorts, festival films, cameos) stay out, unless seen
+PERSON_SKIP_GENRES = {99, 10770}    # documentaries and TV films, unless seen
+ACTOR_MAX_FILMS = 30       # an actor's group: every seen film, then the most relevant unseen ones up to this
+ACTOR_MIN_UNSEEN = 5       # ...but never fewer unseen than this when the seen films alone reach the cap
+PEOPLE_TASTE = 0.25        # genre affinity's weight on a missing film's relevance (x (1 + w * affinity))
 
 # series keywords: the last word names a series; at least one other word must be specific
 SERIES_WORDS = {"trilogy", "duology", "dilogy", "tetralogy", "quadrilogy", "pentalogy", "hexalogy", "saga"}
@@ -162,6 +180,33 @@ def wanted_keywords(conn: sqlite3.Connection, seen: set[int]) -> list[tuple[int,
     return sorted(out.items())
 
 
+def wanted_people(conn: sqlite3.Connection, seen: set[int]) -> dict[str, list[tuple[int, int]]]:
+    """{"director": [(person id, films seen)], "actor": [...]}: directors with DIRECTOR_MIN_SEEN films seen and actors
+    with ACTOR_MIN_SEEN seen in the top 5 billing, most seen first, PEOPLE_MAX of each. Counted from the stored
+    details of seen films (director_ids, cast_ids)."""
+    counts: dict[str, dict[int, int]] = {"director": {}, "actor": {}}
+    for tid, dirs, cast in conn.execute(
+            "SELECT tmdb_id, json_extract(json,'$.director_ids'), json_extract(json,'$.cast_ids') FROM tmdb_details"
+            " WHERE json_type(json,'$.director_ids')='array' OR json_type(json,'$.cast_ids')='array'"):
+        if tid not in seen:
+            continue
+        for kind, ids in (("director", dirs), ("actor", cast)):
+            for pid in set(json.loads(ids or "[]")):
+                if isinstance(pid, int) and pid > 0:
+                    counts[kind][pid] = counts[kind].get(pid, 0) + 1
+    out = {}
+    for kind, least in (("director", DIRECTOR_MIN_SEEN), ("actor", ACTOR_MIN_SEEN)):
+        ranked = sorted(((pid, n) for pid, n in counts[kind].items() if n >= least), key=lambda x: (-x[1], x[0]))
+        out[kind] = ranked[:PEOPLE_MAX]
+    return out
+
+
+def wanted_person_ids(conn: sqlite3.Connection, seen: set[int]) -> list[int]:
+    """Every eligible director and actor (one lookup per person, even when both)."""
+    w = wanted_people(conn, seen)
+    return sorted({pid for kind in PEOPLE_KINDS for pid, _ in w[kind]})
+
+
 # --------------------------------------------------------------------------- building groups
 
 def _seen(st) -> set[int]:
@@ -192,7 +237,8 @@ def _film(p: dict) -> dict:
     return {"tmdb_id": p["id"], "title": p.get("title") or "", "year": p.get("year"),
             "release_date": p.get("release_date") or "", "poster_path": p.get("poster_path"),
             "backdrop_path": p.get("backdrop_path"),
-            "vote_count": p.get("vote_count") or 0, "vote_average": p.get("vote_average")}
+            "vote_count": p.get("vote_count") or 0, "vote_average": p.get("vote_average"),
+            "genre_ids": p.get("genre_ids") or []}
 
 
 def _by_date(films) -> list[dict]:
@@ -301,19 +347,87 @@ def _raw_groups(conn: sqlite3.Connection, seen: set[int]) -> list[dict]:
     return [g for g in groups if len(g["films"]) >= 2 and seen.intersection(f["tmdb_id"] for f in g["films"])]
 
 
+def keep_credit(p: dict, seen: set[int], today: str) -> bool:
+    """A filmography credit worth listing: released, not a documentary or a TV film, voted on by PERSON_MIN_VOTES
+    people. A film the user has seen always stays (it counts for progress)."""
+    if p.get("id") in seen:
+        return True
+    when = p.get("release_date") or ""
+    if not when or when > today:
+        return False
+    if PERSON_SKIP_GENRES.intersection(p.get("genre_ids") or []):
+        return False
+    return (p.get("vote_count") or 0) >= PERSON_MIN_VOTES
+
+
 def _relevance(f: dict) -> float:
     """Popularity x quality for films outside the library (vote count damped by log)."""
     return math.log1p(f.get("vote_count") or 0) * (f.get("vote_average") or 0)
 
 
-def ranked_unseen(films: list[dict]) -> list[dict]:
-    """For groups without an order: films in the library first (group order), then missing ones by relevance."""
-    return ([f for f in films if f["state"] == "available"]
-            + sorted((f for f in films if f["state"] == "missing"), key=lambda f: -_relevance(f)))
+def _appeal(f: dict, aff=None) -> float:
+    """Relevance, nudged by the user's taste for the film's genres (`aff`: genre id list -> affinity in [-1, 1])."""
+    genres = f.get("genre_ids") or f.get("_genres") or []
+    return _relevance(f) * (1 + PEOPLE_TASTE * (aff(genres) if aff else 0.0))
 
 
-def _decorate(g: dict, seen: set[int], avail: dict, backdrops: dict[int, str] | None = None) -> dict:
+def ranked_unseen(films: list[dict], aff=None) -> list[dict]:
+    """For groups without an order: films in the library first (best match first), then missing ones by relevance
+    plus taste."""
+    return (sorted((f for f in films if f["state"] == "available"), key=lambda f: -(f.get("match") or 0))
+            + sorted((f for f in films if f["state"] == "missing"), key=lambda f: -_appeal(f, aff)))
+
+
+def cap_films(films: list[dict], seen: set[int], avail: set[int], aff=None, cap: int = ACTOR_MAX_FILMS) -> list[dict]:
+    """At most `cap` films: every seen one (they count for progress), then the most relevant unseen ones, those in
+    the library first. When the seen films alone fill the cap, ACTOR_MIN_UNSEEN unseen ones still come along."""
+    seen_films = [f for f in films if f["tmdb_id"] in seen]
+    unseen = sorted((f for f in films if f["tmdb_id"] not in seen),
+                    key=lambda f: (f["tmdb_id"] not in avail, -_appeal(f, aff), f["tmdb_id"]))
+    room = cap - len(seen_films) if len(seen_films) < cap else ACTOR_MIN_UNSEEN
+    return seen_films + unseen[:room]
+
+
+def _people_groups(conn: sqlite3.Connection, seen: set[int], avail: set[int] = frozenset(), aff=None,
+                   today: str | None = None) -> list[dict]:
+    """Director and actor filmographies, from the cached credits of the eligible people (wanted_people). Someone
+    eligible as both only gets the director group. Kept when at least one film is seen and one is not."""
+    today = today or _today().isoformat()
+    want = wanted_people(conn, seen)
+    directors = {pid for pid, _ in want["director"]}
+    ids = directors | {pid for pid, _ in want["actor"]}
+    rows = {}
+    if ids:
+        marks = ",".join("?" * len(ids))
+        rows = {r[0]: r for r in conn.execute(
+            f"SELECT person_id, name, profile_path, json FROM tmdb_person_credits WHERE person_id IN ({marks})",
+            sorted(ids))}
+    groups = []
+    for kind, field in (("director", "directed"), ("actor", "acted")):
+        for pid, _ in want[kind]:
+            if (kind == "actor" and pid in directors) or pid not in rows:
+                continue
+            _, name, profile, js = rows[pid]
+            p = json.loads(js or "{}")
+            films: dict[int, dict] = {}
+            for c in p.get(field) or []:
+                if c.get("id") and keep_credit(c, seen, today):
+                    films.setdefault(c["id"], _film(c))
+            films = list(films.values())
+            if kind == "actor":
+                films = cap_films(films, seen, avail, aff)
+            n_seen = sum(f["tmdb_id"] in seen for f in films)
+            if not n_seen or n_seen == len(films):
+                continue
+            groups.append({"key": f"{kind}-{pid}", "kind": kind, "name": name or p.get("name") or "",
+                           "films": _by_date(films), "ordered": False, "person_id": pid,
+                           "profile_path": profile or p.get("profile_path")})
+    return groups
+
+
+def _decorate(g: dict, seen: set[int], avail: dict, backdrops: dict[int, str] | None = None, aff=None) -> dict:
     backdrops = backdrops or {}
+    ordered = g.get("ordered", True)
     films = []
     for f in g["films"]:
         c = avail.get(f["tmdb_id"])
@@ -328,7 +442,13 @@ def _decorate(g: dict, seen: set[int], avail: dict, backdrops: dict[int, str] | 
             out["match"] = c.match
             out["poster_url"] = out["poster_url"] or library.poster_of(c)
             out["backdrop_url"] = out["backdrop_url"] or library.backdrop_of(c)
+        out["_genres"] = f.get("genre_ids") or []
         films.append(out)
+    if not ordered:      # filmographies: unseen first (library, then missing by relevance), seen ones last, newest first
+        films = ranked_unseen(films, aff) + sorted((f for f in films if f["state"] == "seen"),
+                                                   key=lambda f: (f["release_date"] or "", f["tmdb_id"]), reverse=True)
+    for f in films:
+        f.pop("_genres", None)
     n_seen = sum(f["state"] == "seen" for f in films)
     avail_films = [f for f in films if f["state"] == "available"]
     votes = [f["vote_average"] for f in films if f.get("vote_average")]
@@ -338,19 +458,28 @@ def _decorate(g: dict, seen: set[int], avail: dict, backdrops: dict[int, str] | 
     up = nxt or (unseen[0] if unseen else None)
     hero = next((f["backdrop_url"] for f in ([up] if up else []) + unseen + films if f["backdrop_url"]),
                 None) or tmdb.backdrop_url(g.get("backdrop_path"))
-    return {
+    out = {
         "key": g["key"], "kind": g["kind"], "name": g["name"],
         "seen": n_seen, "total": len(films), "available": len(avail_films),
         "missing": sum(f["state"] == "missing" for f in films),
         "complete": n_seen == len(films),
         # sagas, franchises and series are ordered: `films` is the whole group in release order, seen films
-        # included, so the client can show where the gaps fall. Unordered groups list unseen films first, ranked.
-        "ordered": True,
+        # included, so the client can show where the gaps fall. Filmographies (directors, actors) are not: unseen
+        # films first, ranked (library, then missing by relevance and taste), then the seen ones, newest first.
+        "ordered": ordered,
         "next": {k: nxt[k] for k in ("movie_id", "title", "year")} if nxt else None,
         "backdrop_url": hero,
         "films": films,
         "_mean": sum(votes) / len(votes) if votes else 0.0,
     }
+    if g.get("person_id"):
+        out["person_id"] = g["person_id"]
+        out["profile_url"] = profile_url(g.get("profile_path"))
+    return out
+
+
+def profile_url(path: str | None) -> str | None:
+    return tmdb.profile_url(path)
 
 
 # --------------------------------------------------------------------------- ranking
@@ -430,7 +559,8 @@ def score(g: dict, ratings: dict[int, tuple[float, bool]], mu: float, today: dat
         fresh = (today - _date(recent["release_date"])).days <= RECENT_FULL_DAYS
         reason = f"{'New' if fresh else 'Recent'} · {recent['year'] or recent['release_date'][:4]}"
     elif t >= 0.25:
-        reason = f"You rated {_stars(sum(real) / len(real))}" if real else "You liked these"
+        reason = (f"You rated {_stars(sum(real) / len(real))}" if real
+                  else "You liked their films" if g.get("kind") in PEOPLE_KINDS else "You liked these")
     elif lib:
         reason = "In your library"
     elif progress >= 0.5:
@@ -440,13 +570,25 @@ def score(g: dict, ratings: dict[int, tuple[float, bool]], mu: float, today: dat
     return round(total, 3), reason
 
 
+def genre_affinity(st):
+    """genre ids -> the user's mean affinity for those genres (recommender profile), clamped to [-1, 1]."""
+    stats = (getattr(st.profile, "stats", None) or {}).get("genre") or {}
+
+    def aff(ids) -> float:
+        vals = [max(-1.0, min(1.0, stats[n].aff)) for n in (tmdb.GENRES.get(i) for i in ids) if n in stats]
+        return sum(vals) / len(vals) if vals else 0.0
+    return aff
+
+
 def build(st, conn: sqlite3.Connection) -> list[dict]:
-    """Every started group, ranked by score (best first); cached on the state (rebuilt whenever the state is)."""
+    """Every started group, ranked by score (best first); cached on the state (rebuilt whenever the state is).
+    Sagas (collections, franchises, series) come before filmographies (directors, actors), each block by score."""
     if "completion" in st.cache:
         return st.cache["completion"]
     seen = _seen(st) | set(_tmdb_keyed(conn, "seen"))      # + films marked seen here that are not in the library
     avail = _available(st)
-    raw = _raw_groups(conn, seen)
+    aff = genre_affinity(st)
+    raw = _raw_groups(conn, seen) + _people_groups(conn, seen, set(avail), aff)
     need = {f["tmdb_id"] for g in raw for f in g["films"] if not f.get("backdrop_path")}
     backdrops = {r[0]: r[1] for r in conn.execute(
         "SELECT tmdb_id, json_extract(json,'$.backdrop_path') FROM tmdb_details"
@@ -455,10 +597,10 @@ def build(st, conn: sqlite3.Connection) -> list[dict]:
     today = _today()
     out = []
     for g in raw:
-        d = _decorate(g, seen, avail, backdrops)
+        d = _decorate(g, seen, avail, backdrops, aff)
         d["score"], d["reason"] = score(d, ratings, mu, today)
         out.append(d)
-    out.sort(key=lambda g: (-g["score"], g["name"].lower()))
+    out.sort(key=lambda g: (g["kind"] in PEOPLE_KINDS, -g["score"], g["name"].lower()))
     st.cache["completion"] = out
     return out
 

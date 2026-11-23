@@ -265,7 +265,23 @@ const COMPLETIONS = [
     ['Toy Story', 1995, 's', 18000], ['Toy Story 2', 1999, 's', 14000], ['Toy Story 3', 2010, 's', 15000], ['Toy Story 4', 2019, 's', 9800]] },
   { key: 'collection-295', kind: 'collection', name: 'Pirates of the Caribbean', films: [
     ['The Curse of the Black Pearl', 2003, 's', 21000], ['Dead Man’s Chest', 2006, 'm', 16000], ['At World’s End', 2007, 'm', 14000]] },
+  // filmographies (made-up people): no order of their own, so films come as the API sends them: unseen first (in
+  // the library, then missing by relevance), then the seen ones, newest first
+  { key: 'director-9001', kind: 'director', name: 'Mara Okonkwo', score: 3.2, reason: 'New \u00b7 2026', films: [
+    ['Low Tide', 2026, 'a', 2100], ['The Cartographer', 2009, 'm', 6400], ['Paper Lanterns', 2004, 'm', 3100], ['Northbound', 2023, 's', 5200],
+    ['Salt and Iron', 2019, 's', 8800], ['The Quiet Year', 2015, 'h', 4700], ['Glasshouse', 2012, 's', 7300], ['First Light', 2001, 's', 2500]] },
+  { key: 'director-9002', kind: 'director', name: 'Tomas Lindqvist', score: 1.4, reason: 'You rated \u26054.3', films: [
+    ['Winter Orchard', 1998, 'm', 1900], ['The Ferryman', 1994, 'm', 1200], ['Harbour Lights', 2011, 's', 3600], ['Undertow', 2006, 's', 4100],
+    ['A Room in Lisbon', 2002, 'p', 2800]] },
+  { key: 'actor-9003', kind: 'actor', name: 'Celia Moreau', score: 2.1, reason: 'In your library', films: [
+    ['Night Market', 2021, 'a', 3900], ['The Understudy', 2017, 'a', 2600], ['Blue Hour', 2024, 'm', 5100], ['Silver Coast', 2013, 'm', 4400],
+    ['The Long Goodbye Club', 2010, 'm', 1700], ['Fault Lines', 2008, 'm', 1300], ['Ninety Days', 2022, 's', 6100], ['Caravan', 2019, 's', 7200],
+    ['The Audition', 2015, 's', 3300], ['Sea Glass', 2011, 's', 2900]] },
+  { key: 'actor-9004', kind: 'actor', name: 'Dev Raman', score: 0.8, films: [
+    ['Counterweight', 2016, 'm', 8200], ['The Signal', 2012, 'm', 2400], ['Overpass', 2020, 's', 9100], ['Monsoon Run', 2018, 's', 4500],
+    ['Quiet Engines', 2014, 's', 3800], ['Rooftops', 2009, 's', 2200]] },
 ];
+const PEOPLE_KINDS = new Set(['director', 'actor']);
 // ?mock=1&sagas=N pads the list with generated trilogies up to N groups (long lists: the Screen layout's dots).
 for (let n = COMPLETIONS.length; n < Math.min(200, Number(params.get('sagas')) || 0); n += 1) {
   COMPLETIONS.push({ key: `collection-${70000 + n}`, kind: 'collection', name: `Filler Saga ${n}`, score: 0.1, films: [
@@ -306,7 +322,8 @@ function completionGroup(g) {
   const seen = films.filter((f) => f.state === 'seen').length;
   const next = avail[0];
   return { key: g.key, kind: g.kind, name: g.name, seen, total: films.length, available: avail.length,
-    missing: films.filter((f) => f.state === 'missing').length, complete: seen === films.length, ordered: true,
+    missing: films.filter((f) => f.state === 'missing').length, complete: seen === films.length, ordered: !PEOPLE_KINDS.has(g.kind),
+    ...(PEOPLE_KINDS.has(g.kind) ? { person_id: Number(g.key.split('-')[1]), profile_url: null } : {}),
     next: next ? { movie_id: next.movie_id, title: next.title, year: next.year } : null, films, hidden: hiddenGroups.has(g.key),
     score: g.score ?? 0, reason: g.reason ?? null, backdrop_url: null };
 }
@@ -328,10 +345,11 @@ function sagaFilm(id) {
 
 function completions(p) {
   const all = FRESH ? [] : COMPLETIONS.map(completionGroup);
-  all.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+  // sagas first, then directors and actors; each block by score
+  all.sort((a, b) => PEOPLE_KINDS.has(a.kind) - PEOPLE_KINDS.has(b.kind) || b.score - a.score || a.name.localeCompare(b.name));
   const visible = all.filter((g) => !g.hidden);
   const pick = (g) => !p.kind || g.kind === p.kind;
-  const counts = { collection: 0, franchise: 0, series: 0 };
+  const counts = { collection: 0, franchise: 0, series: 0, director: 0, actor: 0 };
   for (const g of visible) counts[g.kind] += 1;
   return {
     groups: visible.filter((g) => pick(g) && !g.complete),

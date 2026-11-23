@@ -276,7 +276,7 @@ def test_groups_discovered_dedupe_and_ranking(cc, monkeypatch):
             "series-5002", "series-5003",                                # a theme; inside collection 900
             "collection-940", "collection-950", "collection-999"}        # not started, too small, 404
     assert not gone & set(keys + [g["key"] for g in r["completed"]])
-    assert r["counts"] == {"collection": 3, "franchise": 1, "series": 1}
+    assert r["counts"] == {"collection": 3, "franchise": 1, "series": 1, "director": 0, "actor": 0}
     assert r["hidden"] == [] and r["hidden_count"] == 0
 
     fr = next(g for g in r["groups"] if g["key"] == "franchise-web-slinger")
