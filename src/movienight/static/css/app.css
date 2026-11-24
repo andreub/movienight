@@ -90,7 +90,7 @@ html.tv :focus-visible { outline-width: 5px; outline-offset: 4px; box-shadow: 0 
 
 .tabs {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
-  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
+  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr);
   height: calc(var(--tabbar) + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
   background: var(--ink-2);
@@ -98,8 +98,11 @@ html.tv :focus-visible { outline-width: 5px; outline-offset: 4px; box-shadow: 0 
 }
 .tab {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  min-width: 0; padding: 0 2px;
   color: var(--muted); text-decoration: none; font-size: .8125rem;
 }
+.tab > span:not(.tab__icon) { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 420px) { .tab { font-size: .75rem; } }
 .tab .icon { width: 24px; height: 24px; }
 .tab[aria-current="page"] { color: var(--bulb); }
 .tab:focus-visible { outline-offset: -4px; }
@@ -117,6 +120,10 @@ html.tv :focus-visible { outline-width: 5px; outline-offset: 4px; box-shadow: 0 
   .tab .icon { width: 20px; height: 20px; }
   .tab:hover { color: var(--paper); }
   .tab[aria-current="page"] { background: var(--ink-3); color: var(--bulb); }
+}
+@media (min-width: 768px) and (max-width: 959px) {
+  .tabs { gap: 0; }
+  .tab { gap: 6px; padding: 0 10px; font-size: .9375rem; }
 }
 
 main { outline: none; }
@@ -687,7 +694,7 @@ button.menu__item { width: 100%; background: none; border: 0; text-align: left; 
 .votes__btn--love[aria-pressed="true"], .rate__btn--love[aria-pressed="true"] {
   background: linear-gradient(135deg, var(--bulb), var(--curtain)); border-color: transparent; color: var(--bulb-ink);
 }
-.pick__tail { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; }
+.pick__tail { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .pick__tail .btn--quiet { margin-right: auto; }
 @media (min-width: 600px) { .pick__tail .btn--quiet { margin-right: 0; } }
 .detail__actions > .votes { flex: 0 0 auto; }
