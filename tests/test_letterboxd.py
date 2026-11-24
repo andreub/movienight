@@ -27,7 +27,7 @@ def test_import_dir_counts(conn):
     assert counts == {"watched": 4, "rated": 4, "liked": 2, "watchlist": 1}
     row = conn.execute("SELECT * FROM lb_films WHERE name='Alpha Heist'").fetchone()
     assert row["rating"] == 4.5 and row["liked"] == 1 and row["uri"] == "https://boxd.it/aaa1"
-    assert row["watched_date"] == "2024-01-02"
+    assert row["watched_date"] == "2024-01-01"            # diary Watched Date, not the rating date
     # diary-only rating fallback
     assert conn.execute("SELECT rating FROM lb_films WHERE name LIKE 'D%'").fetchone()[0] == 3
     # watched film is not on the watchlist; accents/commas handled
@@ -97,3 +97,25 @@ def test_rss_parse_and_apply(conn):
 def test_rss_rejects_garbage():
     with pytest.raises(lb.ExportError):
         lb.parse_rss(b"<rss><item>")
+
+
+def test_watched_date_prefers_diary_over_rating_date(conn):
+    # #51: the rating was set years after the watch; watched.csv has its own (logged) date
+    exp = lb.parse_export({
+        "watched.csv": b"Date,Name,Year,Letterboxd URI\n2019-06-01,Old One,2010,https://boxd.it/o1\n"
+                       b"2020-03-01,No Diary,2011,https://boxd.it/n1\n",
+        "ratings.csv": b"Date,Name,Year,Letterboxd URI,Rating\n2023-02-02,Old One,2010,https://boxd.it/o1,4\n"
+                       b"2023-02-03,No Diary,2011,https://boxd.it/n1,3\n2023-02-04,Rated Only,2012,https://boxd.it/r1,3\n",
+        "diary.csv": b"Date,Name,Year,Letterboxd URI,Rating,Rewatch,Tags,Watched Date\n"
+                     b"2019-05-31,Old One,2010,https://boxd.it/d1,4,,,2019-05-30\n"
+                     b"2021-01-02,Old One,2010,https://boxd.it/d2,4,Yes,,2021-01-01\n",
+    })
+    lb.apply_export(conn, exp)
+    dates = dict(conn.execute("SELECT name, watched_date FROM lb_films").fetchall())
+    assert dates == {"Old One": "2021-01-01", "No Diary": "2020-03-01", "Rated Only": "2023-02-04"}
+    # a wrong (rating) date stored by an older import is corrected; a rewatch newer than the export is kept
+    conn.execute("UPDATE lb_films SET watched_date='2023-02-02' WHERE name='Old One'")
+    conn.execute("UPDATE lb_films SET watched_date='2024-05-05' WHERE name='No Diary'")
+    lb.apply_export(conn, exp)
+    dates = dict(conn.execute("SELECT name, watched_date FROM lb_films").fetchall())
+    assert dates["Old One"] == "2021-01-01" and dates["No Diary"] == "2024-05-05"
