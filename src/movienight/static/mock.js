@@ -277,7 +277,7 @@ const SAGA_STATES = 'ssssssssssss' + 'm' + 'sssssss' + 'a' + 'sssss' + 'm' + 'a'
 const COMPLETIONS = [
   { key: 'collection-9100', kind: 'collection', name: 'The Long Night Chronicles', score: 1.9, reason: 'You rated \u26054.4',
     films: SAGA_TITLES.map((t, i) => [`The Long Night: ${t}`, 1988 + i, SAGA_STATES[i], 4000 + ((i * 3719) % 9000)]) },
-  { key: 'franchise-spider-man', kind: 'franchise', name: 'Spider-Man', score: 4.1, reason: 'New \u00b7 2026', films: [
+  { key: 'franchise-spider-man', kind: 'franchise', name: 'Spider-Man', score: 4.1, reason: 'New 2026', films: [
     ['Spider-Man', 2002, 's', 19000], ['Spider-Man 2', 2004, 'p', 15000], ['Spider-Man 3', 2007, 'a', 14000], ['The Amazing Spider-Man', 2012, 'm', 18000],
     ['The Amazing Spider-Man 2', 2014, 'm', 13000], ['Spider-Man: Homecoming', 2017, 'h', 21000], ['Spider-Man: Into the Spider-Verse', 2018, 's', 16000],
     ['Spider-Man: Far From Home', 2019, 'm', 16000], ['Spider-Man: No Way Home', 2021, 's', 20000], ['Spider-Man: Across the Spider-Verse', 2023, 'a', 7000],
@@ -286,7 +286,7 @@ const COMPLETIONS = [
     ['Shaun of the Dead', 2004, 's', 8000], ['Hot Fuzz', 2007, 's', 7600], ['The World’s End', 2013, 'a', 4300]] },
   { key: 'collection-53159', kind: 'collection', name: 'Before', score: 0.9, reason: 'In your library', films: [
     ['Before Sunrise', 1995, 's', 4200], ['Before Sunset', 2004, 'a', 3400], ['Before Midnight', 2013, 'm', 2800]] },
-  { key: 'collection-2344', kind: 'collection', name: 'The Matrix', score: 0.6, reason: 'Recent \u00b7 2021', films: [
+  { key: 'collection-2344', kind: 'collection', name: 'The Matrix', score: 0.6, reason: 'Recent 2021', films: [
     ['The Matrix', 1999, 's', 26000], ['The Matrix Reloaded', 2003, 's', 11000], ['The Matrix Revolutions', 2003, 'm', 9800], ['The Matrix Resurrections', 2021, 'm', 6200]] },
   { key: 'collection-263', kind: 'collection', name: 'The Dark Knight', films: [
     ['Batman Begins', 2005, 's', 21000], ['The Dark Knight', 2008, 's', 33000], ['The Dark Knight Rises', 2012, 's', 23000]] },
@@ -296,7 +296,7 @@ const COMPLETIONS = [
     ['The Curse of the Black Pearl', 2003, 's', 21000], ['Dead Man’s Chest', 2006, 'm', 16000], ['At World’s End', 2007, 'm', 14000]] },
   // filmographies (made-up people): no order of their own, so films come as the API sends them: unseen first (in
   // the library, then missing by relevance), then the seen ones, newest first
-  { key: 'director-9001', kind: 'director', name: 'Mara Okonkwo', score: 3.2, reason: 'New \u00b7 2026', films: [
+  { key: 'director-9001', kind: 'director', name: 'Mara Okonkwo', score: 3.2, reason: 'New 2026', films: [
     ['Paper Lanterns', 2004, 'a', 3100], ['The Cartographer', 2009, 'm', 6400], ['Low Tide', 2026, 'm', 2100], ['Northbound', 2023, 's', 5200],
     ['Salt and Iron', 2019, 's', 8800], ['The Quiet Year', 2015, 'h', 4700], ['Glasshouse', 2012, 's', 7300], ['First Light', 2001, 's', 2500]] },
   { key: 'director-9002', kind: 'director', name: 'Tomas Lindqvist', score: 1.4, reason: 'You rated \u26054.3', films: [
@@ -345,14 +345,14 @@ function sagaState(f) {
   if (f.state !== 'seen' && (localSeen.has(f.tmdb_id) || seenSet.has(f.movie_id))) return 'seen';
   return f.state;
 }
-// 'New · 2026' / 'Recent · 2021' in the data: the API names the newest unseen film of that year in the reason and, for
+// 'New 2026' / 'Recent 2021' in the data: the API names the newest unseen film of that year in the reason and, for
 // filmographies, puts it first (even when it is not in the library).
 function recency(g, films) {
-  const m = /^(New|Recent) \u00b7 (\d{4})$/.exec(g.reason || '');
+  const m = /^(New|Recent) (\d{4})$/.exec(g.reason || '');
   const f = m && films.filter((x) => x.state !== 'seen' && x.year === Number(m[2])).pop();
   if (!f) return { reason: g.reason ?? null, reason_film: null };
   if (PEOPLE_KINDS.has(g.kind)) films.unshift(...films.splice(films.indexOf(f), 1));
-  return { reason: `${m[1]}: ${f.title} \u00b7 ${m[2]}`, reason_film: f.tmdb_id };
+  return { reason: `${m[1]} ${m[2]}: ${f.title}`, reason_film: f.tmdb_id };
 }
 function completionGroup(g) {
   const films = g.films.map(({ via, ...f }) => ({ ...f, state: sagaState({ via, ...f }) }));

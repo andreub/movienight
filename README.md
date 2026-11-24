@@ -100,7 +100,7 @@ Nothing is hand-written: groups are discovered from your own data and the TMDB c
   seen films fold into a "✓ 7 seen" tile (tap to open it). Unseen films and their neighbours always
   stay visible, and "Show all" appears only if the card still overflows. Finished groups and hidden
   ones (the × on a card, with undo) stay folded at the bottom.
-- **Order**: each group gets a score, and one quiet hint on its card says why ("New · 2026",
+- **Order**: each group gets a score, and one quiet hint on its card says why ("New 2026: Title",
   "You rated ★4.4", "In your library"). In "All", sagas, franchises and series come first and
   directors and actors after them, each block ordered by score.
   `score = 3 × recency + 1.5 × taste + 0.75 × library + 0.5 × share seen`.

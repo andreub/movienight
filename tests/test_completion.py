@@ -265,7 +265,7 @@ def test_groups_discovered_dedupe_and_ranking(cc, monkeypatch):
     # 3.5 mean; the series' 4.0; the franchise's seen film is rated 2.0, so it drops below the rest
     assert keys == ["collection-960", "collection-900", "series-5001", "franchise-web-slinger"]
     by = {g["key"]: g for g in r["groups"]}
-    assert [by[k]["reason"] for k in keys] == ["New: Film 9624 · 2026", "You rated ★4.5",
+    assert [by[k]["reason"] for k in keys] == ["New 2026: Film 9624", "You rated ★4.5",
                                                "In your library", "In your library"]
     assert [by[k]["reason_film"] for k in keys] == [9624, None, None, None]     # only a New/Recent reason names a film
     assert by["collection-960"]["ordered"] and by["collection-960"]["films"] == sorted(
@@ -392,7 +392,7 @@ def test_score_ordering_and_reasons():
     }
     scored = {k: completion.score(g, ratings, mu, TODAY) for k, g in groups.items()}
     assert sorted(scored, key=lambda k: -scored[k][0]) == ["new", "loved", "library", "voted", "plain"]
-    assert scored["new"][1] == "New: F10 · 2026"
+    assert scored["new"][1] == "New 2026: F10"
     assert scored["loved"][1] == "You rated ★4.5"
     assert scored["library"][1] == "In your library"
     assert scored["plain"][1] is None

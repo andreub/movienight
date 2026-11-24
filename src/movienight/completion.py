@@ -560,7 +560,7 @@ def score(g: dict, ratings: dict[int, tuple[float, bool]], mu: float, today: dat
     real = [r for r, is_real in rated if is_real]
     if recent is not None:
         fresh = (today - _date(recent["release_date"])).days <= RECENT_FULL_DAYS
-        reason = f"{'New' if fresh else 'Recent'}: {recent['title']} · {recent['year'] or recent['release_date'][:4]}"
+        reason = f"{'New' if fresh else 'Recent'} {recent['year'] or recent['release_date'][:4]}: {recent['title']}"
     elif t >= 0.25:
         reason = (f"You rated {_stars(sum(real) / len(real))}" if real
                   else "You liked their films" if g.get("kind") in PEOPLE_KINDS else "You liked these")
@@ -603,7 +603,7 @@ def build(st, conn: sqlite3.Connection) -> list[dict]:
         d = _decorate(g, seen, avail, backdrops, aff)
         d["score"], d["reason"] = score(d, ratings, mu, today)
         d["reason_film"] = None
-        if d["reason"] and d["reason"].startswith(("New: ", "Recent: ")):
+        if d["reason"] and d["reason"].startswith(("New ", "Recent ")):
             # the card names this film, so it must be visible: first tile (unordered groups), or kept on show (sagas)
             film = recency(d["films"], today)[1]
             d["reason_film"] = film["tmdb_id"]
