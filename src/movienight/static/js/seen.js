@@ -20,8 +20,9 @@ export function isSeen(movie) {
 
 // `was` is the state before this change, so listeners can tell a real flip from a repeat.
 // Fired once the server has accepted a change, for views that react only to confirmed marks.
-function saved(movie, seen, source, was) {
-  window.dispatchEvent(new CustomEvent('movienight:seen-saved', { detail: { id: movie.id, movie, seen, was, source } }));
+// `vote`/`previousVote` are set only when the vote was saved in the same request, so Undo can restore it.
+function saved(movie, seen, source, was, extra = {}) {
+  window.dispatchEvent(new CustomEvent('movienight:seen-saved', { detail: { id: movie.id, movie, seen, was, source, ...extra } }));
 }
 
 function announce(id, seen, source, was) {
@@ -54,7 +55,7 @@ export async function setSeenVote(movie, seen, vote, source = '') {
     await api.seen(movie.id, seen, vote);
     movie.seen_here = seen;
     movie.my_vote = vote || null;
-    saved(movie, seen, source, before.seen);
+    saved(movie, seen, source, before.seen, { vote, previousVote: before.vote });
     return true;
   } catch (err) {
     announce(movie.id, before.seen, source, seen);
