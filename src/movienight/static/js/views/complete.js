@@ -354,7 +354,7 @@ function mountList(root, toggle) {
     try {
       const r = await api.completions({ kind });
       if (!alive || t !== token) return;
-      if (kind && !r.counts?.[kind]) { // a remembered kind with no groups left: back to All
+      if (kind && !kindCount(r.counts, kind)) { // a remembered kind with no groups left: back to All
         kind = null;
         storeKind(null);
         return load();
