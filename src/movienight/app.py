@@ -884,7 +884,21 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             if row is None:
                 raise HTTPException(404, "Movie not found")
             key = library.feedback_key(row["tmdb_id"], row["dkey"])
+            if not body.seen and c.execute("SELECT 1 FROM seen WHERE key=?", (key,)).fetchone() is None:
+                # nothing marked here to undo: refuse when the watch comes from Letterboxd or the media server
+                if row["tmdb_id"]:
+                    via = (library.film_json(c, engine().get(), row["tmdb_id"], {"title": "?"}) or {}).get("seen_via", [])
+                else:
+                    cand = next((x for x in engine().get().cands if x.id == movie_id), None)
+                    via = ["server"] if cand is not None and cand.plex_watched else []
+                _refuse_unmark(via)
         return await _set_seen(key, body)
+
+    def _refuse_unmark(seen_via: list[str]) -> None:
+        """409 when the film was seen on Letterboxd or played on the media server: it can only be unmarked there."""
+        if "letterboxd" in seen_via or "server" in seen_via:
+            where = "Letterboxd" if "letterboxd" in seen_via else media.label
+            raise HTTPException(409, f"Seen on {where}: it can only be unmarked there")
 
     async def _set_seen(key: str, body: SeenBody) -> dict:
         """Store (or remove) the "seen it" mark of `key` and, when given, its vote in one transaction, then push
@@ -971,9 +985,8 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                 raise HTTPException(404, "Film not found")
             if not body.seen:
                 f = library.film_json(c, st, tmdb_id, {"title": "?"})
-                if f and ("letterboxd" in f["seen_via"] or "server" in f["seen_via"]):
-                    where = "Letterboxd" if "letterboxd" in f["seen_via"] else media.label
-                    raise HTTPException(409, f"Seen on {where}: it can only be unmarked there")
+                if f:
+                    _refuse_unmark(f["seen_via"])
         finally:
             c.close()
         return await _set_seen(f"tmdb:{tmdb_id}", body)
