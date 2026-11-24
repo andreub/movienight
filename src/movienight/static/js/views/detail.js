@@ -95,11 +95,14 @@ async function setDismissed(m, days) {
 // `movienight:marked`, which fires only after the server accepted the change, so the refresh sees it).
 const fromComplete = () => parse().view === 'complete';
 
-function marked(detail, message) {
-  window.dispatchEvent(new CustomEvent('movienight:marked', { detail }));
+const announceMarked = (detail) => window.dispatchEvent(new CustomEvent('movienight:marked', { detail }));
+
+function marked(detail, message, action) {
+  announceMarked(detail);
   if (!fromComplete()) return false;
-  if (message) toast(message);
   onRequestClose();
+  closeDetail(); // now, not after the route change: a toast shown inside the open dialog would vanish with it
+  if (message) toast(message, action ? { timeout: 6000, action } : undefined);
   return true;
 }
 
@@ -117,7 +120,7 @@ async function markSeen(m, seen) {
   if (parse().view === 'tonight') return;
   toast(`Marked ${quoted(m)} as seen.`, {
     timeout: 3000,
-    action: { label: 'Undo', run: () => setSeen(m, false, 'undo') },
+    action: { label: 'Undo', run: async () => { if (await setSeen(m, false, 'undo')) announceMarked({ id: m.id, seen: false }); } },
   });
 }
 
@@ -146,7 +149,7 @@ function votesControl(m) {
     if (parse().view === 'tonight') return; // Tonight shows its own toast for the seen mark
     toast(`Seen · ${what}`, {
       timeout: 3000,
-      action: { label: 'Undo', run: () => setSeenVote(m, false, previousVote, 'undo') },
+      action: { label: 'Undo', run: async () => { if (await setSeenVote(m, false, previousVote, 'undo')) announceMarked({ id: m.id, seen: false }); } },
     });
   };
   return voteButtons(m, { save, onVote });
@@ -234,10 +237,25 @@ async function saveFilm(f, seen, vote, focus) {
   window.dispatchEvent(new CustomEvent('movienight:seen', { detail: { id: `tmdb:${f.tmdb_id}`, tmdb_id: f.tmdb_id, seen, source: 'film' } }));
   const message = !seen ? `${quoted(f)} is no longer marked as seen.`
     : !f.seen ? `Marked ${quoted(f)} as seen.` : `Saved your verdict for ${quoted(f)}.`;
-  if (marked({ id: `tmdb:${f.tmdb_id}`, tmdb_id: f.tmdb_id, seen }, message)) return;
+  const undo = { label: 'Undo', run: () => undoFilm(f) };
+  if (marked({ id: `tmdb:${f.tmdb_id}`, tmdb_id: f.tmdb_id, seen }, message, undo)) return;
   if (!seen) toast(message);
   else if (!f.seen) toast(message);
   load({ quiet: true, focus });
+}
+
+// Undo of a panel change: back to the seen state and verdict the film had when the panel loaded.
+async function undoFilm(f) {
+  const seen = Boolean(f.seen);
+  const vote = seen ? (f.my_vote ?? 0) : 0;
+  try {
+    await api.filmSeen(f.tmdb_id, seen, vote);
+  } catch (err) {
+    toast(err.detail || 'Could not undo that. Try again.');
+    return;
+  }
+  window.dispatchEvent(new CustomEvent('movienight:seen', { detail: { id: `tmdb:${f.tmdb_id}`, tmdb_id: f.tmdb_id, seen, source: 'film' } }));
+  announceMarked({ id: `tmdb:${f.tmdb_id}`, tmdb_id: f.tmdb_id, seen });
 }
 
 // Thumbs up, heart, thumbs down, as in the sheet (.votes): each one marks the film seen with that vote; the chosen
