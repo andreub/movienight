@@ -1,5 +1,5 @@
 // Ask: chat with the configured AI model, which recommends from the media server's library. Text is only ever added as text nodes.
-import { getChatStatus } from '../api.js';
+import { api, getChatStatus } from '../api.js';
 import { h, fill, icon, poster, runtime, matchStub } from '../dom.js';
 import { chat, subscribeChat, sendChat, stopChat, clearChat, retryChat, stripShownNote } from '../chat.js';
 import { playControl } from '../play.js';
@@ -234,7 +234,7 @@ export function mount(root) {
       ? `Monthly budget used (${money(u.spent_usd)} of ${money(u.budget_usd)}). Ask comes back on the 1st.`
       : `This month: ${parts.join(' \u00b7 ')}`;
   }
-  const refreshUsage = () => getChatStatus().then((c) => paintUsage(c.usage)).catch(() => {});
+  const refreshUsage = () => api.chatStatus().then((c) => paintUsage(c.usage)).catch(() => {});
 
   // ---- availability ----
   page.classList.add('is-loading');

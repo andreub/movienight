@@ -120,6 +120,7 @@ async function markSeen(m, seen) {
   // Close first (same path as the X button, so the route follows), then toast. On Tonight the page
   // itself replaces the film and offers its own toast through movienight:seen-saved.
   onRequestClose();
+  closeDetail(); // now, not after the route change: a toast shown inside the open dialog would vanish with it
   if (parse().view === 'tonight') return;
   toast(seenMsg(m), {
     timeout: 3000,
@@ -147,6 +148,7 @@ function votesControl(m) {
     window.dispatchEvent(new CustomEvent('movienight:marked', { detail: { id: m.id, vote } }));
     if (vote === 0) return; // cleared
     onRequestClose();
+    closeDetail(); // now, not after the route change: a toast shown inside the open dialog would vanish with it
     if (!markedSeen) { toast(voteMsg(m, vote), { timeout: 3000 }); return; }
     if (parse().view === 'tonight') return; // Tonight shows its own toast for the seen mark
     toast(seenVoteMsg(m, vote), {

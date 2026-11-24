@@ -163,3 +163,35 @@ def test_plex_watched_on_a_shared_server_counts(client):
         m = mv(client, mid(client, title))
         assert m["watched"] is True and m["seen_here"] is False
         assert m["id"] not in rec_ids(client)
+
+
+def test_state_follows_key_migration_to_tmdb(tmp_path):
+    # #53: a film first known as t:title|year / imdb:… gets its TMDB id; marks, votes, pushes and its
+    # dismissal move to tmdb:N, and clashes with rows already under tmdb:N do not crash
+    p = tmp_path / "t.db"
+    db.migrate(p)
+    with db.session(p) as c:
+        c.execute("INSERT INTO media_servers(id,name,owned) VALUES('m1','Home',1)")
+        library.store_server_items(c, "m1", [plex_item(1, "No Id", 2001, None),
+                                             dict(plex_item(2, "Imdb Only", 2002, None), imdb_id="tt9")])
+        library.assign_movies(c)
+        ids = dict(c.execute("SELECT dkey, id FROM movies").fetchall())
+        assert set(ids) == {"t:no id|2001", "imdb:tt9"}
+        c.executemany("INSERT INTO seen(key, created_at) VALUES(?, '2024-01-01')",
+                      [("t:no id|2001",), ("imdb:tt9",), ("tmdb:900",)])
+        c.executemany("INSERT INTO votes(key, vote, updated_at) VALUES(?,?,?)",
+                      [("t:no id|2001", 1, "2024-01-01"), ("imdb:tt9", -1, "2024-03-01"), ("tmdb:900", 1, "2024-02-01")])
+        c.executemany("INSERT INTO seen_pushes(key, server_id, rating_key, pushed_at) VALUES(?, 'm1', ?, '2024-01-01')",
+                      [("t:no id|2001", "1"), ("imdb:tt9", "2")])
+        c.execute("INSERT INTO dismissals(movie_id, until, created_at) VALUES(?, NULL, '2024-01-01')",
+                  (ids["t:no id|2001"],))
+        # rematch: both items now carry TMDB ids; tmdb:900 already had a seen mark and an older vote
+        library.store_server_items(c, "m1", [plex_item(1, "No Id", 2001, 800),
+                                             dict(plex_item(2, "Imdb Only", 2002, 900), imdb_id="tt9")])
+        library.assign_movies(c)
+        ids = dict(c.execute("SELECT dkey, id FROM movies").fetchall())
+        assert set(ids) == {"tmdb:800", "tmdb:900"}
+        assert {r[0] for r in c.execute("SELECT key FROM seen")} == {"tmdb:800", "tmdb:900"}
+        assert dict(c.execute("SELECT key, vote FROM votes").fetchall()) == {"tmdb:800": 1, "tmdb:900": -1}
+        assert {r[0] for r in c.execute("SELECT key FROM seen_pushes")} == {"tmdb:800", "tmdb:900"}
+        assert [r[0] for r in c.execute("SELECT movie_id FROM dismissals")] == [ids["tmdb:800"]]

@@ -19,8 +19,8 @@ from .util import norm_title, now_iso, to_float, to_int
 EXPORT_FILES = ("watched.csv", "ratings.csv", "likes/films.csv", "watchlist.csv", "diary.csv", "reviews.csv",
                 "profile.csv")
 # Bumped when the importer starts reading something new from files it already had (v2: diary tags), so an
-# unchanged export folder is imported once more after the upgrade.
-IMPORT_VERSION = "2"
+# unchanged export folder is imported once more after the upgrade (v3: watch dates from the diary).
+IMPORT_VERSION = "3"
 MAX_ZIP_BYTES = 20 * 1024 * 1024          # uploaded archive
 MAX_MEMBER_BYTES = 8 * 1024 * 1024        # per extracted CSV
 MAX_TOTAL_BYTES = 24 * 1024 * 1024        # all extracted CSVs
@@ -45,6 +45,8 @@ class ExportFilm:
     liked: bool = False
     watchlist: bool = False
     date: str | None = None
+    # candidate watch dates by source, best first: 0 diary/reviews Watched Date, 1 watched.csv, 2 ratings.csv
+    dates: dict = field(default_factory=dict, repr=False)
 
 
 @dataclass
@@ -53,6 +55,7 @@ class Export:
     username: str = ""
     # diary tags: {(film key, tag, watched date or ''): rating or None}; None = no diary in this export
     tags: dict | None = None
+    latest: str | None = None   # the newest date anywhere in the export (~ when it was taken)
 
 
 # --------------------------------------------------------------------------- tags
@@ -100,16 +103,20 @@ def parse_export(files: dict[str, bytes]) -> Export:
             f = exp.films[key] = ExportFilm(name=name, year=year)
         return f
 
-    def upd_date(f: ExportFilm, d: str | None):
+    def upd_date(f: ExportFilm, d: str | None, src: int):
+        """Latest date per source. ratings.csv's Date is when the rating was set, not when the film was seen."""
         d = (d or "").strip() or None
-        if d and (f.date is None or d > f.date):
-            f.date = d
+        if d:
+            if d > f.dates.get(src, ""):
+                f.dates[src] = d
+            if exp.latest is None or d > exp.latest:
+                exp.latest = d
 
     for row in _rows(files["watched.csv"]) if "watched.csv" in files else []:
         if f := film(row):
             f.watched = True
             f.uri = f.uri or (row.get("Letterboxd URI") or "").strip() or None
-            upd_date(f, row.get("Date"))
+            upd_date(f, row.get("Date"), 1)
     for row in _rows(files["ratings.csv"]) if "ratings.csv" in files else []:
         if f := film(row):
             f.watched = True
@@ -117,7 +124,7 @@ def parse_export(files: dict[str, bytes]) -> Export:
             if r is not None:
                 f.rating = r
             f.uri = f.uri or (row.get("Letterboxd URI") or "").strip() or None
-            upd_date(f, row.get("Date"))
+            upd_date(f, row.get("Date"), 2)
     for row in _rows(files["likes/films.csv"]) if "likes/films.csv" in files else []:
         if f := film(row):
             f.liked = True
@@ -136,7 +143,8 @@ def parse_export(files: dict[str, bytes]) -> Export:
                 if f.rating is None:
                     f.rating = to_float(row.get("Rating"))
                 when = (row.get("Watched Date") or row.get("Date") or "").strip()
-                upd_date(f, when)
+                upd_date(f, when, 0)
+                upd_date(f, row.get("Date"), 3)        # the logged date: only counts towards `latest`
                 if exp.tags is not None:
                     key = (norm_title(f.name), f.year)
                     for t in parse_tags(row.get("Tags")):
@@ -150,6 +158,8 @@ def parse_export(files: dict[str, bytes]) -> Export:
     for f in exp.films.values():
         if f.watched:
             f.watchlist = False
+        if f.dates:
+            f.date = f.dates[min(f.dates)]
     return exp
 
 
@@ -180,7 +190,11 @@ def apply_export(conn: sqlite3.Connection, exp: Export) -> dict:
             )
             continue
         rating = f.rating if f.rating is not None else row["rating"]
-        date = max([d for d in (f.date, row["watched_date"]) if d], default=None)
+        # the export's watch date wins, unless the stored one is newer than the export itself (a rewatch the
+        # RSS sync picked up after the export was taken)
+        date = f.date or row["watched_date"]
+        if row["watched_date"] and exp.latest and row["watched_date"] > exp.latest:
+            date = max(date, row["watched_date"])
         watched = int(f.watched or row["watched"])
         conn.execute(
             "UPDATE lb_films SET name=?, uri=COALESCE(uri,?), watched=?, rating=?, liked=?, watchlist=?,"
