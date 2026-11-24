@@ -34,6 +34,7 @@ const FILMS = [
   ['Past Lives', 2023, 106, ['Drama', 'Romance'], 'Celine Song', ['Greta Lee', 'Teo Yoo', 'John Magaro'], 7.8, 'Two childhood friends reunite in New York decades after one of them emigrated.'],
   ['Some Like It Hot', 1959, 121, ['Comedy', 'Romance', 'Crime'], 'Billy Wilder', ['Marilyn Monroe', 'Tony Curtis', 'Jack Lemmon'], 8.2, 'Two musicians who witnessed a mob hit hide out in an all-female band.'],
   ['The Long Quiet Weekend at the Lighthouse Keeper’s Cottage', 2024, null, ['Drama'], 'Anna Lind', ['Mia Holm'], null, null],
+  ['Salt Line', 2026, 109, ['Thriller', 'Crime', 'Drama'], 'Marit Voss', ['Elena Marsh', 'Tomas Reyes', 'Idris Okoye'], 7.2, 'A harbour inspector who finds a sealed container that should not exist has one night to decide who to tell.', 'en', null, '2026-09-18'],
 ];
 
 const MOODS = [
@@ -44,9 +45,30 @@ const MOODS = [
   { id: 'epic', label: 'Something epic', emoji: '🏔️', description: 'Big, long adventures', test: (m) => hasAny(m, ['Adventure', 'Action']) || (m.runtime || 0) > 140 },
   { id: 'heartfelt', label: 'Heartfelt', emoji: '💛', description: 'Drama and romance', test: (m) => hasAny(m, ['Romance', 'Drama']) },
   { id: 'short', label: 'Short one', emoji: '⏱️', description: 'Under 95 minutes', test: (m) => m.runtime && m.runtime < 100 },
-  { id: 'classic', label: 'A classic', emoji: '🎞️', description: 'Before 1980', test: (m) => m.year < 1980 },
-  { id: 'recent', label: 'Something recent', emoji: '🆕', description: 'Released in the last 18 months', test: (m) => { const c = new Date(); c.setMonth(c.getMonth() - 18); return m.release_date ? new Date(m.release_date) >= c : m.year >= c.getFullYear(); } },
+  { id: 'just-arrived', label: 'Just arrived', emoji: '🆕', description: 'Added to your library in the last 30 days', test: (m) => Date.now() - Date.parse(m.added_at) <= 30 * 86400000 },
 ];
+
+// Eras (GET /api/eras): Recent, decades from 1980 (newest first), Classic.
+const isRecent = (m) => {
+  const now = new Date(), c = new Date(); c.setMonth(c.getMonth() - 18);
+  if (m.release_date) { const d = new Date(m.release_date); return d >= c && d <= now; }
+  return m.year >= c.getFullYear() && m.year <= now.getFullYear();
+};
+const eraTest = (id) => {
+  if (id === 'recent') return isRecent;
+  if (id === 'classic') return (m) => m.year <= 1979;
+  const d = /^(\d{3})0s$/.test(id || '') ? Number(id.slice(0, 4)) : null;
+  return d && d >= 1980 ? (m) => m.year >= d && m.year <= d + 9 : () => false;
+};
+function eras(p = {}) {
+  const movies = filter({ ...p, era: null, mood: ['recent', 'classic'].includes(p.mood) ? null : p.mood });
+  const out = [];
+  if (movies.some(isRecent)) out.push({ id: 'recent', label: 'Fresh releases', description: 'Released in the last 18 months' });
+  const decades = [...new Set(movies.filter((m) => m.year >= 1980).map((m) => Math.floor(m.year / 10) * 10))].sort((a, b) => b - a);
+  for (const d of decades) out.push({ id: `${d}s`, label: `${d}s`, description: `Released in the ${d}s` });
+  if (movies.some((m) => m.year <= 1979)) out.push({ id: 'classic', label: 'Classic', description: 'Before 1980' });
+  return out;
+}
 
 // Letterboxd diary tags (GET /api/tags): a festival with editions, and a tag without a year.
 const TAGS = [
@@ -113,17 +135,20 @@ function reasonsFor(m, i) {
   return r.slice(0, 4);
 }
 
-const movies = FILMS.map(([title, year, runtime, genres, director, cast, rating, overview, language = 'en', original], i) => {
+// Only these were added in the last 30 days (days ago); every other film was added at least 40 days ago.
+const JUST_ARRIVED = { 'Salt Line': 2, 'Arrival': 6, 'Heat': 11, 'Get Out': 19 };
+
+const movies = FILMS.map(([title, year, runtime, genres, director, cast, rating, overview, language = 'en', original, release_date = null], i) => {
   const id = 100 + i;
   const m = {
-    id, title, original_title: original || title, year, runtime, tagline: i % 5 === 0 ? 'Some nights call for exactly this.' : null, overview,
+    id, title, original_title: original || title, year, release_date, runtime, tagline: i % 5 === 0 ? 'Some nights call for exactly this.' : null, overview,
     genres, directors: [director], cast, language, countries: [{ en: 'US', ja: 'JP', fr: 'FR', zh: 'HK' }[language]],
     poster_url: null, backdrop_url: null,
     tmdb_rating: rating, tmdb_votes: rating ? 4000 + ((i * 7919) % 30000) : null, tmdb_id: 1000 + i,
     letterboxd_url: `https://letterboxd.com/tmdb/${1000 + i}`,
     match: Math.max(4, Math.round(97 - i * 2.9 - (i % 3) * 2)),
     on_watchlist: i % 4 === 2, watched: false, my_rating: null, liked: false, dismissed_until: null,
-    added_at: new Date(Date.now() - i * 86400000 * 3).toISOString(),
+    added_at: new Date(Date.now() - (title in JUST_ARRIVED ? JUST_ARRIVED[title] : 40 + i * 3) * 86400000).toISOString(),
     plex: JELLYFIN
       ? [{ server: 'Den', server_id: 'jf:f00dcafe', resolution: i % 3 === 0 ? '4k' : '1080', url: `${JF_BASE}/web/#/details?id=item${id}&serverId=f00dcafe` }]
       : [{ server: 'Home', server_id: 'home1', resolution: i % 3 === 0 ? '4k' : '1080', url: `https://app.plex.tv/desktop/#!/server/home1/details?key=%2Flibrary%2Fmetadata%2F${id}`, mobile_url: `https://watch.plex.tv/movie/mock-film-${id}` }],
@@ -164,11 +189,15 @@ function view(m) {
 function filter(p) {
   const genres = [].concat(p.genre || []);
   const q = (p.q || '').toLowerCase();
-  const mood = MOODS.find((x) => x.id === p.mood);
+  const legacy = ['recent', 'classic'].includes(p.mood) ? p.mood : null;
+  const mood = legacy ? null : MOODS.find((x) => x.id === p.mood);
+  const era = p.era || legacy;
+  const eraT = era ? eraTest(era) : null;
   const tagTest = TAG_TESTS[p.tag || p.tag_family];
   return movies.filter((m) => (p.include_dismissed || !isDismissed(m))
     && (p.include_watched || !seenSet.has(m.id))
     && (!mood || mood.test(m))
+    && (!eraT || eraT(m))
     && (!tagTest || tagTest(m))
     && (!p.max_runtime || (m.runtime && m.runtime <= p.max_runtime))
     && (!p.watchlist_only || m.on_watchlist)
@@ -399,6 +428,7 @@ export async function handle(method, path, p, body) {
       });
     }
     case 'GET /api/moods': return ok(MOODS.map(({ test, ...m }) => m));
+    case 'GET /api/eras': return ok(eras(p));
     case 'GET /api/tags': return ok({ min_films: 3, families: FRESH ? [] : TAGS });
     case 'GET /api/recommendations': {
       const list = filter(p).sort(SORTERS[p.sort] || SORTERS.match);

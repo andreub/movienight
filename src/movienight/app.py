@@ -574,10 +574,14 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
 
     # ---- recommendations
     def filters(mood, genre, max_runtime, min_year, max_year, watchlist_only, include_watched,
-                include_dismissed, server, q) -> queries.Filters:
+                include_dismissed, server, q, era=None) -> queries.Filters:
+        if mood in ("recent", "classic"):    # legacy moods, now eras
+            mood, era = None, era or mood
         if mood and mood not in queries.MOOD_BY_ID:
             raise HTTPException(400, "Unknown mood")
-        return queries.Filters(mood=mood or None, genres=genre or [], max_runtime=max_runtime, min_year=min_year,
+        if era and queries.parse_era(era) is None:
+            raise HTTPException(400, "Unknown era")
+        return queries.Filters(mood=mood or None, era=era or None, genres=genre or [], max_runtime=max_runtime, min_year=min_year,
                                max_year=max_year, watchlist_only=watchlist_only, include_watched=include_watched,
                                include_dismissed=include_dismissed, server=server or None, q=(q or "").strip() or None)
 
@@ -670,6 +674,21 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
     def moods():
         return queries.moods_public()
 
+    @app.get("/api/eras")
+    def eras(
+        mood: str | None = None, genre: list[str] = Query(default=[]),
+        max_runtime: int | None = Query(None, ge=1), min_year: int | None = None, max_year: int | None = None,
+        watchlist_only: bool = False, include_watched: bool = False, include_dismissed: bool = False,
+        server: str | None = None, q: str | None = None, tag: str | None = None, tag_family: str | None = None,
+    ):
+        """Eras that still have a film to suggest under the other filters (era itself is ignored)."""
+        f = filters(mood, genre, max_runtime, min_year, max_year, watchlist_only, include_watched,
+                    include_dismissed, server, q)
+        if f.era:     # legacy mood=recent|classic means an era, which this endpoint ignores
+            f.era = None
+        cands = base_cands(engine().get(), tag, tag_family)
+        return queries.eras_public(queries.apply_filters(cands, f, dismissed_now()))
+
     @app.get("/api/tags")
     def tags():
         """Letterboxd diary tags that can steer picks (tag / tag_family on /api/recommendations and /api/pick)."""
@@ -718,13 +737,13 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
     def recommendations(
         limit: int = Query(24, ge=1, le=200), offset: int = Query(0, ge=0),
         sort: Literal["match", "rating", "recent", "year", "runtime"] = "match",
-        mood: str | None = None, genre: list[str] = Query(default=[]),
+        mood: str | None = None, era: str | None = None, genre: list[str] = Query(default=[]),
         max_runtime: int | None = Query(None, ge=1), min_year: int | None = None, max_year: int | None = None,
         watchlist_only: bool = False, include_watched: bool = False, include_dismissed: bool = False,
         server: str | None = None, q: str | None = None, tag: str | None = None, tag_family: str | None = None,
     ):
         f = filters(mood, genre, max_runtime, min_year, max_year, watchlist_only, include_watched,
-                    include_dismissed, server, q)
+                    include_dismissed, server, q, era)
         st, dismissed = engine().get(), dismissed_now()
         cands = base_cands(st, tag, tag_family)
         matched = queries.sort_cands(queries.apply_filters(cands, f, dismissed), sort)
@@ -737,13 +756,13 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
     @app.get("/api/pick")
     def pick(
         exclude: list[int] = Query(default=[]),
-        mood: str | None = None, genre: list[str] = Query(default=[]),
+        mood: str | None = None, era: str | None = None, genre: list[str] = Query(default=[]),
         max_runtime: int | None = Query(None, ge=1), min_year: int | None = None, max_year: int | None = None,
         watchlist_only: bool = False, include_watched: bool = False, include_dismissed: bool = False,
         server: str | None = None, q: str | None = None, tag: str | None = None, tag_family: str | None = None,
     ):
         f = filters(mood, genre, max_runtime, min_year, max_year, watchlist_only, include_watched,
-                    include_dismissed, server, q)
+                    include_dismissed, server, q, era)
         st, dismissed = engine().get(), dismissed_now()
         cands = base_cands(st, tag, tag_family)
         result = queries.pick(queries.apply_filters(cands, f, dismissed), set(exclude), random.Random())

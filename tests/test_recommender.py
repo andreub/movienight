@@ -128,20 +128,17 @@ def test_pick_weighted_exclude_and_diverse_alternatives():
     assert queries.pick([], set()) is None
 
 
-def test_recent_mood_window_and_year_fallback(monkeypatch):
+def test_recent_era_window_and_year_fallback(monkeypatch):
     from datetime import date
     assert queries.RECENT_MONTHS == 18
-    assert queries.MOOD_BY_ID["recent"]["description"] == "Released in the last 18 months"
-    ids = [m["id"] for m in queries.MOODS]
-    assert ids.index("recent") == ids.index("classic") + 1
+    assert "recent" not in queries.MOOD_BY_ID and "classic" not in queries.MOOD_BY_ID
     hist, cands = world()
     rec.score_candidates(hist, cands, now=NOW)
-    mood = queries.MOOD_BY_ID["recent"]
     by_id = {c.id: c for c in cands}
 
     def recent(today):
         monkeypatch.setattr(queries, "today", lambda: today)
-        return {c.id for c in queries.apply_filters(cands, queries.Filters(mood="recent"), {})}
+        return {c.id for c in queries.apply_filters(cands, queries.Filters(era="recent"), {})}
 
     # cutoff 2025-05-16 -> year >= 2025: 2024 film dropped
     assert 26 not in recent(date(2026, 11, 16))
@@ -165,30 +162,96 @@ def test_recent_mood_window_and_year_fallback(monkeypatch):
     by_id[26].year = 2026
     # combined with another filter
     monkeypatch.setattr(queries, "today", lambda: date(2026, 11, 16))
-    f = queries.Filters(mood="recent", genres=["Crime"])
+    f = queries.Filters(era="recent", genres=["Crime"])
     assert {c.id for c in queries.apply_filters(cands, f, {})} == {26}
-    f = queries.Filters(mood="recent", genres=["Horror"])
+    f = queries.Filters(era="recent", genres=["Horror"])
     assert queries.apply_filters(cands, f, {}) == []
     assert queries.recent_cutoff() == date(2025, 5, 16)
     monkeypatch.setattr(queries, "today", lambda: date(2026, 8, 31))
     assert queries.recent_cutoff() == date(2025, 2, 28)
 
 
-def test_recent_mood_uses_release_date_when_known(monkeypatch):
+def test_recent_era_uses_release_date_when_known(monkeypatch):
     from datetime import date
     hist, cands = world()
     rec.score_candidates(hist, cands, now=NOW)
     c = {c.id: c for c in cands}[26]
     monkeypatch.setattr(queries, "today", lambda: date(2026, 11, 17))   # cutoff 2025-05-17
-    mood = queries.MOOD_BY_ID["recent"]
     c.year = 2025
     for rd, expected in [("2025-01-10", False), ("2025-06-01", True), ("2025-05-17", True), ("2025-05-16", False)]:
         c.meta["release_date"] = rd
-        assert queries.mood_matches(mood, c) is expected, rd
+        assert queries.era_matches(c, "recent") is expected, rd
     for bad in ("", None, "2025", "not-a-date", "2025-13-40"):   # year rule: 2025 >= 2025
         c.meta["release_date"] = bad
-        assert queries.mood_matches(mood, c) is True, bad
+        assert queries.era_matches(c, "recent") is True, bad
     c.year = 2024
     for bad in ("", "garbage"):
         c.meta["release_date"] = bad
-        assert queries.mood_matches(mood, c) is False
+        assert queries.era_matches(c, "recent") is False
+
+
+def test_recent_era_excludes_unreleased(monkeypatch):
+    from datetime import date
+    hist, cands = world()
+    rec.score_candidates(hist, cands, now=NOW)
+    c = {c.id: c for c in cands}[26]
+    monkeypatch.setattr(queries, "today", lambda: date(2026, 11, 17))
+    c.year = 2026
+    for rd, expected in [("2026-11-17", True), ("2026-11-18", False), ("2027-03-01", False)]:
+        c.meta["release_date"] = rd
+        assert queries.era_matches(c, "recent") is expected, rd
+    c.meta["release_date"] = None
+    c.year = 2027                                   # year only, after this year
+    assert queries.era_matches(c, "recent") is False
+
+
+def test_era_combines_with_mood(monkeypatch):
+    from datetime import date
+    hist, cands = world()
+    rec.score_candidates(hist, cands, now=NOW)
+    monkeypatch.setattr(queries, "today", lambda: date(2025, 6, 30))
+    ids = lambda **kw: {c.id for c in queries.apply_filters(cands, queries.Filters(**kw), {})}
+    assert ids(mood="scary", era="recent") == set()           # the horror film is from 2019
+    assert ids(mood="tense", era="recent") == {26}
+    assert ids(mood="scary") == {24} and ids(mood="scary", era="2010s") == {24}
+    assert ids(mood="scary", era="1990s") == set()
+
+
+def test_decade_and_classic_eras_and_public_list(monkeypatch):
+    from datetime import date
+    hist, cands = world()
+    rec.score_candidates(hist, cands, now=NOW)
+    monkeypatch.setattr(queries, "today", lambda: date(2025, 6, 30))
+    by_id = {c.id: c for c in cands}
+    assert queries.era_matches(by_id[21], "2010s") and not queries.era_matches(by_id[21], "2020s")
+    assert queries.era_matches(by_id[26], "2020s")
+    assert queries.era_matches(by_id[100], "1990s")
+    assert queries.parse_era("1970s") is None and queries.parse_era("19x0s") is None and queries.parse_era("x") is None
+    eras = queries.eras_public(cands)
+    ids = [e["id"] for e in eras]
+    assert ids == ["recent", "2020s", "2010s", "2000s", "1990s"]       # no classic film, newest decade first
+    assert all(set(e) == {"id", "label", "description"} for e in eras)
+    assert queries.eras_public(cands[:1]) == [
+        {"id": "2010s", "label": "2010s", "description": "Released in the 2010s"}]
+    by_id[100].year, by_id[100].meta["year"] = 1965, 1965
+    assert queries.era_matches(by_id[100], "classic") and not queries.era_matches(by_id[100], "1960s")
+    assert queries.eras_public(cands)[-1]["id"] == "classic"
+
+
+def test_just_arrived_mood(monkeypatch):
+    from datetime import date
+    hist, cands = world()
+    rec.score_candidates(hist, cands, now=NOW)
+    monkeypatch.setattr(queries, "today", lambda: date(2025, 6, 30))
+    at = lambda d: datetime(2025, 6, 30, 12, tzinfo=timezone.utc) - timedelta(days=d)
+    for c in cands:
+        c.added_at = None
+    a, b, n, none = cands[:4]
+    a.added_at, b.added_at = at(10), at(40)
+    n.added_at = at(10).replace(tzinfo=None)        # naive stamps work too
+    a.year = b.year = 2012
+    a.meta["year"] = b.meta["year"] = 2012
+    ids = lambda **kw: {c.id for c in queries.apply_filters(cands, queries.Filters(**kw), {})}
+    assert ids(mood="just-arrived") == {a.id, n.id}   # 40 days old and no added_at are out
+    assert a.id in ids(mood="just-arrived", era="2010s") and b.id not in ids(mood="just-arrived", era="2010s")
+    assert a.id not in ids(mood="just-arrived", era="1990s")
