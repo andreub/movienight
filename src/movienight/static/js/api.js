@@ -103,6 +103,14 @@ export const api = {
   completion: (key) => request('GET', `/api/completions/${encodeURIComponent(key)}`),
   hideCompletion: (key) => request('POST', `/api/completions/${encodeURIComponent(key)}/hide`),
   unhideCompletion: (key) => request('DELETE', `/api/completions/${encodeURIComponent(key)}/hide`),
+  // Seerr: this user's account link ({enabled, connected, expired, name}), connecting it through Plex
+  // ({url} to open), disconnecting it; then (connected users only) request states by TMDB id, and a request.
+  // 409 = not connected or the Seerr session expired (Reconnect), 403 = the account may not request.
+  seerrAccount: () => request('GET', '/api/seerr/status'),
+  seerrConnect: () => request('POST', '/api/seerr/connect'),
+  seerrDisconnect: () => request('DELETE', '/api/seerr/session'),
+  seerrStatuses: (ids) => request('GET', '/api/seerr/statuses', { params: { tmdb: ids.join(',') } }),
+  seerrRequest: (tmdbId) => request('POST', `/api/seerr/request/${tmdbId}`),
   dismiss: (id, days) => request('POST', `/api/movies/${id}/dismiss`, { json: { days } }),
   undismiss: (id) => request('DELETE', `/api/movies/${id}/dismiss`),
   profile: () => request('GET', '/api/profile'),

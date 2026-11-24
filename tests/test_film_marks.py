@@ -183,7 +183,7 @@ def test_flag_from_env(monkeypatch):
 
 
 def test_flag_on_status_and_routes(cc):
-    assert cc.get("/api/status").json()["features"] == {"completionist": True}
+    assert cc.get("/api/status").json()["features"] == {"completionist": True, "seerr": False}
     assert cc.get("/api/completions").status_code == 200
 
 
@@ -192,7 +192,7 @@ def test_flag_off_hides_the_api(cfg):
     with TestClient(app) as c:
         seed(cfg.db_path)
         app.state.engine.invalidate()
-        assert c.get("/api/status").json()["features"] == {"completionist": False}
+        assert c.get("/api/status").json()["features"] == {"completionist": False, "seerr": False}
         assert c.get("/api/completions").status_code == 404
         assert c.get("/api/completions/collection-900").status_code == 404
         assert c.post("/api/completions/collection-900/hide").status_code == 404

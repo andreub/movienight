@@ -46,6 +46,7 @@ class Config:
     jellyfin_watched: bool = True    # films played in Jellyfin count as watched
     cast_hosts: str = ""             # comma-separated IPs/hostnames of Cast devices (TVs) to look for
     completionist: bool = True       # the Complete tab: sagas/franchises/series discovered from TMDB (extra lookups)
+    seerr_url: str = ""              # Overseerr / Jellyseerr API base (…/api/v1): each user connects their account
 
     def __post_init__(self):
         if self.media_server not in MEDIA_SERVERS:
@@ -80,6 +81,10 @@ class Config:
     @property
     def jellyfin_configured(self) -> bool:
         return bool(self.jellyfin_url and self.jellyfin_user and self.jellyfin_password)
+
+    @property
+    def seerr_configured(self) -> bool:
+        return bool(self.seerr_url)
 
     @property
     def db_path(self) -> Path:
@@ -127,4 +132,5 @@ class Config:
             jellyfin_watched=jf_watched not in ("0", "false", "no"),
             cast_hosts=(env.get("MOVIENIGHT_CAST_HOSTS") or "").strip(),
             completionist=(env.get("MOVIENIGHT_COMPLETIONIST") or "").strip().lower() not in ("0", "false", "no"),
+            seerr_url=(env.get("MOVIENIGHT_SEERR_URL") or "").strip().rstrip("/"),
         )

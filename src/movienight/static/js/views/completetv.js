@@ -14,6 +14,7 @@ import { api } from '../api.js';
 import { h, fill, icon, poster, hueOf, errorBox, announce, isTyping } from '../dom.js';
 import { GROUP_EVENT } from '../state.js';
 import { openSagaFilm, KINDS, storedKind, storeKind, chipKind, kindOfKey } from './complete.js';
+import { seerrEnabled, requestBadges } from '../seerr.js';
 
 const KIND_LABEL = { collection: 'Saga', franchise: 'Franchise', series: 'Saga', list: 'List', director: 'Director', actor: 'Actor' };
 const STATE_TEXT = { available: 'In your library · OK to open', seen: 'Seen · OK for details', missing: 'Not in your library · OK to mark seen' };
@@ -130,7 +131,7 @@ export function mountTv(root, { web = false, toolbar = null, target = null } = {
         centre(btn.closest('li'));
       },
     },
-    h('span', { class: 'ctv__art' },
+    h('span', { class: 'ctv__art', 'data-seerr': f.state === 'missing' && seerrEnabled() ? String(f.tmdb_id) : null },
       poster(f, { eager: true }),
       f.state === 'seen' ? h('span', { class: 'cfilm__seen', 'aria-hidden': 'true' }, icon('check')) : null,
       f.state === 'available' ? h('span', { class: 'cfilm__badge', text: 'In library' }) : null));
@@ -141,6 +142,7 @@ export function mountTv(root, { web = false, toolbar = null, target = null } = {
     const caption = h('p', { class: 'ctv__caption', 'aria-hidden': 'true' });
     const row = h('ul', { class: 'ctv__row', 'aria-label': g.ordered ? `${g.name}, in release order` : `${g.name}: still to watch, then seen` },
       g.films.map((f) => tile(f, caption)));
+    requestBadges(row);
     const pct = g.total ? Math.round((g.seen / g.total) * 100) : 0;
     const after = groups[i + 1];
     return h('article', {

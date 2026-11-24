@@ -221,6 +221,17 @@ MIGRATIONS = [
         fetched_at TEXT
     );
     """,
+    # 15: Seerr, per user. Each signed-in user connects their own Seerr account (through Plex); only Seerr's
+    # session cookie is kept (never the Plex token). expired=1 once Seerr stops accepting it (shown as Reconnect).
+    """
+    CREATE TABLE IF NOT EXISTS seerr_sessions (
+        user_id TEXT PRIMARY KEY,
+        cookie TEXT NOT NULL,
+        seerr_name TEXT,
+        connected_at TEXT NOT NULL,
+        expired INTEGER NOT NULL DEFAULT 0
+    );
+    """,
 ]
 
 # meta keys that belong to one media server type: removed when the app switches to the other one

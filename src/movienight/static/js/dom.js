@@ -37,6 +37,7 @@ const ICONS = {
   chevron: '<path d="M6 9l6 6 6-6"/>',
   external: '<path d="M14 4h6v6M20 4l-9 9M18 14v6H4V6h6"/>',
   upload: '<path d="M12 16V4M7 9l5-5 5 5M4 20h16"/>',
+  download: '<path d="M12 4v12M7 11l5 5 5-5M4 20h16"/>',
   check: '<path d="M4 12l5 5L20 6"/>',
   alert: '<path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/>',
   watchlist: '<path d="M6 3h12v18l-6-4-6 4z"/>',
