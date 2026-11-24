@@ -1,7 +1,8 @@
 import { api } from '../api.js';
-import { h, icon, poster, runtime, matchStub, errorBox, num } from '../dom.js';
+import { h, icon, poster, runtime, matchStub, errorBox, num, toast, announce } from '../dom.js';
 import { filterBar } from '../filters.js';
-import { voteButtons } from '../vote.js';
+import { voteButtons, setVote } from '../vote.js';
+import { voteMsg } from '../messages.js';
 import { seenToggle } from '../seen.js';
 import { serverName } from '../status.js';
 import { go, apiFilters, setFilters, hasAnyFilters, SORTS, EMPTY_FILTERS } from '../state.js';
@@ -122,6 +123,14 @@ export function mount(root, route) {
     }));
   }
 
+  // A card vote has no other feedback than the pressed button: confirm it, with Undo (a cleared vote only announces).
+  async function cardVoted(m, vote, done) {
+    const previous = m.my_vote ?? 0;
+    if (!(await done)) return;
+    if (vote === 0) { announce(`${m.title}: vote cleared.`); return; }
+    toast(voteMsg(m, vote), { timeout: 4000, action: { label: 'Undo', run: () => setVote(m, previous) } });
+  }
+
   function card(m) {
     return h('li', { class: 'card', 'data-id': m.id },
       h('button', { type: 'button', class: 'card__btn', onclick: () => go({ movie: m.id }) },
@@ -132,7 +141,7 @@ export function mount(root, route) {
         h('span', { class: 'card__title', text: m.title }),
         h('span', { class: 'card__meta', text: [m.year, runtime(m.runtime)].filter(Boolean).join(', ') })),
       m.watched && !m.seen_here ? null : h('div', { class: 'card__seen' }, seenToggle(m)),
-      voteButtons(m, { compact: true }));
+      voteButtons(m, { compact: true, save: setVote, onVote: (vote, done) => cardVoted(m, vote, done) }));
   }
 
   function emptyState() {
