@@ -6,7 +6,7 @@ import { go, apiFilters, hasQuickFilters, setFilters, CLEAR_QUICK } from '../sta
 import { endsAt } from '../clock.js';
 import { initialRuntime, rememberRuntime } from '../timecontrol.js';
 import { voteButtons, setVote, voteOf } from '../vote.js';
-import { setSeen } from '../seen.js';
+import { setSeen, setSeenVote, isSeen } from '../seen.js';
 import { serverName } from '../status.js';
 
 const HINT_KEY = 'movienight.seenHintDismissed';
@@ -111,11 +111,11 @@ export function mount(root, route) {
           h('div', { class: 'pick__actions' },
             playControl(m, 'pick__play'),
             shuffleBtn,
-            seenBtn,
             h('button', { type: 'button', class: 'btn btn--ghost', onclick: () => notTonight(m) }, icon('eyeoff'), 'Not tonight'),
             h('div', { class: 'pick__tail' },
               h('button', { type: 'button', class: 'btn btn--quiet', onclick: () => go({ movie: m.id }) }, icon('info'), 'Details'),
-              voteButtons(m, { onVote: (vote, done) => { if (vote === -1) lessLikeThis(m, done); } }))))));
+              seenBtn,
+              voteButtons(m, { save: voteAndSeen }))))));
   }
 
   function meta(m) {
@@ -175,7 +175,14 @@ export function mount(root, route) {
     await setSeen(m, true, 'hero');
   }
 
-  function seenToast(m, replacementId, undo) {
+  // A vote also marks an unseen film as seen (one request); the seen flow then brings up the next pick.
+  // Clearing a vote, or voting on a film already seen, only stores the vote.
+  function voteAndSeen(m, vote) {
+    if (vote !== 0 && !isSeen(m) && !m.watched) return setSeenVote(m, true, vote, 'hero');
+    return setVote(m, vote);
+  }
+
+  function seenToast(m, replacementId, undo, { vote, previousVote } = {}) {
     const quick = (close) => h('div', { class: 'toast__votes', role: 'group', 'aria-label': 'Did you like it?' },
       [[1, 'thumbup', 'I liked it'], [2, 'heart', 'A favourite'], [-1, 'thumbdown', "I didn't like it"]].map(([vote, name, label]) =>
         h('button', {
@@ -187,14 +194,18 @@ export function mount(root, route) {
           },
         }, icon(name))));
     // Already rated (e.g. from the sheet): no need to ask again.
-    const rated = voteOf(m) !== 0;
-    toast(rated ? `Marked ${quoted(m)} as seen.` : `Marked ${quoted(m)} as seen. Did you like it?`, {
+    const voted = vote !== undefined && vote !== 0;
+    const rated = voted || voteOf(m) !== 0;
+    const what = vote > 1 ? `${quoted(m)} is a favourite.` : vote > 0 ? `you liked ${quoted(m)}.` : `less like ${quoted(m)}.`;
+    toast(voted ? `Seen · ${what}` : rated ? `Marked ${quoted(m)} as seen.` : `Marked ${quoted(m)} as seen. Did you like it?`, {
       timeout: rated ? 6000 : 8000,
       extra: rated ? null : quick,
       action: {
         label: 'Undo',
         run: async () => {
-          if (!(await setSeen(m, false, 'undo'))) return;
+          // Restore both the seen mark and the vote it was saved with, whatever it was before (possibly none).
+          const ok = previousVote === undefined ? await setSeen(m, false, 'undo') : await setSeenVote(m, false, previousVote, 'undo');
+          if (!ok) return;
           undo();
         },
       },
@@ -210,25 +221,26 @@ export function mount(root, route) {
   }
 
   function onSeenSaved(e) {
-    const { movie, seen: nowSeen, was } = e.detail;
+    const { movie, seen: nowSeen, was, vote, previousVote } = e.detail;
+    const restore = { vote, previousVote };
     if (!data || !nowSeen || was || e.detail.source === 'undo') return;
     if (movie.id === data.pick.id) {
       const previous = data;
       load('shuffle').then(() => {
         const next = data?.pick?.id;
         seenToast(movie, next, () => {
-          if (data && data.pick.id === next) { req++; data = previous; render('shuffle'); } else toast(`Unmarked ${quoted(m)}. It can come back in your picks.`);
-        });
+          if (data && data.pick.id === next) { req++; data = previous; render('shuffle'); } else toast(`Unmarked ${quoted(movie)}. It can come back in your picks.`);
+        }, restore);
       });
       return;
     }
     const idx = data.alternatives.findIndex((a) => a.id === movie.id);
     if (idx < 0) return;
-    replaceAlt(movie, idx);
+    replaceAlt(movie, idx, restore);
   }
 
   // Only the marked slot changes: ask for one film that is not on screen and not shown this session.
-  async function replaceAlt(movie, idx) {
+  async function replaceAlt(movie, idx, restore) {
     const token = req;
     const dataAtStart = data;
     const onScreen = [dataAtStart.pick.id, ...dataAtStart.alternatives.map((a) => a.id)];
@@ -254,27 +266,9 @@ export function mount(root, route) {
       const cur = replId ? data.alternatives.findIndex((a) => a.id === replId) : -1;
       if (cur >= 0) data.alternatives[cur] = movie;
       else if (!replId && data.alternatives.length < 6) data.alternatives.splice(Math.min(at, data.alternatives.length), 0, movie);
-      else { toast(`Unmarked ${quoted(m)}. It can come back in your picks.`); return; }
+      else { toast(`Unmarked ${quoted(movie)}. It can come back in your picks.`); return; }
       renderAlts();
-    });
-  }
-
-  // A thumbs-down is feedback, not a hide: the film ranks lower and the next pick comes up.
-  async function lessLikeThis(m, done) {
-    if (!(await done)) return;
-    const previous = data;
-    toast(`Noted. ${quoted(m)} will rank lower.`, {
-      action: {
-        label: 'Undo',
-        run: async () => {
-          if (!(await setVote(m, 0))) return;
-          req++;
-          data = previous;
-          render('shuffle');
-        },
-      },
-    });
-    load('shuffle');
+    }, restore);
   }
 
   function empty() {
