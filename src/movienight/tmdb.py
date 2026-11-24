@@ -23,6 +23,16 @@ def backdrop_url(path: str | None) -> str | None:
     return f"{IMG}/w1280{path}" if path else None
 
 
+def profile_url(path: str | None) -> str | None:
+    return f"{IMG}/w185{path}" if path else None
+
+
+# TMDB's movie genre ids (fixed): person credits carry ids only
+GENRES = {28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime", 99: "Documentary", 18: "Drama",
+          10751: "Family", 14: "Fantasy", 36: "History", 27: "Horror", 10402: "Music", 9648: "Mystery",
+          10749: "Romance", 878: "Science Fiction", 10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western"}
+
+
 class TmdbError(RuntimeError):
     pass
 
@@ -120,6 +130,11 @@ class Tmdb:
         return {"total": int(data.get("total_results") or 0),
                 "parts": compact_collection({"parts": data.get("results") or []}, today)["parts"]}
 
+    async def person_credits(self, pid: int) -> dict | None:
+        """A person's name, profile photo and film credits (directed, and billed in the top 5). None on 404."""
+        raw = await self.get(f"/person/{int(pid)}", {"append_to_response": "movie_credits"})
+        return compact_person(raw) if raw else None
+
 
 def pick_search_result(data: dict | None, want_norm: str) -> int | None:
     results = (data or {}).get("results") or []
@@ -149,6 +164,31 @@ def compact_collection(raw: dict, today: str | None = None) -> dict:
     parts.sort(key=lambda p: (p["release_date"], p["id"]))
     return {"id": raw.get("id"), "name": raw.get("name") or "", "poster_path": raw.get("poster_path"),
             "backdrop_path": raw.get("backdrop_path"), "parts": parts}
+
+
+def _credit(c: dict) -> dict:
+    date = c.get("release_date") or ""
+    return {"id": c["id"], "title": c.get("title") or c.get("original_title") or "",
+            "year": int(date[:4]) if date[:4].isdigit() else None, "release_date": date,
+            "poster_path": c.get("poster_path"), "backdrop_path": c.get("backdrop_path"),
+            "vote_count": c.get("vote_count") or 0, "vote_average": c.get("vote_average"),
+            "genre_ids": [g for g in c.get("genre_ids") or [] if isinstance(g, int)]}
+
+
+def compact_person(raw: dict) -> dict:
+    """Name, profile path and two credit lists, unfiltered (the filters keep films the user has seen, so they run
+    when the groups are built): `directed` (crew, job Director) and `acted` (cast billed in the top 5)."""
+    credits = raw.get("movie_credits") or {}
+    directed: dict[int, dict] = {}
+    for c in credits.get("crew") or []:
+        if c.get("job") == "Director" and c.get("id"):
+            directed.setdefault(c["id"], _credit(c))
+    acted: dict[int, dict] = {}
+    for c in credits.get("cast") or []:
+        if c.get("id") and isinstance(c.get("order"), int) and c["order"] < 5:
+            acted.setdefault(c["id"], _credit(c))
+    return {"id": raw.get("id"), "name": raw.get("name") or "", "profile_path": raw.get("profile_path"),
+            "directed": list(directed.values()), "acted": list(acted.values())}
 
 
 def compact_details(raw: dict) -> dict:

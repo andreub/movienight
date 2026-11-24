@@ -397,8 +397,9 @@ class SyncManager:
         try:
             await self._resolve(conn)
             await self._details(conn)
-            if self.cfg.completionist:          # MOVIENIGHT_COMPLETIONIST=0: no collection/search/keyword lookups
+            if self.cfg.completionist:          # MOVIENIGHT_COMPLETIONIST=0: no collection/search/keyword/person lookups
                 await self._collections(conn)
+                await self._people(conn)
             await self._recs(conn)
         finally:
             conn.close()
@@ -549,6 +550,25 @@ class SyncManager:
         if changed:
             self.engine.invalidate()
 
+    async def _people(self, conn) -> None:
+        """Completionist filmographies: the film credits of the directors and actors the user has seen several films
+        of (at most 40 of each, so at most 80 lookups), each refreshed after its TTL (30 days)."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=completion.PERSON_TTL_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        fresh = {r[0] for r in conn.execute(
+            "SELECT person_id FROM tmdb_person_credits WHERE fetched_at IS NOT NULL AND fetched_at >= ?", (cutoff,))}
+        ids = [p for p in completion.wanted_person_ids(conn, completion.seen_tmdb_ids(conn)) if p not in fresh]
+        if not ids:
+            return
+
+        def done(pid, person):
+            person = person or {}
+            conn.execute("INSERT OR REPLACE INTO tmdb_person_credits(person_id,name,profile_path,json,fetched_at)"
+                         " VALUES(?,?,?,?,?)", (pid, person.get("name"), person.get("profile_path"),
+                                                json.dumps(person), now_iso()))
+            conn.commit()
+
+        await self._batches(ids, self.tmdb.person_credits, done)
+        self.engine.invalidate()
 
     async def _recs(self, conn) -> None:
         ids = [r[0] for r in conn.execute(

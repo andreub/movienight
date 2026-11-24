@@ -5,20 +5,57 @@
 // can be marked seen with a verdict, or unmarked), so it is clear where the
 // gaps fall. When a saga does not fit in a few rows, long runs of seen films fold into a "✓ 7 seen" tile (tap
 // opens it); unseen films and their neighbours always stay. "Show all" appears only if it still overflows.
-// Groups without an order list unseen films first. Finished and hidden groups stay folded at the bottom.
+// Directors and actors (no order) list unseen films first, then the seen ones folded into one "✓ N seen" tile, with
+// the photo of the person on the card. Kind chips filter both layouts. Finished and hidden groups stay folded at the bottom.
 // Two layouts: this "List" and "Screen" (completetv.js, one saga per screen). A toggle in the header switches
 // between them in place and the browser remembers the choice; the TV app always gets Screen, with no toggle.
 import { api } from '../api.js';
 import { go } from '../state.js';
-import { h, fill, icon, poster, errorBox, toast, announce, quoted } from '../dom.js';
+import { h, fill, icon, poster, hueOf, errorBox, toast, announce, quoted } from '../dom.js';
 import { TV } from '../tvnav.js';
 import { mountTv } from './completetv.js';
 
 export const title = 'Complete';
 
-const KINDS = [
+// The kind chips, shared with the Screen layout. A chip whose kind has no group is hidden (unless it is the current one).
+export const KINDS = [
   [null, 'All'], ['collection', 'Sagas'], ['franchise', 'Franchises'], ['series', 'Series'],
+  ['director', 'Directors'], ['actor', 'Actors'],
 ];
+export const PEOPLE = new Set(['director', 'actor']);
+
+const KIND_KEY = 'movienight.completeKind';
+
+// The chosen kind chip, remembered by the browser for both layouts (null = All).
+export function storedKind() {
+  try {
+    const k = localStorage.getItem(KIND_KEY);
+    return KINDS.some(([id]) => id && id === k) ? k : null;
+  } catch { return null; }
+}
+
+export function storeKind(kind) {
+  try { if (kind) localStorage.setItem(KIND_KEY, kind); else localStorage.removeItem(KIND_KEY); } catch { /* storage unavailable */ }
+}
+
+// How many groups a chip stands for, from the API's `counts` (All = every kind).
+export function kindCount(counts, id) {
+  if (!counts) return null;
+  return id ? counts[id] || 0 : Object.values(counts).reduce((a, b) => a + b, 0);
+}
+
+// A director's or actor's face (TMDB w185), or their initials on a colour of their own when TMDB has none.
+export function face(g, cls = '') {
+  const initials = (g.name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+  const gen = () => h('span', { class: 'cface__gen', style: { '--h': String(hueOf({ title: g.name })) }, text: initials });
+  const wrap = h('span', { class: `cface ${cls}`.trim(), 'aria-hidden': 'true' });
+  if (g.profile_url) {
+    const img = h('img', { src: g.profile_url, alt: '', loading: 'lazy', decoding: 'async' });
+    img.addEventListener('error', () => img.replaceWith(gen()), { once: true });
+    wrap.append(img);
+  } else wrap.append(gen());
+  return wrap;
+}
 
 const pct = (g) => (g.total ? Math.round((g.seen / g.total) * 100) : 0);
 
@@ -55,8 +92,9 @@ function film(f) {
 
 // A run of seen films folded into one tile the size of a poster.
 function foldTile(run, onOpen) {
-  const first = run[0].year;
-  const last = run[run.length - 1].year;
+  const ys = run.map((f) => f.year).filter(Boolean); // filmographies list seen films newest first
+  const first = ys.length ? Math.min(...ys) : null;
+  const last = ys.length ? Math.max(...ys) : null;
   const years = first && last ? (first === last ? String(first) : `${first}–${last}`) : '';
   return h('li', { class: 'cfilm cfilm--fold' },
     h('button', {
@@ -93,12 +131,17 @@ export function sagaLayout(films, cap, open = new Set()) {
   return { items: items.slice(0, cap), cut: items.length - cap };
 }
 
-// Unordered groups: unseen films first (the API already ranks them), then seen ones when expanded.
-function listLayout(films, cap, all) {
-  const unseen = films.filter((f) => f.state !== 'seen');
-  const items = (all ? [...unseen, ...films.filter((f) => f.state === 'seen')] : unseen).map((film) => ({ film }));
-  if (all || items.length <= cap) return { items, cut: 0 };
-  return { items: items.slice(0, cap), cut: items.length - cap };
+// Unordered groups (filmographies): unseen films first (the API already ranks them), then the seen ones folded
+// into one "✓ N seen" tile at the end (unfolded with `seenOpen`). When that overflows `cap`, the tile stays last
+// and the unseen films are cut; once the seen ones are open, or with `all`, nothing is cut.
+export function listLayout(films, cap, all = false, seenOpen = false) {
+  const unseen = films.filter((f) => f.state !== 'seen').map((film) => ({ film }));
+  const seen = films.filter((f) => f.state === 'seen');
+  const tail = seen.length >= 2 && !seenOpen && !all ? [{ fold: seen, start: 'seen' }] : seen.map((film) => ({ film }));
+  const items = [...unseen, ...tail];
+  if (all || seenOpen || items.length <= cap) return { items, cut: 0 };
+  const room = Math.max(1, cap - tail.length);
+  return { items: [...unseen.slice(0, room), ...tail], cut: unseen.length - room };
 }
 
 // How many rows a card may fill before folding: sagas get 3 (a whole trilogy-of-trilogies fits unfolded);
@@ -146,7 +189,7 @@ export function mount(root) {
 }
 
 function mountList(root, toggle) {
-  let kind = null;
+  let kind = storedKind();
   let alive = true;
   let token = 0;
   let data = null;
@@ -155,7 +198,7 @@ function mountList(root, toggle) {
 
   const chips = KINDS.map(([id, label]) => h('button', {
     type: 'button', class: 'chip chip--small', 'aria-pressed': String(id === kind), 'data-kind': id || '',
-    onclick: () => { kind = id; paintChips(); load(); },
+    onclick: () => { kind = id; storeKind(id); paintChips(); load(); },
   }, h('span', { text: label }), h('span', { class: 'chip__count' })));
   const list = h('ul', { class: 'cgroups' });
   const status = h('div');
@@ -164,7 +207,7 @@ function mountList(root, toggle) {
   root.append(h('div', { class: 'complete' },
     h('div', { class: 'complete__top' },
       h('div', { class: 'complete__head' }, h('h1', { class: 'page-title', text: 'Complete' }), toggle),
-      h('p', { class: 'lede', text: 'Sagas, franchises and series you have started. New releases and the ones you rated highest come first.' }),
+      h('p', { class: 'lede', text: 'Sagas, franchises and series you have started, then the directors and actors you keep coming back to. New releases and the ones you rated highest come first.' }),
       h('div', { class: 'chips chips--scroll complete__kinds', role: 'group', 'aria-label': 'Kind of group' }, chips)),
     status, list, folds));
 
@@ -172,7 +215,7 @@ function mountList(root, toggle) {
     for (const c of chips) {
       const id = c.dataset.kind || null;
       c.setAttribute('aria-pressed', String(id === kind));
-      const n = data?.counts ? (id ? data.counts[id] : Object.values(data.counts).reduce((a, b) => a + b, 0)) : null;
+      const n = kindCount(data?.counts, id);
       c.querySelector('.chip__count').textContent = n == null ? '' : String(n);
       c.hidden = Boolean(id) && data?.counts && !data.counts[id] && id !== kind;
     }
@@ -199,23 +242,28 @@ function mountList(root, toggle) {
       if (c === cols && !force) return;
       cols = c;
       const cap = expanded.has(g.key) ? Infinity : c * rowsFor(c, g.ordered);
-      const { items, cut } = g.ordered ? sagaLayout(g.films, cap, open) : listLayout(g.films, cap, expanded.has(g.key));
+      const { items, cut } = g.ordered ? sagaLayout(g.films, cap, open) : listLayout(g.films, cap, expanded.has(g.key), open.has('seen'));
       fill(grid, items.map((it) => (it.fold ? foldTile(it.fold, () => { open.add(it.start); render(true); }) : film(it.film))));
       const all = expanded.has(g.key);
       moreBtn.hidden = !cut && !all;
-      if (all) moreBtn.textContent = 'Show less';
-      else if (g.ordered) moreBtn.textContent = `Show all ${g.total}`;
-      else moreBtn.textContent = `+${cut} more · show all`;
+      moreBtn.textContent = all ? 'Show less' : `Show all ${g.total}`;
       moreBtn.setAttribute('aria-expanded', String(all));
     }
+
+    const person = PEOPLE.has(g.kind);
 
     const ro = new ResizeObserver(() => render());
     ro.observe(grid);
     observers.add(ro);
 
     const li = h('li', { class: 'cgroup', 'data-key': g.key },
-      h('div', { class: 'cgroup__head' },
-        h('h2', { class: 'cgroup__name', text: g.name }),
+      h('div', { class: `cgroup__head${person ? ' cgroup__head--person' : ''}` },
+        person ? face(g, 'cgroup__face') : null,
+        person
+          ? h('div', { class: 'cgroup__who' },
+            h('span', { class: 'cgroup__kind', text: g.kind === 'director' ? 'Director' : 'Actor' }),
+            h('h2', { class: 'cgroup__name', text: g.name }))
+          : h('h2', { class: 'cgroup__name', text: g.name }),
         g.reason ? h('span', { class: 'cgroup__why', text: g.reason }) : null,
         h('button', { type: 'button', class: 'cgroup__hide', 'aria-label': `Hide ${g.name}`, title: 'Hide', onclick: () => hide(g, li) }, icon('close'))),
       progress(g),

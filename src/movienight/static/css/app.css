@@ -1217,3 +1217,38 @@ html:has(.ctv--web), html:has(.ctv--web) body { overscroll-behavior-x: none; } /
 
 /* saga films that are not playable now open a panel too: the same hover lift */
 .cfilm--missing button.cfilm__btn:hover .poster, .cfilm--seen button.cfilm__btn:hover .poster { transform: translateY(-2px); }
+
+/* ---------- complete: directors and actors ---------- */
+.cgroup__head--person { align-items: center; gap: 12px; }
+.cface {
+  flex: none; display: block; width: 56px; height: 56px; border-radius: 50%; overflow: hidden;
+  background: var(--ink-3); box-shadow: 0 0 0 1px var(--line);
+}
+.cface img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.cface__gen {
+  display: grid; place-items: center; width: 100%; height: 100%; background: hsl(var(--h) 40% 28%);
+  color: hsl(var(--h) 70% 92%); font: 800 1.125rem/1 var(--font-display); letter-spacing: .04em;
+}
+.cgroup__who { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.cgroup__who .cgroup__name { padding-top: 0; }
+.cgroup__kind { color: var(--bulb); font-size: .75rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+
+/* the kind chips on the Screen layout and the TV: one line at the top (beside the layout toggle in a browser),
+   scrolling sideways when it does not fit; on the TV dimmed until Up reaches them */
+.ctv__toolbar { display: flex; align-items: center; gap: 12px; max-width: 62vw; pointer-events: none; }
+.ctv__toolbar > * { pointer-events: auto; }
+.ctv__toolbar .seg { flex: none; }
+.ctv__kinds {
+  flex-wrap: nowrap; min-width: 0; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain;
+  padding: 4px; margin: -4px;
+}
+.ctv__kinds::-webkit-scrollbar { display: none; }
+.ctv__kinds .chip { min-height: 32px; background: rgb(36 29 61 / .8); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.ctv__kinds .chip[aria-pressed="true"] { background: var(--paper); }
+html.tv .ctv__kinds { gap: 14px; padding: 16px; margin: -16px; opacity: .45; transition: opacity .2s; }
+html.tv .ctv__kinds:focus-within { opacity: 1; }
+html.tv .ctv__kinds .chip { min-height: 48px; padding: 0 22px; font-size: 1.125rem; }
+@media (max-width: 767px) {
+  .ctv--web .ctv__toolbar { left: 0; right: 0; max-width: none; flex-wrap: wrap; gap: 8px; padding-inline: var(--gutter); }
+  .ctv--web .ctv__kinds { flex: 0 0 calc(100% + 2 * var(--gutter)); margin: 0 calc(-1 * var(--gutter)); padding: 2px var(--gutter); scroll-padding-inline: var(--gutter); }
+}

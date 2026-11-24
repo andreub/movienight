@@ -63,7 +63,7 @@ The RSS feed carries no tags, so new tags arrive with the next export.
 ## Completionist
 
 The **Complete** tab lists the sagas, franchises and series you have started (at least one film
-seen), with your progress ("4 of 9 seen") and what is left. Each film is **seen** (Letterboxd, played
+seen), then the directors and actors you keep coming back to, with your progress ("4 of 9 seen") and what is left. Each film is **seen** (Letterboxd, played
 on the media server, or marked seen here), **available** (in the library and unwatched: tap it to
 open the film) or **missing** (not in the library, greyed out).
 
@@ -80,16 +80,29 @@ Nothing is hand-written: groups are discovered from your own data and the TMDB c
   "family saga") and keywords on more than 20 films (themes, not series) are skipped. Entries with
   fewer than 20 votes (shorts, fan films) are dropped. A series whose films are all in a saga is
   not shown twice. A saga inside a series gives way to the series.
-- A director's ordinary filmography, with recurring cast and themes, never becomes a group. Some
+- A director's ordinary filmography, with recurring cast and themes, never becomes a saga. Some
   trilogies have no shared collection or keyword on TMDB (Park Chan-wook's Vengeance trilogy, for
   example), so they do not show up.
+- **Directors**: someone who directed at least 3 films you have seen. **Actors**: someone billed in
+  the top 5 of at least 4 films you have seen. The 40 of each with the most films seen are looked
+  up. A person who qualifies as both shows only as a director.
+  - Their films leave out documentaries, TV films, unreleased films and films with fewer than 100
+    votes on TMDB. A film you have seen always stays, even when it fails these filters.
+  - An actor's group holds at most 30 films: every seen one, then the most relevant unseen ones
+    (in your library first).
+  - A filmography shows only while it has at least one film seen and one to see.
+  - Filmographies have no order of their own. Their cards list the films to see first: those in your
+    library, then the missing ones by relevance (TMDB votes × rating, nudged by your taste for their
+    genres). The seen ones fold into one "✓ N seen" tile at the end. The card shows the person's
+    TMDB photo, or their initials when TMDB has none.
 - **Cards**: posters fill the card's width. A saga shows every film in release order, seen ones
   dimmed with a ✓, so you see where the gaps are. When it doesn't fit in about three rows, runs of
   seen films fold into a "✓ 7 seen" tile (tap to open it). Unseen films and their neighbours always
   stay visible, and "Show all" appears only if the card still overflows. Finished groups and hidden
   ones (the × on a card, with undo) stay folded at the bottom.
 - **Order**: each group gets a score, and one quiet hint on its card says why ("New · 2026",
-  "You rated ★4.4", "In your library").
+  "You rated ★4.4", "In your library"). In "All", sagas, franchises and series come first and
+  directors and actors after them, each block ordered by score.
   `score = 3 × recency + 1.5 × taste + 0.75 × library + 0.5 × share seen`.
   - *Recency* is 1 when an unseen film came out in the last 18 months, fading to 0 at 5 years.
   - *Taste* compares your ratings of the group's seen films (Letterboxd; an app vote when there is
@@ -100,6 +113,11 @@ Nothing is hand-written: groups are discovered from your own data and the TMDB c
   backdrop of the next film to watch, the name, progress, the hint and the whole saga as a poster
   row. Left and right move through the films, OK opens the side panel of any of them, down and up
   go to the next and previous group.
+- **Kind chips** (All, Sagas, Franchises, Series, Directors, Actors) filter both layouts. A chip whose
+  kind has no group is hidden, and the browser remembers the choice. In Screen they sit at the top,
+  beside the layout toggle, on one line that scrolls sideways on phones. Picking one starts over at
+  the first group of that kind ("1 of N"). On the TV, Up on the first group moves to the chips
+  (dimmed until then), Left and Right walk them, OK applies one and Down goes back to the films.
 - **List / Screen toggle**: in a browser, a toggle in the tab's header switches between the cards
   (List, the default) and that one-group-per-screen layout (Screen: click a film, arrow keys and
   Enter, the arrows by the dots, the wheel or a vertical swipe change group); the browser remembers
@@ -124,18 +142,24 @@ Nothing is hand-written: groups are discovered from your own data and the TMDB c
   - the collection searches (`tmdb_lookups`);
   - the collections (`tmdb_collections`), with each film's backdrop (collections cached before
     backdrops were kept are refetched once);
-  - the films of each series keyword (`tmdb_lookups`).
+  - the films of each series keyword (`tmdb_lookups`);
+  - the film credits of each eligible director and actor (`tmdb_person_credits`, one
+    `/person/{id}?append_to_response=movie_credits` call per person, at most 80 per sync, none when
+    nothing is stale).
 - **API**:
-  - `GET /api/completions?kind=collection|franchise|series&hidden=true` returns the groups with
-    `films` (the whole group in release order, each with its `state`), `ordered`, `seen`, `total`,
-    `available`, `next`, `score`, `reason` and `backdrop_url`, best score first.
+  - `GET /api/completions?kind=collection|franchise|series|director|actor&hidden=true` returns the
+    groups with `films` (each with its `state`), `ordered`, `seen`, `total`, `available`, `next`,
+    `score`, `reason` and `backdrop_url`: sagas first, each block best score first. Sagas are
+    `ordered` (the whole group in release order); filmographies are not (films to see first, ranked,
+    then the seen ones) and add `person_id` and `profile_url`.
   - `GET /api/completions/{key}` returns one group.
   - `POST` and `DELETE /api/completions/{key}/hide` hide and unhide a group.
   - `GET /api/films/{tmdb_id}` returns a film by TMDB id, in the library or not, with `seen_via`
     (`letterboxd`, `server`, `here`), `can_unmark`, `my_vote` and `movie_id` when it is in the
     library. `POST /api/films/{tmdb_id}/seen` takes `{"seen": true, "vote": 2}` like the library
     route; unmarking a film seen on Letterboxd or played on the server answers 409.
-  - Keys look like `collection-556`, `franchise-spider-man` and `series-357318`.
+  - Keys look like `collection-556`, `franchise-spider-man`, `series-357318`, `director-525` and
+    `actor-6193`.
 
 ## Quick start (Docker)
 
@@ -179,7 +203,7 @@ The UI can run without a backend in mock mode at http://localhost:8080/?mock=1.
 | `MOVIENIGHT_PUSH_SEEN` | off | `1`/`true`/`yes`: marks films you flag "seen it" as played on the media server (writes to that account). `MOVIENIGHT_PLEX_PUSH_SEEN` is the older name and still works |
 | `MOVIENIGHT_LOGIN` | `plex` (Plex), empty (Jellyfin) | Login methods, comma-separated: `plex`, `oidc`, or `none`. See [Login](#login) |
 | `MOVIENIGHT_PLEX_OWNER` | empty | Plex login only: the account id, username or email allowed in; empty = the first sign-in (or the account of the stored token) |
-| `MOVIENIGHT_COMPLETIONIST` | on | The Complete tab (sagas, franchises, series). `0`/`false`/`no`: tab hidden, `/api/completions*` answers 404, and the sync skips the collection, collection-search and keyword lookups |
+| `MOVIENIGHT_COMPLETIONIST` | on | The Complete tab (sagas, franchises, series, directors, actors). `0`/`false`/`no`: tab hidden, `/api/completions*` answers 404, and the sync skips the collection, collection-search, keyword and person-credit lookups |
 | `MOVIENIGHT_PORT` | `8080` | Compose only: host port |
 | `TZ` | `Europe/Madrid` | Compose only: container timezone |
 
