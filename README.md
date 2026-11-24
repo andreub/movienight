@@ -76,6 +76,10 @@ exception is the canonical lists, which ship with the app.
   Siblings are found with a collection search on the stem. Collections with a far less popular
   offshoot (TV films, animated spin-offs), a name without the stem (Venom) or a generic stem
   ("Before", "Matrix") are not merged.
+- **Orphans**: films in no TMDB collection join the started saga or franchise whose name opens their title or follows
+  a colon (Rogue One: A Star Wars Story), or that carry a keyword named like it on few films (Bumblebee), in release
+  order. Animated films (unless the saga is), TV films, documentaries, shorts, same-name remakes, films in another
+  collection and films with under a fifth of the saga's median votes (half, for a keyword alone) stay out.
 - **Series** (shown as sagas, under the Sagas chip): a TMDB keyword on a seen film whose name ends in a series word, such as
   `cornetto trilogy`, expanded to its films with TMDB's discover. Generic keywords ("trilogy",
   "family saga") and keywords on more than 20 films (themes, not series) are skipped. Entries with

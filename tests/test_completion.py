@@ -89,11 +89,12 @@ def test_compact_collection_sorts_and_drops_unreleased():
     raw = {"id": 5, "name": "Saga Collection", "parts": [
         {"id": 3, "title": "Three", "release_date": "2030-01-01"}, {"id": 2, "title": "Two", "release_date": "2010-01-01"},
         {"id": 4, "title": "Four", "release_date": ""}, {"id": 1, "title": "One", "release_date": "2005-01-01",
-                                                          "vote_count": 10, "vote_average": 7.5}]}
+                                                          "vote_count": 10, "vote_average": 7.5, "genre_ids": [16, 12]}]}
     c = tmdb.compact_collection(raw, today="2026-11-22")
     assert [p["id"] for p in c["parts"]] == [1, 2]
     assert c["parts"][0] == {"id": 1, "title": "One", "year": 2005, "release_date": "2005-01-01", "poster_path": None,
-                             "backdrop_path": None, "vote_count": 10, "vote_average": 7.5}
+                             "backdrop_path": None, "vote_count": 10, "vote_average": 7.5, "genre_ids": [16, 12]}
+    assert c["parts"][1]["genre_ids"] == []
 
 
 def test_migrations_12_13_tables(cfg):
@@ -201,6 +202,8 @@ async def test_discovery_sync_fetches_once_ttl_and_no_loop(tmp_path):
             return httpx.Response(200, json={"total_results": 2, "results": [
                 {"id": 1, "title": "A", "release_date": "2000-01-01", "vote_count": 50},
                 {"id": 9, "title": "Z", "release_date": "2004-01-01", "vote_count": 60}]})
+        if path in ("/3/search/keyword", "/3/search/movie"):      # orphans of the started sagas: none
+            return httpx.Response(200, json={"results": []})
         if path.startswith("/3/collection/"):
             cid = int(path.rsplit("/", 1)[1])
             if cid == 78:
@@ -215,14 +218,15 @@ async def test_discovery_sync_fetches_once_ttl_and_no_loop(tmp_path):
 
     run = _runner(cfg, handler)
     # details: only 3 (backfill); search: the distinctive stem; collections: 77 (seen), 79 (search hit whose
-    # name carries the stem; not 80), 78 (backfilled film 3, a 404); discover: the series keyword only
+    # name carries the stem; not 80), 78 (backfilled film 3, a 404); discover: the series keyword only; orphan
+    # searches on the names of the two started sagas (C77, C79)
     assert await run() == ["/3/collection/77", "/3/collection/78", "/3/collection/79", "/3/discover/movie",
-                           "/3/movie/3", "/3/search/collection"]
+                           "/3/movie/3", "/3/search/collection"] + ["/3/search/keyword"] * 2 + ["/3/search/movie"] * 2
     with db.session(cfg.db_path) as c:
         rows = {r[0]: json.loads(r[1]) for r in c.execute("SELECT collection_id, json FROM tmdb_collections")}
         lookups = {r[0]: json.loads(r[1]) for r in c.execute("SELECT key, json FROM tmdb_lookups")}
     assert rows[78] == {} and [p["id"] for p in rows[77]["parts"]] == [1, 9]
-    assert set(lookups) == {"collsearch:web-slinger", "keyword:5001"}
+    assert set(lookups) == {"collsearch:web-slinger", "keyword:5001", "orphans:c77", "orphans:c79"}
     assert lookups["keyword:5001"]["name"] == "pint trilogy" and lookups["keyword:5001"]["total"] == 2
     assert [p["id"] for p in lookups["keyword:5001"]["parts"]] == [1, 9]
     assert await run() == []                      # nothing pending: no refetch loop

@@ -9,6 +9,9 @@ Three signals, in this order:
 - **series**: a TMDB keyword on a seen film whose name ends in a series word ("cornetto trilogy"), expanded
   through a cached /discover/movie?with_keywords. Generic ones ("trilogy", "family saga") and keywords on many
   films (themes, not series) are skipped; obscure entries (shorts, fan films) are dropped by vote count.
+- **orphans** join a started collection or franchise: films in no TMDB collection whose title opens with the saga's
+  name or carries it after a colon, or that bear a keyword named like it (on few films). Animated films (unless
+  the saga is), TV films, documentaries, shorts, same-name remakes and little-voted films stay out.
 
 Then filmographies, which have no order of their own:
 - **director**: someone who directed DIRECTOR_MIN_SEEN films the user has seen; **actor**: someone billed in the
@@ -66,9 +69,23 @@ SERIES_MIN_VOTES = 20      # drops shorts and fan films tagged with a series key
 # voted film must reach this share of the bigger one's (keeps animated spin-offs and TV films out)
 STEM_TITLE_SHARE = 2 / 3
 FRANCHISE_MIN_POPULARITY = 0.15
-# cached parts stored before they carried backdrop_path (refetched once; the refetch stores the key, even as null)
+# cached parts stored before they carried backdrop_path or genre_ids (refetched once; the refetch stores the keys,
+# even as null / [])
 STALE_PARTS_SQL = ("(COALESCE(json_array_length(json,'$.parts'),0) > 0"
-                   " AND json_type(json,'$.parts[0].backdrop_path') IS NULL)")
+                   " AND (json_type(json,'$.parts[0].backdrop_path') IS NULL"
+                   " OR json_type(json,'$.parts[0].genre_ids') IS NULL))")
+# orphans: films in no TMDB collection that join a started saga (collection or franchise) whose name they carry,
+# in their title ("<Spin-off>: A <Saga> Story") or as a keyword named like the saga. Found with a cached
+# /search/movie and /search/keyword (+ /discover/movie) on the saga's name, then /movie/{id} for each candidate
+# (its own collection and runtime). Votes are compared with the median of the saga's own films.
+ORPHAN_MIN_SHARE = 0.2          # a title match needs this share of the saga's median vote count
+ORPHAN_KEYWORD_SHARE = 0.5      # a keyword-only match, a weaker signal, needs this share
+ORPHAN_MIN_VOTES = SERIES_MIN_VOTES
+ORPHAN_KEYWORD_MAX_TOTAL = SERIES_MAX_TOTAL    # a keyword on more films than this is a theme ("alien")
+ORPHAN_SKIP_GENRES = {99, 10770}               # documentaries and TV films
+ANIMATION = 16                  # kept out unless most of the saga's own films are animated
+FEATURE_MIN_RUNTIME = 40        # minutes: shorts and TV specials stay out
+ORPHAN_MAX_DETAILS = 8          # candidates looked up per saga name, most voted first
 
 # ranking: score = W_RECENT*recency + W_TASTE*taste + W_LIBRARY*library + W_PROGRESS*progress, each part in [0, 1]
 # (taste in [-1, 1])
@@ -121,6 +138,31 @@ def is_series_keyword(name: str) -> bool:
 
 def series_name(name: str) -> str:
     return " ".join(w[:1].upper() + w[1:] for w in (name or "").split())
+
+
+def norm_words(s: str | None) -> str:
+    return " ".join(re.findall(r"\w+", (s or "").lower()))
+
+
+def saga_phrase(name: str) -> str | None:
+    """The name orphans must carry: a collection's name without " Collection" or a trailing qualifier
+    ("Spider-Man (MCU) Collection" -> "Spider-Man"), or a franchise's stem; None when too generic to search."""
+    n = re.sub(r"\s*\([^)]*\)\s*$", "", _clean_name(name)).strip()
+    return n if distinctive(n) else None
+
+
+def orphan_key(phrase: str) -> str:
+    return f"orphans:{norm_words(phrase)}"
+
+
+def names_saga(title: str, phrase: str) -> bool:
+    """`title` opens with the saga's name, or carries it right after a colon ("<Saga>: Part Two",
+    "<Spin-off>: A <Saga> Story"), but is not just that name (a same-name remake or another adaptation)."""
+    words = re.findall(r"\w+", phrase or "")
+    if not words or norm_words(title) == norm_words(phrase):
+        return False
+    pat = r"(?:^|:)\W*(?:(?:a|an)\W+)?" + r"\W+".join(map(re.escape, words)) + r"(?!\w)"
+    return bool(re.search(pat, title or "", re.I))
 
 
 def slug(s: str) -> str:
@@ -190,6 +232,63 @@ def wanted_keywords(conn: sqlite3.Connection, seen: set[int]) -> list[tuple[int,
             if kid and is_series_keyword(name):
                 out[int(kid)] = name
     return sorted(out.items())
+
+
+def _core_stats(films: list[dict]) -> tuple[float, bool]:
+    """A saga's median vote count, and whether most of its films are animated."""
+    votes = sorted(f.get("vote_count") or 0 for f in films)
+    n = len(votes)
+    median = (votes[n // 2] if n % 2 else (votes[n // 2 - 1] + votes[n // 2]) / 2) if n else 0
+    animated = sum(ANIMATION in (f.get("genre_ids") or []) for f in films) > n / 2
+    return median, animated
+
+
+def wanted_orphans(conn: sqlite3.Connection, seen: set[int]) -> dict[str, list[dict]]:
+    """Saga name -> [{ids, median, animated}], one per started collection or franchise with a distinctive name."""
+    out: dict[str, list[dict]] = {}
+    for g in _saga_groups(conn):
+        ids = {f["tmdb_id"] for f in g["films"]}
+        phrase = saga_phrase(g["name"])
+        if phrase and len(ids) >= 2 and seen & ids:
+            median, animated = _core_stats(g["films"])
+            out.setdefault(phrase, []).append({"ids": ids, "median": median, "animated": animated})
+    return out
+
+
+def orphan_fits(f: dict, phrase: str, target: dict, today: str, detailed: bool = True) -> bool:
+    """The orphan rule, for film `f` (a cached candidate, `via` title or keyword) and one saga (`target`: its ids,
+    median vote count and whether it is animated). `detailed`: also check its own collection and runtime."""
+    tid = f.get("tmdb_id") or f.get("id")
+    date = f.get("release_date") or ""
+    genres = set(f.get("genre_ids") or [])
+    if tid in target["ids"] or not date or date > today or genres & ORPHAN_SKIP_GENRES:
+        return False
+    if ANIMATION in genres and not target["animated"]:
+        return False
+    if norm_words(f.get("title")) == norm_words(phrase):
+        return False
+    title = f.get("via") == "title" and names_saga(f.get("title") or "", phrase)
+    if not title and f.get("via") != "keyword":
+        return False
+    share = ORPHAN_MIN_SHARE if title else ORPHAN_KEYWORD_SHARE
+    if (f.get("vote_count") or 0) < max(ORPHAN_MIN_VOTES, share * target["median"]):
+        return False
+    return not detailed or (not f.get("collection_id") and (f.get("runtime") or 0) >= FEATURE_MIN_RUNTIME)
+
+
+def orphan_candidates(phrase: str, title_hits: list[dict], keyword_hits: list[dict], targets: list[dict],
+                      today: str) -> list[dict]:
+    """Search hits (parts) that could join one of `targets` before their details are known, tagged with `via`,
+    most voted first, at most ORPHAN_MAX_DETAILS."""
+    out: dict[int, dict] = {}
+    for via, hits in (("keyword", keyword_hits), ("title", title_hits)):
+        for p in hits:
+            if via == "title" and not names_saga(p.get("title") or "", phrase):
+                continue
+            out[p["id"]] = {**p, "via": via}
+    keep = [p for p in out.values() if any(orphan_fits(p, phrase, t, today, detailed=False) for t in targets)]
+    keep.sort(key=lambda p: (-(p.get("vote_count") or 0), p["id"]))
+    return keep[:ORPHAN_MAX_DETAILS]
 
 
 def wanted_people(conn: sqlite3.Connection, seen: set[int]) -> dict[str, list[tuple[int, int]]]:
@@ -309,8 +408,8 @@ def franchises(colls: dict[int, dict]) -> list[dict]:
     return out
 
 
-def _raw_groups(conn: sqlite3.Connection, seen: set[int]) -> list[dict]:
-    """{key, kind, name, films} in release order, before the per-user state; only groups with a seen film."""
+def _saga_groups(conn: sqlite3.Connection) -> list[dict]:
+    """Collections and franchises ({key, kind, name, films}), every one cached, before orphans join them."""
     colls = {}
     for r in conn.execute("SELECT collection_id, json FROM tmdb_collections"):
         c = json.loads(r["json"] or "{}")
@@ -335,6 +434,33 @@ def _raw_groups(conn: sqlite3.Connection, seen: set[int]) -> list[dict]:
         if cid not in absorbed:
             groups.append({"key": f"collection-{cid}", "kind": "collection", "name": _clean_name(c.get("name")),
                            "films": [_film(p) for p in c["parts"]], "backdrop_path": c.get("backdrop_path")})
+    return groups
+
+
+def _join_orphans(conn: sqlite3.Connection, groups: list[dict], seen: set[int]) -> None:
+    """Started sagas take in the cached orphans that fit them, in release order."""
+    found = {r[0]: json.loads(r[1] or "{}") for r in conn.execute(
+        "SELECT key, json FROM tmdb_lookups WHERE key LIKE 'orphans:%'")}
+    if not found:
+        return
+    today = _today().isoformat()
+    for g in groups:
+        ids = {f["tmdb_id"] for f in g["films"]}
+        phrase = saga_phrase(g["name"])
+        cands = (found.get(orphan_key(phrase)) or {}).get("films") if phrase and seen & ids else None
+        if not cands:
+            continue
+        median, animated = _core_stats(g["films"])
+        target = {"ids": ids, "median": median, "animated": animated}
+        extra = [_film(p) for p in cands if orphan_fits(p, phrase, target, today)]
+        if extra:
+            g["films"] = _by_date(g["films"] + extra)
+
+
+def _raw_groups(conn: sqlite3.Connection, seen: set[int]) -> list[dict]:
+    """{key, kind, name, films} in release order, before the per-user state; only groups with a seen film."""
+    groups = _saga_groups(conn)
+    _join_orphans(conn, groups, seen)
 
     # series keywords: skipped when a saga already holds those films; a saga they contain gives way to them
     series: list[dict] = []
