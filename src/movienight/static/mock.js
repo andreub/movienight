@@ -359,6 +359,14 @@ for (const g of COMPLETIONS) {
     return f;
   });
 }
+// Seerr (set up in every mock but ?mock=fresh; &seerr=0 turns it off): a few missing films already requested,
+// on their way or available there; any other one can be requested (it then waits for approval).
+const SEERR = !FRESH && params.get('seerr') !== '0';
+const seerrStates = new Map();
+for (const [title, state] of [['The Amazing Spider-Man', 'pending'], ['Spider-Man: Far From Home', 'processing'],
+  ['The Matrix Resurrections', 'available'], ['Low Tide', 'pending']]) {
+  for (const [id, [f]] of sagaFilms) if (f.title === title) seerrStates.set(id, state);
+}
 // The state a saga film has now, after the marks made here.
 function sagaState(f) {
   if (f.via === 'here') return localSeen.has(f.tmdb_id) ? 'seen' : 'missing';
@@ -480,6 +488,16 @@ export async function handle(method, path, p, body) {
     return ok({ ok: true });
   }
 
+  if (path.startsWith('/api/seerr/') && !SEERR) return err(404, 'Not Found');
+  if (route === 'GET /api/seerr/status') {
+    const ids = String(p.tmdb || '').split(',').map(Number).filter((x) => x > 0).slice(0, 40);
+    return ok({ statuses: Object.fromEntries(ids.map((x) => [String(x), seerrStates.get(x) || 'none'])) });
+  }
+  if (route === 'POST /api/seerr/request/:id') {
+    if (!seerrStates.has(id)) seerrStates.set(id, 'pending');
+    return ok({ status: seerrStates.get(id) });
+  }
+
   switch (route) {
     case 'GET /api/status': {
       const sync = syncInfo();
@@ -493,7 +511,7 @@ export async function handle(method, path, p, body) {
           tmdb: { configured: true, enriched: 1400, pending: 12 },
           sync: sync.running && sync.stage === 'plex' ? { ...sync, stage: 'jellyfin' } : sync,
           ready: lbReady && synced,
-          features: { completionist: !NOCOMPLETE },
+          features: { completionist: !NOCOMPLETE, seerr: SEERR },
         });
       }
       return ok({
@@ -505,7 +523,7 @@ export async function handle(method, path, p, body) {
         tmdb: { configured: !FRESH, enriched: 1400, pending: 12 },
         sync,
         ready: plexState.connected && lbReady && synced,
-        features: { completionist: !NOCOMPLETE },
+        features: { completionist: !NOCOMPLETE, seerr: SEERR },
       });
     }
     case 'GET /api/moods': return ok(MOODS.map(({ test, ...m }) => m));

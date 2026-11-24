@@ -103,6 +103,9 @@ export const api = {
   completion: (key) => request('GET', `/api/completions/${encodeURIComponent(key)}`),
   hideCompletion: (key) => request('POST', `/api/completions/${encodeURIComponent(key)}/hide`),
   unhideCompletion: (key) => request('DELETE', `/api/completions/${encodeURIComponent(key)}/hide`),
+  // Seerr (only mounted when the server has it set up): request states by TMDB id (40 per call), and a request
+  seerrStatus: (ids) => request('GET', '/api/seerr/status', { params: { tmdb: ids.join(',') } }),
+  seerrRequest: (tmdbId) => request('POST', `/api/seerr/request/${tmdbId}`),
   dismiss: (id, days) => request('POST', `/api/movies/${id}/dismiss`, { json: { days } }),
   undismiss: (id) => request('DELETE', `/api/movies/${id}/dismiss`),
   profile: () => request('GET', '/api/profile'),

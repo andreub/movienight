@@ -16,6 +16,7 @@ import { go, GROUP_EVENT } from '../state.js';
 import { h, fill, icon, poster, hueOf, errorBox, toast, announce, quoted } from '../dom.js';
 import { TV } from '../tvnav.js';
 import { mountTv } from './completetv.js';
+import { seerrOn, requestBadges } from '../seerr.js';
 
 export const title = 'Complete';
 
@@ -88,7 +89,7 @@ export function openSagaFilm(f) {
 // One film tile; every one opens a panel.
 function film(f) {
   const label = `${f.title}${f.year ? ` (${f.year})` : ''}, ${STATE_LABEL[f.state]}`;
-  const art = h('div', { class: 'cfilm__art' },
+  const art = h('div', { class: 'cfilm__art', 'data-seerr': f.state === 'missing' && seerrOn() ? String(f.tmdb_id) : null },
     poster(f, { label }),
     f.state === 'available' ? h('span', { class: 'cfilm__badge', text: 'In library' }) : null,
     f.state === 'seen' ? h('span', { class: 'cfilm__seen', 'aria-hidden': 'true' }, icon('check')) : null);
@@ -261,6 +262,7 @@ function mountList(root, toggle, group = null) {
       const cap = expanded.has(g.key) ? Infinity : c * rowsFor(c, g.ordered);
       const { items, cut } = g.ordered ? sagaLayout(g.films, cap, open, g.reason_film) : listLayout(g.films, cap, expanded.has(g.key), open.has('seen'));
       fill(grid, items.map((it) => (it.fold ? foldTile(it.fold, () => { open.add(it.start); render(true); }) : film(it.film))));
+      requestBadges(grid); // Seerr: requested / on its way, on missing posters
       const all = expanded.has(g.key);
       moreBtn.hidden = !cut && !all;
       moreBtn.textContent = all ? 'Show less' : `Show all ${g.total}`;

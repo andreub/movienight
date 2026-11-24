@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, cast, chat, completion, db, letterboxd as lb, library, plex, queries, seenpush, servers, tags as lbtags, version
+from . import auth, cast, chat, completion, db, letterboxd as lb, library, plex, queries, seenpush, seerr, servers, tags as lbtags, version
 from .config import Config
 from .sync import SyncManager, history_token, plex_token, tmdb_counts
 from .util import now_iso, safe_error
@@ -113,6 +113,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         engine = library.Engine(lambda: db.connect(cfg.db_path), media)
         sync = SyncManager(cfg, http, engine)
         app.state.http, app.state.engine, app.state.sync = http, engine, sync
+        app.state.seerr = seerr.Seerr(http, cfg.seerr_url, cfg.seerr_api_key) if cfg.seerr_configured else None
         methods = cfg.login_methods
         app.state.sessions = app.state.oidc = app.state.plex_login = None
         if cfg.login_required:       # with Jellyfin and no OIDC this fails closed (503), never open
@@ -473,7 +474,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                 "tmdb": tmdb_counts(c, sync_mgr().tmdb.configured),
                 "sync": dict(sync_mgr().state),
                 "ready": bool(movies) and (counts["watched"] + counts["watchlist"]) > 0,
-                "features": {"completionist": cfg.completionist},
+                "features": {"completionist": cfg.completionist, "seerr": cfg.seerr_configured},
             }
             if not is_plex:
                 jf = c.execute("SELECT reachable, access_token FROM media_servers WHERE id LIKE 'jf:%'"
@@ -777,6 +778,39 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             with db.session(cfg.db_path) as c:
                 c.execute("DELETE FROM completion_hidden WHERE group_key=?", (key,))
             return {"ok": True}
+
+    # ---- Seerr (Overseerr / Jellyseerr): request films missing from the library. Not mounted unless
+    # MOVIENIGHT_SEERR_URL and MOVIENIGHT_SEERR_API_KEY are both set, so every /api/seerr/* answers 404 then.
+    if cfg.seerr_configured:
+        def _seerr_failed(e: seerr.SeerrError) -> HTTPException:
+            log.warning("Seerr: %s", e)
+            return HTTPException(e.status, str(e))
+
+        @app.get("/api/seerr/status")
+        async def seerr_status(tmdb: str = Query("", max_length=2000)):
+            """Request states of films by TMDB id (`?tmdb=1,2,3`, the first 40): {"statuses": {"1": "pending"}}.
+            States: none, pending, processing, available, blocked. Films Seerr could not be asked about are left out."""
+            try:
+                ids = [int(x) for x in tmdb.split(",") if x.strip()]
+            except ValueError:
+                raise HTTPException(422, "Invalid tmdb: comma-separated TMDB ids") from None
+            try:
+                got = await app.state.seerr.statuses(ids)
+            except seerr.SeerrError as e:
+                raise _seerr_failed(e) from None
+            return {"statuses": {str(k): v for k, v in got.items()}}
+
+        @app.post("/api/seerr/request/{tmdb_id}")
+        async def seerr_request(tmdb_id: int):
+            """Request a film in Seerr (as the API key's user): {"status": "pending" | "processing" | ...}.
+            A film already requested answers its current state, not an error."""
+            if tmdb_id < 1:
+                raise HTTPException(404, "Film not found")
+            try:
+                state = await app.state.seerr.request(tmdb_id)
+            except seerr.SeerrError as e:
+                raise _seerr_failed(e) from None
+            return {"status": state}
 
     @app.get("/api/recommendations")
     def recommendations(
