@@ -19,7 +19,7 @@ export const title = 'Complete';
 
 // The kind chips, shared with the Screen layout. A chip whose kind has no group is hidden (unless it is the current one).
 export const KINDS = [
-  [null, 'All'], ['collection', 'Sagas'], ['franchise', 'Franchises'], ['series', 'Series'], ['list', 'Lists'],
+  [null, 'All'], ['collection', 'Sagas'], ['franchise', 'Franchises'], ['list', 'Lists'],
   ['director', 'Directors'], ['actor', 'Actors'],
 ];
 export const PEOPLE = new Set(['director', 'actor']);
@@ -39,9 +39,13 @@ export function storeKind(kind) {
 }
 
 // How many groups a chip stands for, from the API's `counts` (All = every kind).
+// Keyword-detected series ("Cornetto Trilogy") are sagas to the user: they share the Sagas chip.
+export const chipKind = (kind) => (kind === 'series' ? 'collection' : kind);
+
 export function kindCount(counts, id) {
   if (!counts) return null;
-  return id ? counts[id] || 0 : Object.values(counts).reduce((a, b) => a + b, 0);
+  if (!id) return Object.values(counts).reduce((a, b) => a + b, 0);
+  return id === 'collection' ? (counts.collection || 0) + (counts.series || 0) : counts[id] || 0;
 }
 
 // A director's or actor's face (TMDB w185), or their initials on a colour of their own when TMDB has none.
@@ -217,7 +221,7 @@ function mountList(root, toggle) {
       c.setAttribute('aria-pressed', String(id === kind));
       const n = kindCount(data?.counts, id);
       c.querySelector('.chip__count').textContent = n == null ? '' : String(n);
-      c.hidden = Boolean(id) && data?.counts && !data.counts[id] && id !== kind;
+      c.hidden = Boolean(id) && data?.counts && !kindCount(data.counts, id) && id !== kind;
     }
   }
 

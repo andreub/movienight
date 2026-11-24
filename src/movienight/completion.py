@@ -660,12 +660,13 @@ def public(g: dict, hidden: set[str]) -> dict:
 
 
 def overview(st, conn: sqlite3.Connection, kind: str | None = None, show_hidden: bool = False) -> dict:
-    """Groups in progress, finished ones (shown collapsed) and, with `show_hidden`, the hidden ones."""
+    """Groups in progress, finished ones (shown collapsed) and, with `show_hidden`, the hidden ones. `kind=collection`
+    (the Sagas chip) also takes the keyword series; `counts` stays per raw kind."""
     groups = build(st, conn)
     hidden = hidden_keys(conn)
     visible = [g for g in groups if g["key"] not in hidden]
     counts = {k: sum(g["kind"] == k for g in visible) for k in KINDS}
-    pick = (lambda g: g["kind"] == kind) if kind else (lambda g: True)
+    pick = (lambda g: g["kind"] in (("collection", "series") if kind == "collection" else (kind,))) if kind else (lambda g: True)
     return {
         "groups": [public(g, hidden) for g in visible if pick(g) and not g["complete"]],
         "completed": [public(g, hidden) for g in visible if pick(g) and g["complete"]],

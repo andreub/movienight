@@ -402,7 +402,7 @@ function completions(p) {
   // sagas first, then canonical lists, then directors and actors; each block by score
   all.sort((a, b) => blockOf(a.kind) - blockOf(b.kind) || b.score - a.score || a.name.localeCompare(b.name));
   const visible = all.filter((g) => !g.hidden);
-  const pick = (g) => !p.kind || g.kind === p.kind;
+  const pick = (g) => !p.kind || g.kind === p.kind || (p.kind === 'collection' && g.kind === 'series');
   const counts = { collection: 0, franchise: 0, series: 0, list: 0, director: 0, actor: 0 };
   for (const g of visible) counts[g.kind] += 1;
   return {

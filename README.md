@@ -76,7 +76,7 @@ exception is the canonical lists, which ship with the app.
   Siblings are found with a collection search on the stem. Collections with a far less popular
   offshoot (TV films, animated spin-offs), a name without the stem (Venom) or a generic stem
   ("Before", "Matrix") are not merged.
-- **Series**: a TMDB keyword on a seen film whose name ends in a series word, such as
+- **Series** (shown as sagas, under the Sagas chip): a TMDB keyword on a seen film whose name ends in a series word, such as
   `cornetto trilogy`, expanded to its films with TMDB's discover. Generic keywords ("trilogy",
   "family saga") and keywords on more than 20 films (themes, not series) are skipped. Entries with
   fewer than 20 votes (shorts, fan films) are dropped. A series whose films are all in a saga is
@@ -112,7 +112,7 @@ exception is the canonical lists, which ship with the app.
   stay visible, and "Show all" appears only if the card still overflows. Finished groups and hidden
   ones (the × on a card, with undo) stay folded at the bottom.
 - **Order**: each group gets a score, and one quiet hint on its card says why ("New · 2026",
-  "You rated ★4.4", "In your library"). In "All", sagas, franchises and series come first, then
+  "You rated ★4.4", "In your library"). In "All", sagas (keyword series included), franchises come first, then
   the lists, then directors and actors, each block ordered by score.
   `score = 3 × recency + 1.5 × taste + 0.75 × library + 0.5 × share seen`.
   - *Recency* is 1 when an unseen film came out in the last 18 months, fading to 0 at 5 years.
@@ -124,7 +124,7 @@ exception is the canonical lists, which ship with the app.
   backdrop of the next film to watch, the name, progress, the hint and the whole saga as a poster
   row. Left and right move through the films, OK opens the side panel of any of them, down and up
   go to the next and previous group.
-- **Kind chips** (All, Sagas, Franchises, Series, Lists, Directors, Actors) filter both layouts. A chip whose
+- **Kind chips** (All, Sagas, Franchises, Lists, Directors, Actors) filter both layouts. A chip whose
   kind has no group is hidden, and the browser remembers the choice. In Screen they sit at the top,
   beside the layout toggle, on one line that scrolls sideways on phones. Picking one starts over at
   the first group of that kind ("1 of N"). On the TV, Up on the first group moves to the chips
@@ -158,7 +158,7 @@ exception is the canonical lists, which ship with the app.
     `/person/{id}?append_to_response=movie_credits` call per person, at most 80 per sync, none when
     nothing is stale).
 - **API**:
-  - `GET /api/completions?kind=collection|franchise|series|list|director|actor&hidden=true` returns the
+  - `GET /api/completions?kind=collection (also the keyword series)|franchise|series|list|director|actor&hidden=true` returns the
     groups with `films` (each with its `state`), `ordered`, `seen`, `total`, `available`, `next`,
     `score`, `reason` and `backdrop_url`: sagas first, then lists, then people, each block best score
     first. Sagas are `ordered` (the whole group in release order); filmographies and lists are not

@@ -313,6 +313,10 @@ def test_long_saga_returns_every_film(cc):
 def test_kind_filter(cc):
     r = cc.get("/api/completions", params={"kind": "series"}).json()
     assert [g["key"] for g in r["groups"]] == ["series-5001"] and r["completed"] == []
+    # the Sagas chip (kind=collection) also holds the keyword series
+    s = cc.get("/api/completions", params={"kind": "collection"}).json()
+    assert {"collection-960", "collection-900", "series-5001"} <= {g["key"] for g in s["groups"]}
+    assert "franchise-web-slinger" not in {g["key"] for g in s["groups"]}
     assert cc.get("/api/completions", params={"kind": "curated"}).status_code == 422
 
 
