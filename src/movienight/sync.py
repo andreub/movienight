@@ -126,7 +126,12 @@ class SyncManager:
                     " name=excluded.name, owned=excluded.owned", (s["id"], s["name"], int(s["owned"])))
             conn.commit()
             seen = {s["id"] for s in servers}
-            for r in conn.execute("SELECT id FROM media_servers").fetchall():
+            stored = conn.execute("SELECT id FROM media_servers").fetchall()
+            if not servers and stored:
+                # an empty list on a 200 is more likely a plex.tv hiccup than every server unshared at once
+                log.warning("plex.tv returned no servers; keeping the %d stored ones", len(stored))
+                stored = []
+            for r in stored:
                 if r["id"] not in seen:        # server no longer shared with us
                     conn.execute("DELETE FROM media_items WHERE server_id=?", (r["id"],))
                     conn.execute("DELETE FROM media_servers WHERE id=?", (r["id"],))
