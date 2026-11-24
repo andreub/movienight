@@ -90,7 +90,7 @@ html.tv :focus-visible { outline-width: 5px; outline-offset: 4px; box-shadow: 0 
 
 .tabs {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
-  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
+  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr);
   height: calc(var(--tabbar) + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
   background: var(--ink-2);
@@ -98,8 +98,11 @@ html.tv :focus-visible { outline-width: 5px; outline-offset: 4px; box-shadow: 0 
 }
 .tab {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  min-width: 0; padding: 0 2px;
   color: var(--muted); text-decoration: none; font-size: .8125rem;
 }
+.tab > span:not(.tab__icon) { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 420px) { .tab { font-size: .75rem; } }
 .tab .icon { width: 24px; height: 24px; }
 .tab[aria-current="page"] { color: var(--bulb); }
 .tab:focus-visible { outline-offset: -4px; }
@@ -117,6 +120,10 @@ html.tv :focus-visible { outline-width: 5px; outline-offset: 4px; box-shadow: 0 
   .tab .icon { width: 20px; height: 20px; }
   .tab:hover { color: var(--paper); }
   .tab[aria-current="page"] { background: var(--ink-3); color: var(--bulb); }
+}
+@media (min-width: 768px) and (max-width: 959px) {
+  .tabs { gap: 0; }
+  .tab { gap: 6px; padding: 0 10px; font-size: .9375rem; }
 }
 
 main { outline: none; }
@@ -377,7 +384,12 @@ main > .tonight { max-width: none; }
   width: 100%; padding: 10px; text-align: left;
   background: var(--ink-2); border: 1px solid transparent; border-radius: var(--r-m);
 }
+.alt { position: relative; }
 .alt:hover { border-color: var(--line); }
+.alt__title { padding: 0; background: none; border: 0; color: inherit; font: inherit; font-weight: 700; text-align: left; cursor: pointer; }
+.alt__title::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+.alt__title:focus-visible { outline: none; }
+.alt__title:focus-visible::after { outline: 2px solid var(--paper); outline-offset: 2px; }
 .alt__body { display: grid; gap: 2px; min-width: 0; }
 .alt__title { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .alt__meta { color: var(--muted); font-size: .875rem; }
@@ -687,7 +699,7 @@ button.menu__item { width: 100%; background: none; border: 0; text-align: left; 
 .votes__btn--love[aria-pressed="true"], .rate__btn--love[aria-pressed="true"] {
   background: linear-gradient(135deg, var(--bulb), var(--curtain)); border-color: transparent; color: var(--bulb-ink);
 }
-.pick__tail { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; }
+.pick__tail { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .pick__tail .btn--quiet { margin-right: auto; }
 @media (min-width: 600px) { .pick__tail .btn--quiet { margin-right: 0; } }
 .detail__actions > .votes { flex: 0 0 auto; }
@@ -916,6 +928,10 @@ html.kb-open .composer { bottom: var(--kb); padding-bottom: 8px; }
 .detail__part-n { flex: none; }
 .detail__part-n::before { content: "· "; }
 .pick__parts, .pick__part { margin: 0; }
+/* on an "Also good tonight" card: the same line, smaller, above the card's stretched link */
+.alt__part { margin: 2px 0 0; min-width: 0; }
+.alt__part li { min-width: 0; }
+.alt__part .detail__part { position: relative; z-index: 1; min-height: 24px; font-size: .8125rem; gap: 6px; }
 .pick__part { animation: rise .55s var(--ease) both; animation-delay: .08s; }
 .detail__part:hover strong, .detail__part:focus-visible strong { text-decoration: underline; text-underline-offset: .18em; }
 

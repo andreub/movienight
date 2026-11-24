@@ -213,6 +213,9 @@ function mountList(root, toggle, group = null) {
   const expanded = new Set(); // keys shown in full ("Show all"), kept across reloads
   const observers = new Set();
   let renders = []; // each card's tile layout, run at once on paint so heights are final before scrolling to a group
+  let anchorKey = null; // the group whose film was opened last: kept in view when a mark re-sorts the list
+  let anchor = null; // { key, top, y, at } taken before a refresh after a mark
+  let anchorPending = false; // restore it once that refresh paints
 
   const chips = KINDS.map(([id, label]) => h('button', {
     type: 'button', class: 'chip chip--small', 'aria-pressed': String(id === kind), 'data-kind': id || '',
@@ -270,6 +273,8 @@ function mountList(root, toggle, group = null) {
     }
 
     const person = PEOPLE.has(g.kind);
+
+    grid.addEventListener('click', () => { anchorKey = g.key; });
 
     const ro = new ResizeObserver(() => render());
     ro.observe(grid);
@@ -375,6 +380,28 @@ function mountList(root, toggle, group = null) {
     });
   }
 
+  const cardOf = (key) => [...list.children].find((x) => x.dataset.key === key);
+
+  // Before a refresh after a mark: where the group being worked on sits on screen. When it is not shown (finished,
+  // or hidden) the last known offset is kept, so an Undo that brings it back puts it where it was.
+  function takeAnchor() {
+    if (!anchorKey) return null;
+    const el = cardOf(anchorKey);
+    const prev = anchor?.key === anchorKey ? anchor.top : null;
+    return { key: anchorKey, top: el ? el.getBoundingClientRect().top : prev, y: window.scrollY, at: el ? [...list.children].indexOf(el) : -1 };
+  }
+
+  // After it: the group back at the same offset even if it moved in the list (with the short glow when it did);
+  // gone, the page stays where it was instead of jumping.
+  function keepInView(a) {
+    const el = cardOf(a.key);
+    if (!el || a.top == null) { window.scrollTo(0, a.y); return; }
+    const place = () => window.scrollBy(0, el.getBoundingClientRect().top - a.top);
+    place();
+    requestAnimationFrame(() => { if (alive && el.isConnected) place(); }); // once more, after any late layout
+    if ([...list.children].indexOf(el) !== a.at) el.classList.add('is-target');
+  }
+
   async function load() {
     const t = ++token;
     const want = target;
@@ -393,14 +420,18 @@ function mountList(root, toggle, group = null) {
       data = r;
       if (want && data.groups.find((g) => g.key === want)?.ordered) expanded.add(want); // a saga in full
       paint();
-      if (want) { target = null; reveal(want); }
+      if (want) { target = null; anchorPending = false; reveal(want); } else if (anchorPending) { anchorPending = false; keepInView(anchor); }
     } catch (err) {
       if (alive && t === token) { fill(list); fill(status, errorBox(err, load)); }
     }
   }
 
   // A film marked, voted or unmarked in the panel (`movienight:marked`, fired once the server accepted it) changes the counts: refresh quietly.
-  const onSeen = () => load();
+  // The group the film was opened from stays in view while the list re-sorts (also after an Undo).
+  const onSeen = () => {
+    if (data) { anchor = takeAnchor(); anchorPending = Boolean(anchor); }
+    load();
+  };
   window.addEventListener('movienight:marked', onSeen);
   paintChips();
   load();
