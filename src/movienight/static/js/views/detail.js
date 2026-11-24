@@ -5,7 +5,7 @@ import { h, icon, poster, hueOf, runtime, stars, matchStub, reasonList, errorBox
 import { playControl } from '../play.js';
 import { voteButtons, setVote, voteOf, LOVE } from '../vote.js';
 import { setSeen, setSeenVote, isSeen, OUTCOMES } from '../seen.js';
-import { parse, href } from '../state.js';
+import { parse, href, showGroup } from '../state.js';
 import { serverName } from '../status.js';
 import { TV } from '../tvnav.js';
 import { seenMsg, seenVoteMsg, unseenMsg, voteMsg, hideMsg, neverMsg, unhideMsg, UNMARK_LABEL } from '../messages.js';
@@ -331,14 +331,17 @@ function renderFilm(f) {
 
 // "Part of Star Wars · 4 of 11": the started sagas and lists the film belongs to (or, in none, a director's or
 // actor's films), best first, as the API sends them. Each line opens that group on Complete.
-function partOf(groups) {
+export function partOf(groups, cls = '') {
   if (!groups?.length) return null;
   const name = (g) => (g.kind === 'director' || g.kind === 'actor' ? `${g.name}'s films` : g.name);
-  return h('ul', { class: 'detail__parts', 'aria-label': 'Part of' }, groups.map((g) => h('li', null,
-    h('a', { class: 'detail__part', href: href('complete', parse().filters, null, null, g.key) },
-      icon('trophy'),
-      h('span', { class: 'detail__part-text' }, 'Part of ', h('strong', { text: name(g) })),
-      h('span', { class: 'detail__part-n', text: `${g.seen} of ${g.total}` })))));
+  return h('ul', { class: `detail__parts ${cls}`.trim(), 'aria-label': 'Part of' }, groups.map((g) => h('li', null,
+    h('a', {
+      class: 'detail__part', href: href('complete', parse().filters, null, null, g.key),
+      onclick: (e) => { if (e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; e.preventDefault(); showGroup(g.key); },
+    },
+    icon('trophy'),
+    h('span', { class: 'detail__part-text' }, 'Part of ', h('strong', { text: name(g) })),
+    h('span', { class: 'detail__part-n', text: `${g.seen} of ${g.total}` })))));
 }
 
 function sourcesText(plex) {

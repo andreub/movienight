@@ -12,7 +12,7 @@
 // `#/complete?group=<key>` (a film's "Part of X" line) shows that group: its kind (or All) is picked for this visit,
 // and the List scrolls to its card (a saga unfolded in full) with a short glow, the Screen layout opens on it.
 import { api } from '../api.js';
-import { go } from '../state.js';
+import { go, GROUP_EVENT } from '../state.js';
 import { h, fill, icon, poster, hueOf, errorBox, toast, announce, quoted } from '../dom.js';
 import { TV } from '../tvnav.js';
 import { mountTv } from './completetv.js';
@@ -211,6 +211,7 @@ function mountList(root, toggle, group = null) {
   let data = null;
   const expanded = new Set(); // keys shown in full ("Show all"), kept across reloads
   const observers = new Set();
+  let renders = []; // each card's tile layout, run at once on paint so heights are final before scrolling to a group
 
   const chips = KINDS.map(([id, label]) => h('button', {
     type: 'button', class: 'chip chip--small', 'aria-pressed': String(id === kind), 'data-kind': id || '',
@@ -272,6 +273,7 @@ function mountList(root, toggle, group = null) {
     ro.observe(grid);
     observers.add(ro);
 
+    renders.push(render);
     const li = h('li', { class: 'cgroup', 'data-key': g.key },
       h('div', { class: `cgroup__head${person ? ' cgroup__head--person' : ''}` },
         person ? face(g, 'cgroup__face') : null,
@@ -328,7 +330,9 @@ function mountList(root, toggle, group = null) {
     paintChips();
     disconnect();
     const groups = data.groups;
+    renders = [];
     fill(list, groups.map(card));
+    for (const r of renders) r();
     if (!groups.length) {
       const any = data.completed.length || data.hidden_count;
       fill(status, h('div', { class: 'state' },
@@ -361,8 +365,12 @@ function mountList(root, toggle, group = null) {
     const fold = el.closest('details');
     if (fold) fold.open = true;
     el.classList.add('is-target');
-    const smooth = !matchMedia('(prefers-reduced-motion: reduce)').matches;
-    requestAnimationFrame(() => el.scrollIntoView({ block: 'start', behavior: smooth ? 'smooth' : 'auto' }));
+    // Jump (a smooth scroll over a long list drifts as cards above settle), then correct once if layout moved.
+    const place = () => el.scrollIntoView({ block: 'start', behavior: 'auto' });
+    requestAnimationFrame(() => {
+      place();
+      setTimeout(() => { if (alive && Math.abs(el.getBoundingClientRect().top - parseFloat(getComputedStyle(el).scrollMarginTop || '0')) > 4) place(); }, 300);
+    });
   }
 
   async function load() {
@@ -395,12 +403,16 @@ function mountList(root, toggle, group = null) {
   paintChips();
   load();
 
+  // The "Part of" line asks for its group even when it is the one already shown (scrolled away from since).
+  const onGroup = (e) => { shownTarget = target = e.detail; load(); };
+  window.addEventListener(GROUP_EVENT, onGroup);
+
   return {
     update(route) {
       if (!route.group || route.group === shownTarget) return;
       shownTarget = target = route.group;
       load();
     },
-    destroy() { alive = false; disconnect(); window.removeEventListener('movienight:marked', onSeen); },
+    destroy() { alive = false; disconnect(); window.removeEventListener('movienight:marked', onSeen); window.removeEventListener(GROUP_EVENT, onGroup); },
   };
 }

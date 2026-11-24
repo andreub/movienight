@@ -448,7 +448,7 @@ function sagaNext() {
 }
 function sagaView(m, nexts) {
   const g = nexts?.get(m.id);
-  const v = view(m);
+  const v = { ...view(m), groups: groupsOf(m.tmdb_id) };
   return g ? { ...v, saga: g, reasons: [{ kind: 'trophy', text: `Next in ${g.name} · ${g.seen} of ${g.total} seen` }, ...v.reasons.slice(0, 3)] } : v;
 }
 

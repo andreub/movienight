@@ -12,6 +12,7 @@
 // Directors and actors have no order: their row lists the films to see first, then the seen ones.
 import { api } from '../api.js';
 import { h, fill, icon, poster, hueOf, errorBox, announce, isTyping } from '../dom.js';
+import { GROUP_EVENT } from '../state.js';
 import { openSagaFilm, KINDS, storedKind, storeKind, chipKind, kindOfKey } from './complete.js';
 
 const KIND_LABEL = { collection: 'Saga', franchise: 'Franchise', series: 'Saga', list: 'List', director: 'Director', actor: 'Actor' };
@@ -389,6 +390,9 @@ export function mountTv(root, { web = false, toolbar = null, target = null } = {
   paintChips();
   load();
 
+  const onGroup = (e) => { shownTarget = target = e.detail; load(); }; // the "Part of" line, even for the group already shown
+  window.addEventListener(GROUP_EVENT, onGroup);
+
   return {
     update(route) {
       if (!route?.group || route.group === shownTarget) return;
@@ -397,6 +401,7 @@ export function mountTv(root, { web = false, toolbar = null, target = null } = {
     },
     destroy() {
       alive = false;
+      window.removeEventListener(GROUP_EVENT, onGroup);
       clearTimeout(wheelQuiet);
       window.removeEventListener('wheel', onWheel);
       document.removeEventListener('keydown', onKey);

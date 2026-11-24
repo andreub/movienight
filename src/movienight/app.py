@@ -721,14 +721,22 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             c.close()
 
     def saga_items(cands: list, st, dismissed: dict, nexts: dict[int, dict] | None) -> list[dict]:
-        """movie_json of each film; with `nexts` (the Complete a saga filter), its saga named first in the reasons."""
+        """movie_json of each film; with `nexts` (the Complete a saga filter), its saga named first in the reasons.
+        With the completionist on, each also carries `groups` ("Part of X · n of N", from the completion cache)."""
         out = []
-        for c in cands:
-            m = library.movie_json(c, st, dismissed)
-            if nexts and c.id in nexts:
-                m["reasons"] = [completion.saga_reason(nexts[c.id])] + m["reasons"][:3]
-                m["saga"] = nexts[c.id]
-            out.append(m)
+        c = conn() if cfg.completionist else None
+        try:
+            for cand in cands:
+                m = library.movie_json(cand, st, dismissed)
+                if nexts and cand.id in nexts:
+                    m["reasons"] = [completion.saga_reason(nexts[cand.id])] + m["reasons"][:3]
+                    m["saga"] = nexts[cand.id]
+                if c is not None:
+                    m["groups"] = completion.groups_of(st, c, cand.tmdb_id)
+                out.append(m)
+        finally:
+            if c is not None:
+                c.close()
         return out
 
     # ---- completionist: sagas, franchises, series, canonical lists and director/actor filmographies

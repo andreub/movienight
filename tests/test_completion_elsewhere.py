@@ -180,6 +180,27 @@ def test_movie_detail_no_groups_when_flag_off(cfg):
         assert "groups" not in c.get(f"/api/movies/{mid}").json()
 
 
+def test_pick_and_recommendations_carry_groups(cc, today):  # noqa: F811
+    """Tonight's hero shows "Part of X": the pick, its alternatives and the lists carry `groups`, chip on or off."""
+    items = cc.get("/api/recommendations", params={"limit": 50}).json()["items"]
+    by_id = {i["id"]: i for i in items}
+    mid = mid_of(cc, 111)
+    assert by_id[mid]["groups"] == cc.get(f"/api/movies/{mid}").json()["groups"] != []
+    assert by_id[mid_of(cc, 115)]["groups"] == []
+    for complete in (False, True):
+        r = cc.get("/api/pick", params={"complete": complete}).json()
+        for m in [r["pick"], *r["alternatives"]]:
+            assert m["groups"] == cc.get(f"/api/movies/{m['id']}").json()["groups"]
+
+
+def test_pick_no_groups_when_flag_off(cfg):
+    app, client = flag_off_client(cfg)
+    with client as c:
+        seed(cfg.db_path)
+        app.state.engine.invalidate()
+        assert "groups" not in c.get("/api/pick").json()["pick"]
+
+
 # ---------------------------------------------------------------- Tonight: Complete a saga
 
 def test_pick_complete_a_saga(cc, today):  # noqa: F811

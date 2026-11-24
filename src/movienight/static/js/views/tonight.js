@@ -7,6 +7,7 @@ import { endsAt } from '../clock.js';
 import { initialRuntime, rememberRuntime } from '../timecontrol.js';
 import { voteButtons, setVote, voteOf } from '../vote.js';
 import { setSeen, setSeenVote, isSeen } from '../seen.js';
+import { partOf } from './detail.js';
 import { serverName } from '../status.js';
 import { seenMsg, seenAskMsg, seenVoteMsg, unseenMsg, voteMsg, hideMsg } from '../messages.js';
 
@@ -109,7 +110,9 @@ export function mount(root, route) {
             h('h2', { class: 'pick__title', id: 'pick-title', text: m.title }),
             matchStub(m.match)),
           meta(m),
-          reasonList(m.reasons, 'pick__reasons'),
+          // "Part of X · n of N" for a film in a group (the saga chip's "Next in X" reason says the same: one line only)
+          partOf(m.groups?.length ? [m.groups.find((g) => g.key === m.saga?.key) || m.groups[0]] : null, 'pick__part'),
+          reasonList(m.groups?.length && m.saga ? m.reasons.filter((r) => !(r.kind === 'trophy' && r.text.startsWith('Next in '))) : m.reasons, 'pick__reasons'),
           h('div', { class: 'pick__actions' },
             playControl(m, 'pick__play'),
             shuffleBtn,

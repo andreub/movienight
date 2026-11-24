@@ -110,3 +110,12 @@ export function apiFilters(f, { full = false } = {}) {
 
 export function hasQuickFilters(f) { return Boolean(f.mood || f.era || f.tag || f.tagf || f.rt || f.wl); }
 export function hasAnyFilters(f) { return hasQuickFilters(f) || f.genres.length > 0 || Boolean(f.q); }
+
+// A film's "Part of X" line: open that group on Complete. When Complete is already showing (maybe that very group,
+// scrolled away from), the URL may not change, so the view is also told directly.
+export const GROUP_EVENT = 'movienight:group';
+export function showGroup(key) {
+  const was = parse().view === 'complete';
+  go({ view: 'complete', movie: null, film: null, group: key });
+  if (was) window.dispatchEvent(new CustomEvent(GROUP_EVENT, { detail: key }));
+}

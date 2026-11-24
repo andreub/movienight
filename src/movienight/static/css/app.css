@@ -909,6 +909,8 @@ html.kb-open .composer { bottom: var(--kb); padding-bottom: 8px; }
 .detail__part strong { color: var(--paper); font-weight: 700; }
 .detail__part-n { flex: none; }
 .detail__part-n::before { content: "· "; }
+.pick__parts, .pick__part { margin: 0; }
+.pick__part { animation: rise .55s var(--ease) both; animation-delay: .08s; }
 .detail__part:hover strong, .detail__part:focus-visible strong { text-decoration: underline; text-underline-offset: .18em; }
 
 .tonight__hint:not(:empty) { padding: 0 var(--gutter); margin-bottom: 14px; }
