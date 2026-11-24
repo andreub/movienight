@@ -98,7 +98,7 @@ def test_recent_low_vote_film_in_group_fires_recency_reason(tmp_path):
     ids = {f["tmdb_id"] for f in g["films"]}
     assert 60 in ids and 61 not in ids
     d = completion._decorate(g, {1, 2, 3, 4}, {})
-    assert completion.score(d, {}, 3.0, date.fromisoformat(TODAY))[1] == "New · 2026"
+    assert completion.score(d, {}, 3.0, date.fromisoformat(TODAY))[1] == "New: P60 · 2026"
 
 
 # ---------------------------------------------------------------- eligibility
@@ -273,13 +273,21 @@ def test_people_group_shape_and_film_order(people, monkeypatch):
     g = people.get("/api/completions/director-525").json()
     assert (g["kind"], g["name"], g["ordered"], g["person_id"]) == ("director", "Dee Rector", False, 525)
     assert g["profile_url"].endswith("/w185/face525.jpg")
-    # unseen first (library, then missing by relevance), then seen, newest first; documentary and TV film dropped
+    # the New film first (even though missing), then unseen (library, then missing by relevance), then seen, newest
+    # first; documentary and TV film dropped
     assert [(f["tmdb_id"], f["state"]) for f in g["films"]] == [
-        (111, "available"), (9800, "missing"), (9803, "missing"), (202, "seen"), (101, "seen"), (303, "seen")]
+        (9800, "missing"), (111, "available"), (9803, "missing"), (202, "seen"), (101, "seen"), (303, "seen")]
     assert (g["seen"], g["total"], g["available"]) == (3, 6, 1)
     assert g["backdrop_url"].endswith("/b111.jpg")                     # the next film to watch
-    assert g["reason"] == "New · 2026"
+    assert g["reason"] == "New: P9800 · 2026" and g["reason_film"] == 9800
     assert "_genres" not in g["films"][0] and "genre_ids" not in g["films"][0]
+
+
+def test_person_group_without_recency_keeps_order_and_has_no_reason_film(people, monkeypatch):
+    monkeypatch.setattr(completion, "_today", lambda: date(2035, 1, 1))     # nothing is recent any more
+    g = people.get("/api/completions/director-525").json()
+    assert g["reason_film"] is None and not g["reason"].startswith(("New", "Recent"))
+    assert g["films"][0]["tmdb_id"] == 111                                  # library film first again
 
 
 def test_all_lists_sagas_before_people(people, monkeypatch):

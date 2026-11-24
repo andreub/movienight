@@ -297,7 +297,7 @@ const COMPLETIONS = [
   // filmographies (made-up people): no order of their own, so films come as the API sends them: unseen first (in
   // the library, then missing by relevance), then the seen ones, newest first
   { key: 'director-9001', kind: 'director', name: 'Mara Okonkwo', score: 3.2, reason: 'New \u00b7 2026', films: [
-    ['Low Tide', 2026, 'a', 2100], ['The Cartographer', 2009, 'm', 6400], ['Paper Lanterns', 2004, 'm', 3100], ['Northbound', 2023, 's', 5200],
+    ['Paper Lanterns', 2004, 'a', 3100], ['The Cartographer', 2009, 'm', 6400], ['Low Tide', 2026, 'm', 2100], ['Northbound', 2023, 's', 5200],
     ['Salt and Iron', 2019, 's', 8800], ['The Quiet Year', 2015, 'h', 4700], ['Glasshouse', 2012, 's', 7300], ['First Light', 2001, 's', 2500]] },
   { key: 'director-9002', kind: 'director', name: 'Tomas Lindqvist', score: 1.4, reason: 'You rated \u26054.3', films: [
     ['Winter Orchard', 1998, 'm', 1900], ['The Ferryman', 1994, 'm', 1200], ['Harbour Lights', 2011, 's', 3600], ['Undertow', 2006, 's', 4100],
@@ -345,6 +345,15 @@ function sagaState(f) {
   if (f.state !== 'seen' && (localSeen.has(f.tmdb_id) || seenSet.has(f.movie_id))) return 'seen';
   return f.state;
 }
+// 'New · 2026' / 'Recent · 2021' in the data: the API names the newest unseen film of that year in the reason and, for
+// filmographies, puts it first (even when it is not in the library).
+function recency(g, films) {
+  const m = /^(New|Recent) \u00b7 (\d{4})$/.exec(g.reason || '');
+  const f = m && films.filter((x) => x.state !== 'seen' && x.year === Number(m[2])).pop();
+  if (!f) return { reason: g.reason ?? null, reason_film: null };
+  if (PEOPLE_KINDS.has(g.kind)) films.unshift(...films.splice(films.indexOf(f), 1));
+  return { reason: `${m[1]}: ${f.title} \u00b7 ${m[2]}`, reason_film: f.tmdb_id };
+}
 function completionGroup(g) {
   const films = g.films.map(({ via, ...f }) => ({ ...f, state: sagaState({ via, ...f }) }));
   const avail = films.filter((f) => f.state === 'available');
@@ -354,7 +363,7 @@ function completionGroup(g) {
     missing: films.filter((f) => f.state === 'missing').length, complete: seen === films.length, ordered: !PEOPLE_KINDS.has(g.kind),
     ...(PEOPLE_KINDS.has(g.kind) ? { person_id: Number(g.key.split('-')[1]), profile_url: null } : {}),
     next: next ? { movie_id: next.movie_id, title: next.title, year: next.year } : null, films, hidden: hiddenGroups.has(g.key),
-    score: g.score ?? 0, reason: g.reason ?? null, backdrop_url: null };
+    score: g.score ?? 0, ...recency(g, films), backdrop_url: null };
 }
 function sagaFilm(id) {
   const [f, g] = sagaFilms.get(id) || [];

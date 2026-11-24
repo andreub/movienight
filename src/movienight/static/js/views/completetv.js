@@ -157,7 +157,7 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
         }, h('span', { class: 'cprog__fill', style: { width: `${pct}%` } })),
         h('span', { class: 'ctv__count' }, h('strong', { text: String(g.seen) }), ` of ${g.total} seen`,
           g.available ? h('span', { class: 'cprog__avail', text: ` · ${g.available} in library` }) : null),
-        g.reason ? h('span', { class: 'ctv__why', text: g.reason }) : null),
+        g.reason ? h('span', { class: 'ctv__why', text: g.reason, title: g.reason, 'aria-label': g.reason }) : null),
       caption,
       row),
     h('p', { class: 'ctv__hint', 'aria-hidden': 'true' },
