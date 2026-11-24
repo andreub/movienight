@@ -359,12 +359,16 @@ for (const g of COMPLETIONS) {
     return f;
   });
 }
-// Seerr (set up in every mock but ?mock=fresh; &seerr=0 turns it off): a few missing films already requested,
-// on their way or available there; any other one can be requested (it then waits for approval).
+// Seerr (set up in every mock but ?mock=fresh; &seerr=0 turns it off). The user's account starts connected
+// ("Alice"); &seerrauth=none starts not connected, &seerrauth=expired with a session Seerr no longer accepts.
+// Connecting comes straight back as from app.plex.tv (?seerr=connected). A few missing films are already
+// requested or available there; any other one can be requested.
 const SEERR = !FRESH && params.get('seerr') !== '0';
+const seerrAuth = params.get('seerrauth');
+const seerrAccount = { connected: !seerrAuth, expired: seerrAuth === 'expired', name: seerrAuth === 'none' ? null : 'Alice' };
 const seerrStates = new Map();
-for (const [title, state] of [['The Amazing Spider-Man', 'pending'], ['Spider-Man: Far From Home', 'processing'],
-  ['The Matrix Resurrections', 'available'], ['Low Tide', 'pending']]) {
+for (const [title, state] of [['The Amazing Spider-Man', 'requested'], ['Spider-Man: Far From Home', 'requested'],
+  ['The Matrix Resurrections', 'available'], ['Low Tide', 'requested']]) {
   for (const [id, [f]] of sagaFilms) if (f.title === title) seerrStates.set(id, state);
 }
 // The state a saga film has now, after the marks made here.
@@ -488,13 +492,27 @@ export async function handle(method, path, p, body) {
     return ok({ ok: true });
   }
 
+  if (route === 'GET /api/seerr/status') return ok(SEERR ? { enabled: true, ...seerrAccount } : { enabled: false, connected: false, expired: false, name: null });
   if (path.startsWith('/api/seerr/') && !SEERR) return err(404, 'Not Found');
-  if (route === 'GET /api/seerr/status') {
-    const ids = String(p.tmdb || '').split(',').map(Number).filter((x) => x > 0).slice(0, 40);
+  if (route === 'POST /api/seerr/connect') {
+    const back = new URLSearchParams(location.search);
+    back.delete('seerrauth');
+    back.set('seerr', 'connected');
+    return ok({ url: `${location.pathname}?${back}${location.hash}` });
+  }
+  if (route === 'DELETE /api/seerr/session') {
+    Object.assign(seerrAccount, { connected: false, expired: false, name: null });
+    return ok({ ok: true });
+  }
+  if (path.startsWith('/api/seerr/') && !seerrAccount.connected) {
+    return err(409, seerrAccount.expired ? 'Your Seerr session expired. Reconnect Seerr in Setup.' : 'Connect your Seerr account first (Setup)');
+  }
+  if (route === 'GET /api/seerr/statuses') {
+    const ids = String(p.tmdb || '').split(',').map(Number).filter((x) => x > 0);
     return ok({ statuses: Object.fromEntries(ids.map((x) => [String(x), seerrStates.get(x) || 'none'])) });
   }
   if (route === 'POST /api/seerr/request/:id') {
-    if (!seerrStates.has(id)) seerrStates.set(id, 'pending');
+    if (!seerrStates.has(id)) seerrStates.set(id, 'requested');
     return ok({ status: seerrStates.get(id) });
   }
 

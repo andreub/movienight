@@ -8,7 +8,7 @@ import { setSeen, setSeenVote, isSeen, OUTCOMES } from '../seen.js';
 import { parse, href, showGroup } from '../state.js';
 import { serverName } from '../status.js';
 import { TV } from '../tvnav.js';
-import { seerrOn, seerrState, requestFilm, stateChip, CHIP } from '../seerr.js';
+import { seerrEnabled, seerrState, requestFilm, stateChip, CHIP } from '../seerr.js';
 import { seenMsg, seenVoteMsg, unseenMsg, voteMsg, hideMsg, neverMsg, unhideMsg, UNMARK_LABEL } from '../messages.js';
 
 const dialog = document.getElementById('detail');
@@ -221,7 +221,7 @@ const outcomeOf = (f) => {
 // A film in the library also gets its Play sources (from the library entry).
 // With Seerr set up, its request state is asked for alongside (cached a few minutes; a failure means no button).
 async function loadFilm(tmdbId) {
-  const [f, request] = await Promise.all([api.film(tmdbId), seerrOn() ? seerrState(tmdbId).catch(() => null) : null]);
+  const [f, request] = await Promise.all([api.film(tmdbId), seerrEnabled() ? seerrState(tmdbId).catch(() => null) : null]);
   if (f.movie_id) f.plex = await api.movie(f.movie_id).then((m) => m.plex || [], () => []);
   f.request = f.in_library ? null : request;
   return f;

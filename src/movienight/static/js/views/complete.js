@@ -16,7 +16,7 @@ import { go, GROUP_EVENT } from '../state.js';
 import { h, fill, icon, poster, hueOf, errorBox, toast, announce, quoted } from '../dom.js';
 import { TV } from '../tvnav.js';
 import { mountTv } from './completetv.js';
-import { seerrOn, requestBadges } from '../seerr.js';
+import { seerrEnabled, requestBadges } from '../seerr.js';
 
 export const title = 'Complete';
 
@@ -89,7 +89,7 @@ export function openSagaFilm(f) {
 // One film tile; every one opens a panel.
 function film(f) {
   const label = `${f.title}${f.year ? ` (${f.year})` : ''}, ${STATE_LABEL[f.state]}`;
-  const art = h('div', { class: 'cfilm__art', 'data-seerr': f.state === 'missing' && seerrOn() ? String(f.tmdb_id) : null },
+  const art = h('div', { class: 'cfilm__art', 'data-seerr': f.state === 'missing' && seerrEnabled() ? String(f.tmdb_id) : null },
     poster(f, { label }),
     f.state === 'available' ? h('span', { class: 'cfilm__badge', text: 'In library' }) : null,
     f.state === 'seen' ? h('span', { class: 'cfilm__seen', 'aria-hidden': 'true' }, icon('check')) : null);

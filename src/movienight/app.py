@@ -113,7 +113,8 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         engine = library.Engine(lambda: db.connect(cfg.db_path), media)
         sync = SyncManager(cfg, http, engine)
         app.state.http, app.state.engine, app.state.sync = http, engine, sync
-        app.state.seerr = seerr.Seerr(http, cfg.seerr_url, cfg.seerr_api_key) if cfg.seerr_configured else None
+        seerr_http = seerr.new_client(transport) if cfg.seerr_configured else None   # cookie-less, see seerr.py
+        app.state.seerr = seerr.Accounts(seerr_http, cfg.seerr_url, cfg.db_path) if seerr_http else None
         methods = cfg.login_methods
         app.state.sessions = app.state.oidc = app.state.plex_login = None
         if cfg.login_required:       # with Jellyfin and no OIDC this fails closed (503), never open
@@ -144,6 +145,8 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             if sync._task:
                 sync._task.cancel()
             await http.aclose()
+            if seerr_http:
+                await seerr_http.aclose()
 
     app = FastAPI(title="MovieNight", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.cfg = cfg      # read by routers mounted from other modules (the chat's list_completions tool)
@@ -779,35 +782,86 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                 c.execute("DELETE FROM completion_hidden WHERE group_key=?", (key,))
             return {"ok": True}
 
-    # ---- Seerr (Overseerr / Jellyseerr): request films missing from the library. Not mounted unless
-    # MOVIENIGHT_SEERR_URL and MOVIENIGHT_SEERR_API_KEY are both set, so every /api/seerr/* answers 404 then.
-    if cfg.seerr_configured:
-        def _seerr_failed(e: seerr.SeerrError) -> HTTPException:
-            log.warning("Seerr: %s", e)
-            return HTTPException(e.status, str(e))
+    # ---- Seerr (Overseerr / Jellyseerr): request films missing from the library, as each user's own Seerr account
+    # (connected through Plex; only Seerr's session cookie is stored). With MOVIENIGHT_SEERR_URL unset only
+    # /api/seerr/status answers ({"enabled": false}); every other /api/seerr/* route is 404.
+    def _seerr_user(request: Request) -> str:
+        """The signed-in user (session subject); with login off there is a single, local user."""
+        session = getattr(request.state, "session", None)
+        if session is not None:
+            return session.sub
+        if request.app.state.sessions is not None:
+            raise HTTPException(401, "Not signed in")
+        return "local"
 
-        @app.get("/api/seerr/status")
-        async def seerr_status(tmdb: str = Query("", max_length=2000)):
-            """Request states of films by TMDB id (`?tmdb=1,2,3`, the first 40): {"statuses": {"1": "pending"}}.
-            States: none, pending, processing, available, blocked. Films Seerr could not be asked about are left out."""
+    def _seerr_failed(e: seerr.SeerrError) -> HTTPException:
+        if e.status >= 500:
+            log.warning("Seerr: %s", e)
+        return HTTPException(e.status, str(e))
+
+    @app.get("/api/seerr/status")
+    def seerr_account(request: Request):
+        """This user's Seerr link: {"enabled", "connected", "expired", "name"}."""
+        if not cfg.seerr_configured:
+            return {"enabled": False, "connected": False, "expired": False, "name": None}
+        return app.state.seerr.status(_seerr_user(request))
+
+    if cfg.seerr_configured:
+        @app.post("/api/seerr/connect")
+        async def seerr_connect(request: Request):
+            """Starts connecting this user's Seerr account: {"url": the app.plex.tv page to approve it on}."""
+            user = _seerr_user(request)
+            origin = (request.headers.get("origin") or "").strip()
+            if not origin.startswith(("http://", "https://")):
+                origin = str(request.base_url)
+            try:
+                url = await app.state.seerr.start(user, origin)
+            except seerr.SeerrError as e:
+                raise _seerr_failed(e) from None
+            return JSONResponse({"url": url}, headers={"Cache-Control": "no-store"})
+
+        @app.get("/api/seerr/callback", include_in_schema=False)
+        async def seerr_callback(request: Request, pin: int = 0):
+            """Where app.plex.tv sends the user back: the Plex token becomes a Seerr session (never stored)."""
+            user = _seerr_user(request)
+            try:
+                await app.state.seerr.finish(user, pin)
+            except seerr.SeerrError as e:
+                log.warning("Seerr connect failed: %s", e)
+                return RedirectResponse("/?seerr=failed", status_code=303)
+            except Exception as e:  # noqa: BLE001
+                log.error("Seerr connect failed: %s", safe_error(e))
+                return RedirectResponse("/?seerr=failed", status_code=303)
+            return RedirectResponse("/?seerr=connected", status_code=303)
+
+        @app.delete("/api/seerr/session")
+        async def seerr_disconnect(request: Request):
+            """Disconnects this user's Seerr account (and ends the session on Seerr, best effort)."""
+            await app.state.seerr.disconnect(_seerr_user(request))
+            return {"ok": True}
+
+        @app.get("/api/seerr/statuses")
+        async def seerr_statuses(request: Request, tmdb: str = Query("", max_length=20000)):
+            """Request states of films by TMDB id (`?tmdb=1,2,3`): {"statuses": {"1": "requested"}}, each
+            none | requested | available. 409 when the user is not connected or the session expired."""
             try:
                 ids = [int(x) for x in tmdb.split(",") if x.strip()]
             except ValueError:
                 raise HTTPException(422, "Invalid tmdb: comma-separated TMDB ids") from None
             try:
-                got = await app.state.seerr.statuses(ids)
+                got = await app.state.seerr.statuses(_seerr_user(request))
             except seerr.SeerrError as e:
                 raise _seerr_failed(e) from None
-            return {"statuses": {str(k): v for k, v in got.items()}}
+            return {"statuses": {str(i): got.get(i, seerr.NONE) for i in dict.fromkeys(ids) if i > 0}}
 
         @app.post("/api/seerr/request/{tmdb_id}")
-        async def seerr_request(tmdb_id: int):
-            """Request a film in Seerr (as the API key's user): {"status": "pending" | "processing" | ...}.
-            A film already requested answers its current state, not an error."""
+        async def seerr_request(request: Request, tmdb_id: int):
+            """Request a film as this user's Seerr account: {"status": "requested" | "available"}. Already
+            requested counts as requested; 403 when the account may not request, 409 when it must reconnect."""
             if tmdb_id < 1:
                 raise HTTPException(404, "Film not found")
             try:
-                state = await app.state.seerr.request(tmdb_id)
+                state = await app.state.seerr.request(_seerr_user(request), tmdb_id)
             except seerr.SeerrError as e:
                 raise _seerr_failed(e) from None
             return {"status": state}

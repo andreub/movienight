@@ -158,22 +158,31 @@ exception is the canonical lists, which ship with the app.
     when there is such a film (`/api/pick?complete=true`; `saga_count` in every pick).
   - **Ask**: the assistant's `list_completions` tool lists the groups in progress, with progress and
     the next films to watch (in the library first), optionally of one kind.
-- **Requests (Seerr, optional)**: with Overseerr or Jellyseerr set up (`MOVIENIGHT_SEERR_URL`, e.g.
-  `http://seerr.local:5055`, and `MOVIENIGHT_SEERR_API_KEY`, from Seerr's Settings → General), the panel of a film
-  missing from the library offers **Request** in place of the disabled Play. Once requested, a quiet chip shows
-  its state instead: *Requested* (waiting for approval), *Processing* (approved, on its way), *Available soon*
-  (Seerr has it; it appears in the library after the next sync) or *Not requestable* (blocklisted). Missing
-  posters on Complete (List and Screen) carry a small badge with the same state (a dot on phones). Requests are
-  made as the API key's user, so with an admin key they are usually approved at once.
-  - States come from `GET /api/v1/movie/{tmdbId}` (`mediaInfo.status`, else its non-4K requests) and are cached in
-    memory for 5 minutes; a request is `POST /api/v1/request` (`{"mediaType": "movie", "mediaId": <tmdb>}`).
-    Seerr calls time out after 5 seconds and run at most 4 at a time; one already requested (409) counts as
-    requested.
-  - API: `GET /api/seerr/status?tmdb=1,2,3` (the first 40 ids) returns `{"statuses": {"1": "pending"}}` with
-    `none`, `pending`, `processing`, `available` or `blocked`; `POST /api/seerr/request/{tmdb_id}` returns
-    `{"status": ...}`. A Seerr failure answers 502 (504 on a timeout) with a short message.
-  - With either variable unset nothing shows, `/api/seerr/*` answers 404 and `features.seerr` in `/api/status`
-    is `false`. Settings lists Seerr when it is set up.
+- **Requests (Seerr, optional)**: with Overseerr or Jellyseerr set up (`MOVIENIGHT_SEERR_URL`, its API base,
+  e.g. `https://seerr.example.com/api/v1`), each user connects **their own** Seerr account: Setup → Sync →
+  *Seerr* → **Connect Seerr**. There is no API key: MovieNight asks plex.tv for a PIN, the user approves it on
+  app.plex.tv, and the Plex token that comes back is handed straight to Seerr (`POST /auth/plex`). MovieNight keeps
+  only Seerr's session cookie for that user (`seerr_sessions`, never the Plex token), so requests carry the user's
+  own Seerr permissions and approval rules. The line then reads *<name> · Disconnect*, or *Session expired ·
+  Reconnect Seerr* once Seerr stops accepting the session.
+  - Connected users get **Request** in place of the disabled Play in the panel of a film missing from the library,
+    then a quiet chip: *Requested* (pending or approved in Seerr) or *Available soon* (Seerr has it; it appears in
+    the library after the next sync). Missing posters on Complete (List and Screen) carry the same state as a small
+    badge. Users who have not connected see none of this.
+  - States come from one paged read of `GET /media?take=100&skip=N&filter=all` (films only; Seerr status 2–3 =
+    requested, 4–5 = available), cached per user for an hour and dropped after a request, connect or disconnect.
+    A request is `POST /request` (`{"mediaType": "movie", "mediaId": <tmdb>}`); one already requested (409)
+    counts as requested.
+  - API (all per signed-in user): `GET /api/seerr/status` → `{"enabled", "connected", "expired", "name"}`;
+    `POST /api/seerr/connect` → `{"url"}` (the app.plex.tv page; it forwards back to `/api/seerr/callback?pin=<id>`,
+    which redirects to `/?seerr=connected` or `/?seerr=failed`); `DELETE /api/seerr/session` disconnects;
+    `GET /api/seerr/statuses?tmdb=1,2,3` → `{"statuses": {"1": "requested"}}` (`none`, `requested`,
+    `available`); `POST /api/seerr/request/{tmdb_id}` → `{"status": ...}`. 409 = not connected or the session
+    expired (Reconnect), 403 = the Seerr account may not request films, 502/504 = Seerr unreachable.
+  - PINs live in memory for 10 minutes and only complete for the user who started them. With login off
+    (`MOVIENIGHT_LOGIN=none`) there is a single, local user.
+  - With the variable unset nothing shows, `/api/seerr/status` answers `{"enabled": false}`, every other
+    `/api/seerr/*` route answers 404 and `features.seerr` in `/api/status` is `false`.
 - **Off switch**: `MOVIENIGHT_COMPLETIONIST=0` hides the tab (browser and TV), answers 404 on every
   `/api/completions*` route, drops the detail line, the Tonight chip and the chat tool, and skips the
   TMDB lookups above (`features.completionist` in `/api/status` tells the frontend).
@@ -246,7 +255,7 @@ The UI can run without a backend in mock mode at http://localhost:8080/?mock=1.
 | `MOVIENIGHT_LOGIN` | `plex` (Plex), empty (Jellyfin) | Login methods, comma-separated: `plex`, `oidc`, or `none`. See [Login](#login) |
 | `MOVIENIGHT_PLEX_OWNER` | empty | Plex login only: the account id, username or email allowed in; empty = the first sign-in (or the account of the stored token) |
 | `MOVIENIGHT_COMPLETIONIST` | on | The Complete tab (sagas, franchises, series, lists, directors, actors). `0`/`false`/`no`: tab hidden, `/api/completions*` answers 404, and the sync skips the collection, collection-search, keyword and person-credit lookups |
-| `MOVIENIGHT_SEERR_URL` / `_API_KEY` | empty | Overseerr / Jellyseerr base URL (e.g. `http://seerr.local:5055`) and API key: request films missing from the library (see Completionist). Both needed; unset = feature hidden |
+| `MOVIENIGHT_SEERR_URL` | empty | Overseerr / Jellyseerr API base including `/api/v1` (e.g. `https://seerr.example.com/api/v1`): each user connects their own Seerr account through Plex to request films missing from the library (see Completionist). No API key; unset = feature hidden |
 | `MOVIENIGHT_PORT` | `8080` | Compose only: host port |
 | `TZ` | `Europe/Madrid` | Compose only: container timezone |
 

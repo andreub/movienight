@@ -3,6 +3,7 @@ import { initTvNav } from './tvnav.js';
 import { onRoute, start, go, href, parse } from './state.js';
 import { getChatStatus } from './api.js';
 import { subscribe, refreshStatus, syncPercent } from './status.js';
+import { seerrReturn } from './seerr.js';
 import { initDetail, openDetail, openFilm, closeDetail } from './views/detail.js';
 import * as tonight from './views/tonight.js';
 import * as browse from './views/browse.js';
@@ -23,6 +24,7 @@ let status = null;
 
 hydrateIcons();
 initTvNav();
+seerrReturn(); // back from connecting Seerr through Plex (?seerr=connected|failed)
 
 // The Ask tab only exists when the server has an AI key configured.
 const askTab = tabs.find((t) => t.dataset.view === 'ask');
