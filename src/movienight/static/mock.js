@@ -186,7 +186,7 @@ function view(m) {
   return { ...m, watched: seenSet.has(m.id), seen_here: seenSet.has(m.id), my_vote: votes.get(m.id) || null, dismissed_until: isDismissed(m) ? new Date(dismissed.get(m.id)).toISOString() : null };
 }
 
-function filter(p) {
+function filter(p, pool = movies) {
   const genres = [].concat(p.genre || []);
   const q = (p.q || '').toLowerCase();
   const legacy = ['recent', 'classic'].includes(p.mood) ? p.mood : null;
@@ -194,7 +194,7 @@ function filter(p) {
   const era = p.era || legacy;
   const eraT = era ? eraTest(era) : null;
   const tagTest = TAG_TESTS[p.tag || p.tag_family];
-  return movies.filter((m) => (p.include_dismissed || !isDismissed(m))
+  return pool.filter((m) => (p.include_dismissed || !isDismissed(m))
     && (p.include_watched || !seenSet.has(m.id))
     && (!mood || mood.test(m))
     && (!eraT || eraT(m))
@@ -423,6 +423,35 @@ function completions(p) {
   };
 }
 
+// Elsewhere in the app, as the API does it: the groups a film is part of (its detail's "Part of X · n of N": two
+// sagas or lists at most, a person's films only when there is none), Tonight's "Complete a saga" (the next film of
+// each saga in progress that is in the library) and the chat's list_completions tool.
+const SAGA_KINDS = new Set(['collection', 'franchise', 'series']);
+const summary = (g) => ({ key: g.key, name: g.name, kind: g.kind, seen: g.seen, total: g.total });
+function ranked() {
+  if (FRESH || NOCOMPLETE) return [];
+  return COMPLETIONS.map(completionGroup).filter((g) => !g.hidden)
+    .sort((a, b) => blockOf(a.kind) - blockOf(b.kind) || b.score - a.score || a.name.localeCompare(b.name));
+}
+function groupsOf(tmdbId) {
+  if (NOCOMPLETE) return undefined;
+  const found = ranked().filter((g) => g.films.some((f) => f.tmdb_id === tmdbId));
+  const main = found.filter((g) => !PEOPLE_KINDS.has(g.kind)).slice(0, 2);
+  return (main.length ? main : found.filter((g) => PEOPLE_KINDS.has(g.kind)).slice(0, 1)).map(summary);
+}
+function sagaNext() {
+  const out = new Map();
+  for (const g of ranked()) {
+    if (SAGA_KINDS.has(g.kind) && !g.complete && g.next?.movie_id && !out.has(g.next.movie_id)) out.set(g.next.movie_id, summary(g));
+  }
+  return out;
+}
+function sagaView(m, nexts) {
+  const g = nexts?.get(m.id);
+  const v = view(m);
+  return g ? { ...v, saga: g, reasons: [{ kind: 'trophy', text: `Next in ${g.name} · ${g.seen} of ${g.total} seen` }, ...v.reasons.slice(0, 3)] } : v;
+}
+
 const ok = (body, status = 200) => ({ status, body });
 const err = (status, detail) => ({ status, body: { detail } });
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -442,7 +471,7 @@ export async function handle(method, path, p, body) {
     if (comp[2] && method === 'DELETE') { hiddenGroups.delete(g.key); return ok({ ok: true }); }
   }
   if (route === 'GET /api/completions') return ok(completions(p));
-  if (route === 'GET /api/films/:id') { const f = sagaFilm(id); return f ? ok(f) : err(404, 'Film not found'); }
+  if (route === 'GET /api/films/:id') { const f = sagaFilm(id); return f ? ok({ ...f, groups: groupsOf(f.tmdb_id) }) : err(404, 'Film not found'); }
   if (route === 'POST /api/films/:id/seen') {
     const f = sagaFilm(id);
     if (!f) return err(404, 'Film not found');
@@ -495,16 +524,20 @@ export async function handle(method, path, p, body) {
     }
     case 'GET /api/pick': {
       const exclude = [].concat(p.exclude || []).map(Number);
-      const list = filter(p).filter((m) => !exclude.includes(m.id)).sort(SORTERS.match);
+      const nexts = sagaNext();
+      const sagaFilms = filter(p, completionMovies).filter((m) => nexts.has(m.id));
+      const list = (p.complete ? sagaFilms : filter(p)).filter((m) => !exclude.includes(m.id)).sort(SORTERS.match);
       if (!list.length) return err(404, 'No film matches these filters.');
       const top = list.slice(0, 6);
       const pick = top[Math.floor(Math.random() * top.length)];
-      return ok({ pick: view(pick), alternatives: list.filter((m) => m !== pick).slice(0, 3).map(view) });
+      const shown = p.complete ? nexts : null;
+      return ok({ pick: sagaView(pick, shown), alternatives: list.filter((m) => m !== pick).slice(0, 3).map((m) => sagaView(m, shown)),
+        ...(NOCOMPLETE ? {} : { saga_count: sagaFilms.length }) });
     }
     case 'GET /api/movies/:id': {
       const m = movies.find((x) => x.id === id) || completionMovies.find((x) => x.id === id);
       if (!m) return err(404, 'Movie not found.');
-      return ok({ ...view(m), keywords: ['neo-noir', 'night', 'los angeles', 'loneliness', 'heist'], because: because(m) });
+      return ok({ ...view(m), keywords: ['neo-noir', 'night', 'los angeles', 'loneliness', 'heist'], because: because(m), groups: groupsOf(m.tmdb_id) });
     }
     case 'POST /api/movies/:id/dismiss':
       dismissed.set(id, body.days === 0 ? Date.parse('9999-12-31') : Date.now() + body.days * 86400e3);
@@ -601,6 +634,10 @@ export async function* chatStream(messages, signal) {
     yield { event: 'done', data: {} };
     return;
   }
+  if (!NOCOMPLETE && /saga|series|franchise|finish|continue|complet/.test(ask)) {
+    yield* sagaChat(signal);
+    return;
+  }
   const mood = ask.includes('tense') ? 'tense' : ask.includes('comfort') ? 'light' : ask.includes('watchlist') ? 'wl' : null;
   yield { event: 'tool', data: { name: 'search_library', label: 'Searching your library…' } };
   await sleep(1100, signal);
@@ -618,5 +655,26 @@ export async function* chatStream(messages, signal) {
       yield { event: 'movies', data: { items: picks.map((m, i) => ({ ...view(m), pitch: ['A clean, confident watch that rewards your love of tight plots.', 'Slower and stranger, with an ending you will want to talk about.', 'A wildcard that sits just outside your usual taste.'][i] })) } };
     }
   }
+  yield { event: 'done', data: {} };
+}
+
+// "Which saga should I continue?": the list_completions tool, then the sagas' next films in the library as cards.
+async function* sagaChat(signal) {
+  yield { event: 'tool', data: { name: 'list_completions', label: 'Checking the sagas you started…' } };
+  await sleep(900, signal);
+  const nexts = sagaNext();
+  const picks = [...nexts.keys()].slice(0, 3).map((id) => completionMovies.find((m) => m.id === id)).filter(Boolean);
+  if (!picks.length) {
+    yield { event: 'text', data: { delta: 'You have no saga in progress with its next film in your library right now.' } };
+    yield { event: 'done', data: {} };
+    return;
+  }
+  const line = (m) => { const g = nexts.get(m.id); return `**${m.title}** continues ${g.name} (${g.seen} of ${g.total} seen)`; };
+  const intro = `You have a few sagas waiting.\n\n${line(picks[0])}, and it is already in your library.${picks.length > 1 ? `\n\nAlso ready to go:\n${picks.slice(1).map((m) => `- ${line(m)}`).join('\n')}` : ''}`;
+  for (const word of intro.match(/\S+\s*|\n+/g)) {
+    yield { event: 'text', data: { delta: word } };
+    await sleep(24, signal);
+  }
+  yield { event: 'movies', data: { items: picks.map((m) => ({ ...sagaView(m, nexts), pitch: `The next one in ${nexts.get(m.id).name}, so the story picks up where you left it.` })) } };
   yield { event: 'done', data: {} };
 }

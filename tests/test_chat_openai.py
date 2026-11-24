@@ -115,7 +115,7 @@ def test_text_only_answer_and_request_shape(oa, monkeypatch):
     assert c0["messages"][0] == {"role": "system", "content": chat.SYSTEM_PROMPT}
     assert c0["messages"][1:] == [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "Hey!"},
                                   {"role": "user", "content": "anything?"}]
-    assert [t["function"]["name"] for t in c0["tools"]] == ["search_library", "get_movie", "get_taste_profile", "list_tags", "recommend"]
+    assert [t["function"]["name"] for t in c0["tools"]] == ["search_library", "get_movie", "get_taste_profile", "list_tags", "list_completions", "recommend"]
     t0 = c0["tools"][1]
     assert t0["type"] == "function" and set(t0["function"]) == {"name", "description", "parameters"}
     assert t0["function"]["parameters"] == chat.TOOLS[1]["input_schema"]

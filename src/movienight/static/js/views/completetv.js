@@ -12,7 +12,7 @@
 // Directors and actors have no order: their row lists the films to see first, then the seen ones.
 import { api } from '../api.js';
 import { h, fill, icon, poster, hueOf, errorBox, announce, isTyping } from '../dom.js';
-import { openSagaFilm, KINDS, storedKind, storeKind, chipKind } from './complete.js';
+import { openSagaFilm, KINDS, storedKind, storeKind, chipKind, kindOfKey } from './complete.js';
 
 const KIND_LABEL = { collection: 'Saga', franchise: 'Franchise', series: 'Saga', list: 'List', director: 'Director', actor: 'Actor' };
 const STATE_TEXT = { available: 'In your library · OK to open', seen: 'Seen · OK for details', missing: 'Not in your library · OK to mark seen' };
@@ -22,7 +22,9 @@ const DOTS = 9;
 const ARROWS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
 
 // `web`: the browser's Screen layout; `toolbar`: a node laid over the top-left corner (the layout toggle).
-export function mountTv(root, { web = false, toolbar = null } = {}) {
+// `target`: a group key to open on (a film's "Part of X" line), with its kind (or All) picked for this visit.
+export function mountTv(root, { web = false, toolbar = null, target = null } = {}) {
+  let shownTarget = target;
   let alive = true;
   let everything = []; // every group in progress, all kinds
   let groups = []; // those of the chosen kind
@@ -340,7 +342,9 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
 
   async function load() {
     const focusKey = document.activeElement?.closest?.('.ctv') || document.querySelector('dialog[open]') ? lastFilm : null;
-    const key = groups[index]?.key;
+    const want = target;
+    target = null;
+    const key = want || groups[index]?.key;
     if (!groups.length) fill(stage, h('div', { class: 'ctv__screen ctv__screen--skeleton pick pick--skeleton', 'aria-busy': 'true' }, h('div', { class: 'pick__art skel' })));
     try {
       const r = await api.completions({});
@@ -349,6 +353,7 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
       counts = {};
       for (const g of everything) counts[chipKind(g.kind)] = (counts[chipKind(g.kind)] || 0) + 1;
       if (kind && !counts[kind]) { kind = null; storeKind(null); } // a remembered kind with nothing left: All
+      if (want && kind && kind !== kindOfKey(want) && everything.some((g) => g.key === want)) kind = null; // not stored
       groups = everything.filter(ofKind);
       paintChips();
       if (!groups.length) {
@@ -363,7 +368,7 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
         return;
       }
       const keep = groups.findIndex((g) => g.key === key);
-      show(keep >= 0 ? keep : 0, 0, keep >= 0 ? focusKey : null);
+      show(keep >= 0 ? keep : 0, 0, keep >= 0 && !want ? focusKey : null);
     } catch (err) {
       if (alive) fill(stage, errorBox(err, load));
     }
@@ -385,7 +390,11 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
   load();
 
   return {
-    update() {},
+    update(route) {
+      if (!route?.group || route.group === shownTarget) return;
+      shownTarget = target = route.group;
+      load();
+    },
     destroy() {
       alive = false;
       clearTimeout(wheelQuiet);

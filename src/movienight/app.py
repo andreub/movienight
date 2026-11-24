@@ -145,6 +145,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             await http.aclose()
 
     app = FastAPI(title="MovieNight", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app.state.cfg = cfg      # read by routers mounted from other modules (the chat's list_completions tool)
 
     # ---- helpers
     def conn():
@@ -680,19 +681,55 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         max_runtime: int | None = Query(None, ge=1), min_year: int | None = None, max_year: int | None = None,
         watchlist_only: bool = False, include_watched: bool = False, include_dismissed: bool = False,
         server: str | None = None, q: str | None = None, tag: str | None = None, tag_family: str | None = None,
+        complete: bool = False,
     ):
         """Eras that still have a film to suggest under the other filters (era itself is ignored)."""
         f = filters(mood, genre, max_runtime, min_year, max_year, watchlist_only, include_watched,
                     include_dismissed, server, q)
         if f.era:     # legacy mood=recent|classic means an era, which this endpoint ignores
             f.era = None
-        cands = base_cands(engine().get(), tag, tag_family)
+        st = engine().get()
+        cands = base_cands(st, tag, tag_family)
+        if complete:
+            nexts = saga_next(st)
+            cands = [c for c in cands if c.id in nexts]
         return queries.eras_public(queries.apply_filters(cands, f, dismissed_now()))
 
     @app.get("/api/tags")
     def tags():
         """Letterboxd diary tags that can steer picks (tag / tag_family on /api/recommendations and /api/pick)."""
         return {"min_films": lbtags.MIN_GROUP_FILMS, "families": lbtags.usable(engine().get())}
+
+    def saga_next(st) -> dict[int, dict]:
+        """movie id -> the started saga it continues (Tonight's "Complete a saga"); {} with the completionist off."""
+        if not cfg.completionist:
+            return {}
+        c = conn()
+        try:
+            return completion.saga_next(st, c)
+        finally:
+            c.close()
+
+    def film_groups(st, tmdb_id: int | None) -> list[dict]:
+        """The groups a film is part of, for its detail; [] with the completionist off."""
+        if not cfg.completionist or not tmdb_id:
+            return []
+        c = conn()
+        try:
+            return completion.groups_of(st, c, tmdb_id)
+        finally:
+            c.close()
+
+    def saga_items(cands: list, st, dismissed: dict, nexts: dict[int, dict] | None) -> list[dict]:
+        """movie_json of each film; with `nexts` (the Complete a saga filter), its saga named first in the reasons."""
+        out = []
+        for c in cands:
+            m = library.movie_json(c, st, dismissed)
+            if nexts and c.id in nexts:
+                m["reasons"] = [completion.saga_reason(nexts[c.id])] + m["reasons"][:3]
+                m["saga"] = nexts[c.id]
+            out.append(m)
+        return out
 
     # ---- completionist: sagas, franchises, series, canonical lists and director/actor filmographies
     # (MOVIENIGHT_COMPLETIONIST=0: not mounted, so every /api/completions* answers 404)
@@ -741,14 +778,18 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         max_runtime: int | None = Query(None, ge=1), min_year: int | None = None, max_year: int | None = None,
         watchlist_only: bool = False, include_watched: bool = False, include_dismissed: bool = False,
         server: str | None = None, q: str | None = None, tag: str | None = None, tag_family: str | None = None,
+        complete: bool = False,
     ):
         f = filters(mood, genre, max_runtime, min_year, max_year, watchlist_only, include_watched,
                     include_dismissed, server, q, era)
         st, dismissed = engine().get(), dismissed_now()
         cands = base_cands(st, tag, tag_family)
+        nexts = saga_next(st) if complete else None
+        if nexts is not None:           # "Complete a saga": the next film of each started saga, in the library
+            cands = [c for c in cands if c.id in nexts]
         matched = queries.sort_cands(queries.apply_filters(cands, f, dismissed), sort)
         return {
-            "items": [library.movie_json(c, st, dismissed) for c in matched[offset:offset + limit]],
+            "items": saga_items(matched[offset:offset + limit], st, dismissed, nexts),
             "total": len(matched),
             "facets": queries.facets(cands, f, dismissed),
         }
@@ -760,17 +801,28 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         max_runtime: int | None = Query(None, ge=1), min_year: int | None = None, max_year: int | None = None,
         watchlist_only: bool = False, include_watched: bool = False, include_dismissed: bool = False,
         server: str | None = None, q: str | None = None, tag: str | None = None, tag_family: str | None = None,
+        complete: bool = False,
     ):
+        """A film for tonight and a few alternatives. `complete`: only the next film of each started saga that is in
+        the library, its saga named first in the reasons. `saga_count` (with the completionist on): how many such
+        films the other filters leave, so Tonight shows its "Complete a saga" chip only when there is one."""
         f = filters(mood, genre, max_runtime, min_year, max_year, watchlist_only, include_watched,
                     include_dismissed, server, q, era)
         st, dismissed = engine().get(), dismissed_now()
-        cands = base_cands(st, tag, tag_family)
-        result = queries.pick(queries.apply_filters(cands, f, dismissed), set(exclude), random.Random())
+        matched = queries.apply_filters(base_cands(st, tag, tag_family), f, dismissed)
+        nexts = saga_next(st)
+        if complete:
+            matched = [c for c in matched if c.id in nexts]
+        result = queries.pick(matched, set(exclude), random.Random())
         if result is None:
             raise HTTPException(404, "Nothing matches these filters")
         chosen, alts = result
-        return {"pick": library.movie_json(chosen, st, dismissed),
-                "alternatives": [library.movie_json(a, st, dismissed) for a in alts]}
+        shown = nexts if complete else None
+        out = {"pick": saga_items([chosen], st, dismissed, shown)[0],
+               "alternatives": saga_items(alts, st, dismissed, shown)}
+        if cfg.completionist:
+            out["saga_count"] = len(matched) if complete else sum(c.id in nexts for c in matched)
+        return out
 
     @app.get("/api/movies/{movie_id}")
     def movie(movie_id: int):
@@ -778,7 +830,10 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         c = st.by_id.get(movie_id)
         if c is None:
             raise HTTPException(404, "Movie not found")
-        return library.movie_detail_json(c, st, dismissed)
+        out = library.movie_detail_json(c, st, dismissed)
+        if cfg.completionist:
+            out["groups"] = film_groups(st, c.tmdb_id)    # "Part of X · n of N", best first
+        return out
 
     @app.post("/api/movies/{movie_id}/dismiss")
     def dismiss(movie_id: int, body: DismissBody | None = None):
@@ -888,6 +943,8 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         if out is None:
             raise HTTPException(404, "Film not found")
         out.pop("details", None)
+        if cfg.completionist:
+            out["groups"] = film_groups(st, tmdb_id)
         return out
 
     @app.post("/api/films/{tmdb_id}/seen")

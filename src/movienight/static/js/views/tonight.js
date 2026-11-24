@@ -20,7 +20,7 @@ function hintDismissed() {
 export const title = 'Tonight';
 
 export function mount(root, route) {
-  const bar = filterBar({ time: true });
+  const bar = filterBar({ time: true, saga: true });
   const stage = h('div', { class: 'tonight__stage' });
   const hint = h('div', { class: 'tonight__hint' });
   root.append(
@@ -63,6 +63,7 @@ export function mount(root, route) {
       const res = await api.pick({ ...apiFilters(filters), exclude: seen });
       if (token !== req) return;
       data = res;
+      bar.sagaCount(res.saga_count);
       seen = [...new Set([...seen, res.pick.id])].slice(-60);
       render(mode);
     } catch (err) {
@@ -272,7 +273,7 @@ export function mount(root, route) {
   }
 
   function empty() {
-    const filtered = hasQuickFilters(filters);
+    const filtered = hasQuickFilters(filters) || filters.saga;
     return h('div', { class: 'state' },
       h('div', { class: 'state__art', 'aria-hidden': 'true' }, genPoster({ title: 'Nothing playing', year: null })),
       h('p', { class: 'state__title', text: filtered ? 'Nothing matches these filters' : 'No picks yet' }),
