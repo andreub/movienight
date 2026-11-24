@@ -1,7 +1,7 @@
 // Quick filters shared by Tonight and Browse: mood, Letterboxd tag, runtime, watchlist only.
 import { getMoods, getEras, getTags } from './api.js';
 import { h, icon } from './dom.js';
-import { RUNTIMES, setFilters, hasQuickFilters, CLEAR_QUICK } from './state.js';
+import { RUNTIMES, EMPTY_FILTERS, apiFilters, setFilters, hasQuickFilters, CLEAR_QUICK } from './state.js';
 import { dropdown } from './dropdown.js';
 import { timeControl, rememberRuntime } from './timecontrol.js';
 
@@ -33,7 +33,7 @@ export function filterBar({ time = false } = {}) {
     iconName: 'calendar',
     build: () => h('ul', null,
       eraCtl.item('Any era', null, !state?.era, () => setFilters({ era: null })),
-      eraList.map((e) => eraCtl.item(e.label, null, state?.era === e.id, () => setFilters({ era: e.id })))),
+      eraOptions().map((e) => eraCtl.item(e.label, null, state?.era === e.id, () => setFilters({ era: e.id })))),
   });
   eraCtl.chip.hidden = true;
   eraCtl.label.textContent = 'Any era';
@@ -71,11 +71,35 @@ export function filterBar({ time = false } = {}) {
     if (state) sync(state);
   }).catch(() => moods.remove());
 
-  getEras().then((list) => {
-    eraList = list || [];
-    if (eraList.length) eraCtl.chip.hidden = false; else eraCtl.chip.remove();
-    if (state) sync(state);
-  }).catch(() => eraCtl.chip.remove());
+  // The list depends on the other filters and on what is still unseen: refetch on either change.
+  // The selected era stays listed even when nothing is left in it, so it can be seen and cleared.
+  const eraOptions = () => (state?.era && !eraList.some((e) => e.id === state.era)
+    ? [...eraList, { id: state.era, label: eraLabel(state.era) }] : eraList);
+  const eraLabel = (id) => eraList.find((e) => e.id === id)?.label || String(id);
+  let erasKey = null, erasSeq = 0, erasLoaded = false;
+  function showEras() {
+    eraCtl.chip.hidden = !(eraList.length || state?.era);
+    eraCtl.label.textContent = state?.era ? eraLabel(state.era) : 'Any era';
+  }
+  function loadEras(force) {
+    const { era, ...params } = apiFilters(state || EMPTY_FILTERS);
+    const key = JSON.stringify(params);
+    if (!force && key === erasKey) return;
+    erasKey = key;
+    const seq = ++erasSeq;
+    getEras(params).then((list) => {
+      if (seq !== erasSeq) return;
+      eraList = list || []; erasLoaded = true;
+      showEras();
+    }).catch(() => { if (seq === erasSeq && !erasLoaded) eraCtl.chip.remove(); });
+  }
+  const EVENTS = ['movienight:seen-saved', 'movienight:marked', 'movienight:changed'];
+  function onChange() {
+    if (el.isConnected) loadEras(true);
+    else for (const ev of EVENTS) window.removeEventListener(ev, onChange);
+  }
+  for (const ev of EVENTS) window.addEventListener(ev, onChange);
+  loadEras();
 
   function syncEditions(f) {
     const fam = familyOf(f);
@@ -94,7 +118,8 @@ export function filterBar({ time = false } = {}) {
   function sync(f) {
     state = f;
     for (const b of moodButtons) b.setAttribute('aria-pressed', String(b.dataset.id === f.mood));
-    eraCtl.label.textContent = eraList.find((e) => e.id === f.era)?.label || (f.era ? String(f.era) : 'Any era');
+    showEras();
+    loadEras();
     eraCtl.button.classList.toggle('is-active', !!f.era);
     const fam = familyOf(f);
     for (const b of familyButtons) b.setAttribute('aria-pressed', String(b.dataset.family === fam?.family));

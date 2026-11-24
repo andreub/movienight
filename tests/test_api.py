@@ -37,6 +37,32 @@ def test_eras_and_era_param(client):
         assert g("/api/pick", era=bad).status_code == 400
 
 
+def test_eras_only_list_suggestible_films(client):
+    ids = lambda **p: [e["id"] for e in client.get("/api/eras", params=p).json()]
+    base = ids()
+    assert "2000s" not in base                      # its only films are watched
+    assert "2000s" in ids(include_watched="true")
+    assert "classic" in base
+    hid = next(m["id"] for m in client.get("/api/recommendations", params={"era": "classic"}).json()["items"])
+    client.post(f"/api/movies/{hid}/dismiss", json={"days": 0})
+    assert "classic" not in ids() and "classic" in ids(include_dismissed="true")
+    client.delete(f"/api/movies/{hid}/dismiss")
+    assert "classic" in ids()
+
+
+def test_eras_follow_mood_and_ignore_era_param(client):
+    assert ids_of(client, mood="scary") == ["classic"]
+    assert ids_of(client, mood="scary", era="2020s") == ids_of(client, mood="scary")
+    assert ids_of(client, era="classic") == ids_of(client)
+    assert ids_of(client, mood="recent") == ids_of(client)      # legacy era moods are ignored here
+    assert client.get("/api/eras", params={"mood": "nope"}).status_code == 400
+    assert ids_of(client, watchlist_only="true") == ["2020s"]
+
+
+def ids_of(client, **p):
+    return [e["id"] for e in client.get("/api/eras", params=p).json()]
+
+
 def test_recommendations_shape_and_ranking(client):
     r = client.get("/api/recommendations").json()
     ids = [m["title"] for m in r["items"]]

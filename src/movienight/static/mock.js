@@ -60,7 +60,8 @@ const eraTest = (id) => {
   const d = /^(\d{3})0s$/.test(id || '') ? Number(id.slice(0, 4)) : null;
   return d && d >= 1980 ? (m) => m.year >= d && m.year <= d + 9 : () => false;
 };
-function eras() {
+function eras(p = {}) {
+  const movies = filter({ ...p, era: null, mood: ['recent', 'classic'].includes(p.mood) ? null : p.mood });
   const out = [];
   if (movies.some(isRecent)) out.push({ id: 'recent', label: 'Fresh releases', description: 'Released in the last 18 months' });
   const decades = [...new Set(movies.filter((m) => m.year >= 1980).map((m) => Math.floor(m.year / 10) * 10))].sort((a, b) => b - a);
@@ -427,7 +428,7 @@ export async function handle(method, path, p, body) {
       });
     }
     case 'GET /api/moods': return ok(MOODS.map(({ test, ...m }) => m));
-    case 'GET /api/eras': return ok(eras());
+    case 'GET /api/eras': return ok(eras(p));
     case 'GET /api/tags': return ok({ min_films: 3, families: FRESH ? [] : TAGS });
     case 'GET /api/recommendations': {
       const list = filter(p).sort(SORTERS[p.sort] || SORTERS.match);

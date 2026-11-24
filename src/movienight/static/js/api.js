@@ -91,7 +91,7 @@ async function request(method, path, { params, json, form } = {}) {
 export const api = {
   status: () => request('GET', '/api/status'),
   moods: () => request('GET', '/api/moods'),
-  eras: () => request('GET', '/api/eras'),
+  eras: (params) => request('GET', '/api/eras', { params }),
   tags: () => request('GET', '/api/tags'),
   pick: (params) => request('GET', '/api/pick', { params }),
   recommendations: (params) => request('GET', '/api/recommendations', { params }),
@@ -135,11 +135,8 @@ export function getMoods() {
   return moodsPromise;
 }
 
-let erasPromise = null;
-export function getEras() {
-  erasPromise ??= api.eras().catch((e) => { erasPromise = null; throw e; });
-  return erasPromise;
-}
+// Eras with a film left to suggest under the given filters: never cached, seen/hidden films change it.
+export function getEras(params) { return api.eras(params); }
 
 // Letterboxd tags that can steer picks, fetched once. Any failure means "no tag chips".
 let tagsPromise = null;

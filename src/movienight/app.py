@@ -675,8 +675,19 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         return queries.moods_public()
 
     @app.get("/api/eras")
-    def eras(tag: str | None = None, tag_family: str | None = None):
-        return queries.eras_public(base_cands(engine().get(), tag, tag_family))
+    def eras(
+        mood: str | None = None, genre: list[str] = Query(default=[]),
+        max_runtime: int | None = Query(None, ge=1), min_year: int | None = None, max_year: int | None = None,
+        watchlist_only: bool = False, include_watched: bool = False, include_dismissed: bool = False,
+        server: str | None = None, q: str | None = None, tag: str | None = None, tag_family: str | None = None,
+    ):
+        """Eras that still have a film to suggest under the other filters (era itself is ignored)."""
+        f = filters(mood, genre, max_runtime, min_year, max_year, watchlist_only, include_watched,
+                    include_dismissed, server, q)
+        if f.era:     # legacy mood=recent|classic means an era, which this endpoint ignores
+            f.era = None
+        cands = base_cands(engine().get(), tag, tag_family)
+        return queries.eras_public(queries.apply_filters(cands, f, dismissed_now()))
 
     @app.get("/api/tags")
     def tags():
