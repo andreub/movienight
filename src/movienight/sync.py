@@ -398,8 +398,13 @@ class SyncManager:
             await self._resolve(conn)
             await self._details(conn)
             if self.cfg.completionist:          # MOVIENIGHT_COMPLETIONIST=0: no collection/search/keyword/person lookups
-                await self._collections(conn)
-                await self._people(conn)
+                # a TMDB failure here (e.g. 429 retries exhausted) must not skip _recs: progress is saved per item
+                for stage in (self._collections, self._people):
+                    try:
+                        await stage(conn)
+                    except TmdbError as e:
+                        log.warning("tmdb %s stage stopped early, will resume next sync: %s", stage.__name__.strip("_"),
+                                    safe_error(e))
             await self._recs(conn)
         finally:
             conn.close()
@@ -520,7 +525,7 @@ class SyncManager:
                          (key, json.dumps(value), now_iso()))
             conn.commit()
 
-        seen = completion.seen_tmdb_ids(conn)
+        seen = completion.seen_tmdb_ids(conn, self.media.count_watched)
         changed = False
         stems = [s for s in completion.wanted_searches(conn, seen) if completion.search_key(s) not in fresh_lookups]
         if stems:
@@ -552,23 +557,48 @@ class SyncManager:
 
     async def _people(self, conn) -> None:
         """Completionist filmographies: the film credits of the directors and actors the user has seen several films
-        of (at most 40 of each, so at most 80 lookups), each refreshed after its TTL (30 days)."""
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=completion.PERSON_TTL_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        fresh = {r[0] for r in conn.execute(
-            "SELECT person_id FROM tmdb_person_credits WHERE fetched_at IS NOT NULL AND fetched_at >= ?", (cutoff,))}
-        ids = [p for p in completion.wanted_person_ids(conn, completion.seen_tmdb_ids(conn)) if p not in fresh]
+        of (at most 40 of each, so at most 80 lookups), each refreshed after its TTL (30 days, 7 for
+        people with a film from the last six months or upcoming)."""
+        ids = await asyncio.to_thread(self._stale_people)
         if not ids:
             return
 
         def done(pid, person):
+            # committed in one go afterwards (and on failure), not once per person
             person = person or {}
             conn.execute("INSERT OR REPLACE INTO tmdb_person_credits(person_id,name,profile_path,json,fetched_at)"
                          " VALUES(?,?,?,?,?)", (pid, person.get("name"), person.get("profile_path"),
                                                 json.dumps(person), now_iso()))
-            conn.commit()
 
-        await self._batches(ids, self.tmdb.person_credits, done)
+        try:
+            await self._batches(ids, self.tmdb.person_credits, done)
+        finally:
+            conn.commit()
         self.engine.invalidate()
+
+    def _stale_people(self) -> list[int]:
+        """Eligible people whose stored filmography is missing or past its TTL (runs in a worker thread: the
+        eligibility scan parses the JSON of every seen film)."""
+        conn = connect(self.cfg.db_path)
+        try:
+            def cutoff(days):
+                return (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            recent = (datetime.now(timezone.utc) - timedelta(days=completion.PERSON_ACTIVE_DAYS)).strftime("%Y-%m-%d")
+            long_c, short_c = cutoff(completion.PERSON_TTL_DAYS), cutoff(completion.PERSON_ACTIVE_TTL_DAYS)
+            fresh = {r[0] for r in conn.execute(
+                "SELECT person_id FROM tmdb_person_credits WHERE fetched_at IS NOT NULL AND fetched_at >= ?",
+                (short_c,))}
+            # between the two cutoffs a person stays fresh unless a film of theirs is recent or upcoming
+            for pid, js in conn.execute(
+                    "SELECT person_id, json FROM tmdb_person_credits WHERE fetched_at IS NOT NULL"
+                    " AND fetched_at >= ? AND fetched_at < ?", (long_c, short_c)):
+                p = json.loads(js or "{}")
+                if not any((c.get("release_date") or "") >= recent for c in (p.get("directed") or []) + (p.get("acted") or [])):
+                    fresh.add(pid)
+            return [p for p in completion.wanted_person_ids(conn, completion.seen_tmdb_ids(conn, self.media.count_watched))
+                    if p not in fresh]
+        finally:
+            conn.close()
 
     async def _recs(self, conn) -> None:
         ids = [r[0] for r in conn.execute(

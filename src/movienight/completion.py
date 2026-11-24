@@ -29,7 +29,7 @@ import json
 import math
 import re
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from functools import cache
 from pathlib import Path
 
@@ -43,6 +43,8 @@ LISTS_DIR = Path(__file__).parent / "data" / "lists"
 COLLECTION_TTL_DAYS = 30
 LOOKUP_TTL_DAYS = 30
 PERSON_TTL_DAYS = 30
+PERSON_ACTIVE_TTL_DAYS = 7      # people with a film released in the last PERSON_ACTIVE_DAYS days (or upcoming)
+PERSON_ACTIVE_DAYS = 180
 
 # filmographies: a director with this many films seen, an actor with this many seen in the top 5 billing (cast_ids)
 DIRECTOR_MIN_SEEN = 3
@@ -127,12 +129,14 @@ def slug(s: str) -> str:
 
 # --------------------------------------------------------------------------- sync helpers (SQL only)
 
-def seen_tmdb_ids(conn: sqlite3.Connection) -> set[int]:
-    """TMDB ids the user has seen: Letterboxd, played on the media server, or marked seen here."""
+def seen_tmdb_ids(conn: sqlite3.Connection, count_watched: bool = True) -> set[int]:
+    """TMDB ids the user has seen: Letterboxd, played on the media server, or marked seen here. `count_watched` is
+    the backend's flag (off for e.g. a shared Jellyfin account): server play counts then do not count, as in build()."""
+    played = (" UNION SELECT m.tmdb_id FROM movies m JOIN media_items i ON i.movie_id=m.id"
+              "  WHERE m.tmdb_id IS NOT NULL AND COALESCE(json_extract(i.json,'$.view_count'),0) > 0"
+              if count_watched else "")
     return {r[0] for r in conn.execute(
-        "SELECT tmdb_id FROM lb_films WHERE tmdb_id IS NOT NULL AND watched=1"
-        " UNION SELECT m.tmdb_id FROM movies m JOIN media_items i ON i.movie_id=m.id"
-        "  WHERE m.tmdb_id IS NOT NULL AND COALESCE(json_extract(i.json,'$.view_count'),0) > 0"
+        "SELECT tmdb_id FROM lb_films WHERE tmdb_id IS NOT NULL AND watched=1" + played +
         " UNION SELECT CAST(substr(key,6) AS INTEGER) FROM seen WHERE key LIKE 'tmdb:%'") if r[0]}
 
 
@@ -385,7 +389,8 @@ def _list_groups(seen: set[int]) -> list[dict]:
 
 def keep_credit(p: dict, seen: set[int], today: str) -> bool:
     """A filmography credit worth listing: released, not a documentary or a TV film, voted on by PERSON_MIN_VOTES
-    people. A film the user has seen always stays (it counts for progress)."""
+    people, unless it came out within the recent window (RECENT_FULL_DAYS), when it has had no time to gather votes.
+    A film the user has seen always stays (it counts for progress)."""
     if p.get("id") in seen:
         return True
     when = p.get("release_date") or ""
@@ -393,6 +398,8 @@ def keep_credit(p: dict, seen: set[int], today: str) -> bool:
         return False
     if PERSON_SKIP_GENRES.intersection(p.get("genre_ids") or []):
         return False
+    if when >= (date.fromisoformat(today) - timedelta(days=RECENT_FULL_DAYS)).isoformat():
+        return True
     return (p.get("vote_count") or 0) >= PERSON_MIN_VOTES
 
 
@@ -439,9 +446,10 @@ def _people_groups(conn: sqlite3.Connection, seen: set[int], avail: set[int] = f
             f"SELECT person_id, name, profile_path, json FROM tmdb_person_credits WHERE person_id IN ({marks})",
             sorted(ids))}
     groups = []
+    emitted: set[int] = set()    # people whose director group was kept: they get no actor group
     for kind, field in (("director", "directed"), ("actor", "acted")):
         for pid, _ in want[kind]:
-            if (kind == "actor" and pid in directors) or pid not in rows:
+            if (kind == "actor" and pid in emitted) or pid not in rows:
                 continue
             _, name, profile, js = rows[pid]
             p = json.loads(js or "{}")
@@ -455,6 +463,8 @@ def _people_groups(conn: sqlite3.Connection, seen: set[int], avail: set[int] = f
             n_seen = sum(f["tmdb_id"] in seen for f in films)
             if not n_seen or n_seen == len(films):
                 continue
+            if kind == "director":
+                emitted.add(pid)
             groups.append({"key": f"{kind}-{pid}", "kind": kind, "name": name or p.get("name") or "",
                            "films": _by_date(films), "ordered": False, "person_id": pid,
                            "profile_path": profile or p.get("profile_path")})
@@ -585,7 +595,7 @@ def _stars(x: float) -> str:
 
 def score(g: dict, ratings: dict[int, tuple[float, bool]], mu: float, today: date) -> tuple[float, str | None]:
     """The group's rank score and a short "why" for the card. Recency weighs most, then taste, then a film in the
-    library, then the share seen."""
+    library, then the share seen. A New/Recent reason names its film (see `build`, which exposes `reason_film`)."""
     rec, recent = recency(g["films"], today)
     rated = [ratings[f["tmdb_id"]] for f in g["films"] if f["state"] == "seen" and f["tmdb_id"] in ratings]
     t = taste([r for r, _ in rated], mu)
@@ -595,7 +605,7 @@ def score(g: dict, ratings: dict[int, tuple[float, bool]], mu: float, today: dat
     real = [r for r, is_real in rated if is_real]
     if recent is not None:
         fresh = (today - _date(recent["release_date"])).days <= RECENT_FULL_DAYS
-        reason = f"{'New' if fresh else 'Recent'} · {recent['year'] or recent['release_date'][:4]}"
+        reason = f"{'New' if fresh else 'Recent'} {recent['year'] or recent['release_date'][:4]}: {recent['title']}"
     elif t >= 0.25:
         reason = (f"You rated {_stars(sum(real) / len(real))}" if real
                   else "You liked their films" if g.get("kind") in PEOPLE_KINDS else "You liked these")
@@ -638,6 +648,13 @@ def build(st, conn: sqlite3.Connection) -> list[dict]:
     for g in raw:
         d = _decorate(g, seen, avail, backdrops, aff)
         d["score"], d["reason"] = score(d, ratings, mu, today)
+        d["reason_film"] = None
+        if d["reason"] and d["reason"].startswith(("New ", "Recent ")):
+            # the card names this film, so it must be visible: first tile (unordered groups), or kept on show (sagas)
+            film = recency(d["films"], today)[1]
+            d["reason_film"] = film["tmdb_id"]
+            if not d["ordered"]:
+                d["films"] = [film] + [f for f in d["films"] if f is not film]
         out.append(d)
     out.sort(key=lambda g: (block(g["kind"]), -g["score"], g["name"].lower()))
     st.cache["completion"] = out

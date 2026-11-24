@@ -157,7 +157,7 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
         }, h('span', { class: 'cprog__fill', style: { width: `${pct}%` } })),
         h('span', { class: 'ctv__count' }, h('strong', { text: String(g.seen) }), ` of ${g.total} seen`,
           g.available ? h('span', { class: 'cprog__avail', text: ` · ${g.available} in library` }) : null),
-        g.reason ? h('span', { class: 'ctv__why', text: g.reason }) : null),
+        g.reason ? h('span', { class: 'ctv__why', text: g.reason, title: g.reason, 'aria-label': g.reason }) : null),
       caption,
       row),
     h('p', { class: 'ctv__hint', 'aria-hidden': 'true' },
@@ -348,7 +348,7 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
       everything = r.groups;
       counts = {};
       for (const g of everything) counts[chipKind(g.kind)] = (counts[chipKind(g.kind)] || 0) + 1;
-      if (kind && !counts[kind] && !groups.length) kind = null; // a remembered kind with nothing left: All
+      if (kind && !counts[kind]) { kind = null; storeKind(null); } // a remembered kind with nothing left: All
       groups = everything.filter(ofKind);
       paintChips();
       if (!groups.length) {

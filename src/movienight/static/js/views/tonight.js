@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { h, fill, icon, poster, genPoster, hueOf, runtime, matchStub, reasonList, errorBox, announce, toast, quoted, isTyping } from '../dom.js';
+import { h, fill, icon, poster, genPoster, hueOf, runtime, matchStub, reasonList, errorBox, announce, toast, isTyping } from '../dom.js';
 import { filterBar } from '../filters.js';
 import { playControl } from '../play.js';
 import { go, apiFilters, hasQuickFilters, setFilters, CLEAR_QUICK } from '../state.js';
@@ -8,6 +8,7 @@ import { initialRuntime, rememberRuntime } from '../timecontrol.js';
 import { voteButtons, setVote, voteOf } from '../vote.js';
 import { setSeen, setSeenVote, isSeen } from '../seen.js';
 import { serverName } from '../status.js';
+import { seenMsg, seenAskMsg, seenVoteMsg, unseenMsg, voteMsg, hideMsg } from '../messages.js';
 
 const HINT_KEY = 'movienight.seenHintDismissed';
 const HINT_BELOW = 20;
@@ -154,7 +155,7 @@ export function mount(root, route) {
       return;
     }
     const previous = data;
-    toast(`Hid ${quoted(m)} for 30 days.`, {
+    toast(hideMsg(m), {
       action: {
         label: 'Undo',
         run: async () => {
@@ -190,14 +191,13 @@ export function mount(root, route) {
           onclick: async () => {
             if (!(await setVote(m, vote))) return;
             close();
-            toast(vote > 1 ? `Noted: ${quoted(m)} is a favourite.` : vote > 0 ? `Noted: you liked ${quoted(m)}.` : `Noted: less like ${quoted(m)}.`, { timeout: 3000 });
+            toast(voteMsg(m, vote), { timeout: 3000 });
           },
         }, icon(name))));
     // Already rated (e.g. from the sheet): no need to ask again.
     const voted = vote !== undefined && vote !== 0;
     const rated = voted || voteOf(m) !== 0;
-    const what = vote > 1 ? `${quoted(m)} is a favourite.` : vote > 0 ? `you liked ${quoted(m)}.` : `less like ${quoted(m)}.`;
-    toast(voted ? `Seen · ${what}` : rated ? `Marked ${quoted(m)} as seen.` : `Marked ${quoted(m)} as seen. Did you like it?`, {
+    toast(voted ? seenVoteMsg(m, vote) : rated ? seenMsg(m) : seenAskMsg(m), {
       timeout: rated ? 6000 : 8000,
       extra: rated ? null : quick,
       action: {
@@ -229,7 +229,7 @@ export function mount(root, route) {
       load('shuffle').then(() => {
         const next = data?.pick?.id;
         seenToast(movie, next, () => {
-          if (data && data.pick.id === next) { req++; data = previous; render('shuffle'); } else toast(`Unmarked ${quoted(movie)}. It can come back in your picks.`);
+          if (data && data.pick.id === next) { req++; data = previous; render('shuffle'); } else toast(unseenMsg(movie));
         }, restore);
       });
       return;
@@ -266,7 +266,7 @@ export function mount(root, route) {
       const cur = replId ? data.alternatives.findIndex((a) => a.id === replId) : -1;
       if (cur >= 0) data.alternatives[cur] = movie;
       else if (!replId && data.alternatives.length < 6) data.alternatives.splice(Math.min(at, data.alternatives.length), 0, movie);
-      else { toast(`Unmarked ${quoted(movie)}. It can come back in your picks.`); return; }
+      else { toast(unseenMsg(movie)); return; }
       renderAlts();
     }, restore);
   }

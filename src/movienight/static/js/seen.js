@@ -2,6 +2,7 @@
 // same film flips at once through a window event and rolls back with a toast if the server refuses.
 import { api } from './api.js';
 import { h, icon, toast } from './dom.js';
+import { seenMsg, unseenMsg } from './messages.js';
 import { voteOf, announceVote, LOVE } from './vote.js';
 
 // The four "seen it" verdicts ("Seen these?", Complete's film panel): value = the vote stored with the mark.
@@ -70,7 +71,16 @@ export function seenToggle(movie) {
   let seen = isSeen(movie);
   const btn = h('button', {
     type: 'button', class: 'seenbtn', 'aria-label': `I've seen ${movie.title}`, title: seen ? 'Seen. Tap to undo' : 'Seen it',
-    onclick: (e) => { e.stopPropagation(); setSeen(movie, !seen, 'card'); },
+    onclick: async (e) => {
+      e.stopPropagation();
+      const next = !seen;
+      if (!(await setSeen(movie, next, 'card'))) return;
+      // The card only dims, so say what happened (and offer the way back) instead of staying silent.
+      toast(next ? seenMsg(movie) : unseenMsg(movie), {
+        timeout: 4000,
+        action: { label: 'Undo', run: () => setSeen(movie, !next, 'undo') },
+      });
+    },
   }, icon('eye'));
   const paint = () => {
     btn.setAttribute('aria-pressed', String(seen));

@@ -111,9 +111,9 @@ exception is the canonical lists, which ship with the app.
   seen films fold into a "✓ 7 seen" tile (tap to open it). Unseen films and their neighbours always
   stay visible, and "Show all" appears only if the card still overflows. Finished groups and hidden
   ones (the × on a card, with undo) stay folded at the bottom.
-- **Order**: each group gets a score, and one quiet hint on its card says why ("New · 2026",
-  "You rated ★4.4", "In your library"). In "All", sagas (keyword series included), franchises come first, then
-  the lists, then directors and actors, each block ordered by score.
+- **Order**: each group gets a score, and one quiet hint on its card says why ("New 2026: Title",
+  "You rated ★4.4", "In your library"). In "All", sagas (keyword series included) and franchises come
+  first, then the lists, then directors and actors, each block ordered by score.
   `score = 3 × recency + 1.5 × taste + 0.75 × library + 0.5 × share seen`.
   - *Recency* is 1 when an unseen film came out in the last 18 months, fading to 0 at 5 years.
   - *Taste* compares your ratings of the group's seen films (Letterboxd; an app vote when there is
