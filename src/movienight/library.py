@@ -43,6 +43,7 @@ def assign_movies(conn: sqlite3.Connection) -> int:
             tmdb_id = int(dkey[5:]) if dkey.startswith("tmdb:") else None
             cur = conn.execute("INSERT INTO movies(dkey, tmdb_id) VALUES(?,?)", (dkey, tmdb_id))
             existing[dkey] = cur.lastrowid
+    _migrate_keys(conn, items, keys, existing)
     conn.executemany(
         "UPDATE media_items SET movie_id=? WHERE server_id=? AND rating_key=?",
         [(existing[it["dkey"]], it["server_id"], it["rating_key"]) for it in items],
@@ -53,6 +54,41 @@ def assign_movies(conn: sqlite3.Connection) -> int:
         "UPDATE media_servers SET movies=(SELECT COUNT(*) FROM media_items WHERE server_id=media_servers.id)"
     )
     return len(keys)
+
+
+def _migrate_keys(conn: sqlite3.Connection, items: list[dict], keys: set, existing: dict) -> None:
+    """Carry user state over when a film's key gets more precise (`t:title|year` / `imdb:…` -> `tmdb:N`, after
+    a rematch or another server supplies the id): seen marks, votes, pushed marks and its dismissal.
+
+    A weaker key that is no longer any film's key and that only one film could have had moves to that film's
+    key. On a clash the row already under the new key stays (a vote: the newer one)."""
+    from .util import norm_title
+
+    target: dict[str, str | None] = {}
+    for it in items:
+        new = it["dkey"]
+        weaker = [f"imdb:{it['imdb_id']}"] if it.get("imdb_id") and new.startswith("tmdb:") else []
+        if not new.startswith("t:"):
+            weaker.append(f"t:{norm_title(it.get('title'))}|{it.get('year') or ''}")
+        for old in weaker:
+            if old not in keys:
+                target[old] = new if target.get(old, new) == new else None     # None: ambiguous, leave it
+    if not target:
+        return
+    held = {r[0] for r in conn.execute("SELECT key FROM seen UNION SELECT key FROM votes"
+                                       " UNION SELECT key FROM seen_pushes")}
+    for old, new in target.items():
+        if new is None:
+            continue
+        if old in held:
+            conn.execute("DELETE FROM votes WHERE key=? AND EXISTS (SELECT 1 FROM votes n WHERE n.key=?"
+                         " AND COALESCE(n.updated_at,'') >= COALESCE(votes.updated_at,''))", (old, new))
+            conn.execute("UPDATE OR REPLACE votes SET key=? WHERE key=?", (new, old))
+            for t in ("seen", "seen_pushes"):                   # fixed table names
+                conn.execute(f"UPDATE OR IGNORE {t} SET key=? WHERE key=?", (new, old))
+                conn.execute(f"DELETE FROM {t} WHERE key=?", (old,))
+        if old in existing:         # its movies row (and dismissal) is deleted once no item points at it
+            conn.execute("UPDATE OR IGNORE dismissals SET movie_id=? WHERE movie_id=?", (existing[new], existing[old]))
 
 
 def active_dismissals(conn: sqlite3.Connection) -> dict[int, str]:

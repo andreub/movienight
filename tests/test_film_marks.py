@@ -149,6 +149,11 @@ def test_native_plex_play_cannot_be_unmarked(cfg):
         assert r.status_code == 409 and r.json()["detail"].startswith("Seen on Plex")
         assert fake.scrobbles("/:/unscrobble") == []
         assert c.get("/api/films/113").json()["seen_via"] == ["server"]
+        mid = f["movie_id"]                                 # the library route refuses it the same way
+        r = c.post(f"/api/movies/{mid}/seen", json={"seen": False})
+        assert r.status_code == 409 and r.json()["detail"].startswith("Seen on Plex")
+        assert fake.scrobbles("/:/unscrobble") == []
+        assert c.post(f"/api/movies/{mid}/seen", json={"seen": True}).status_code == 200
 
 
 def test_native_jellyfin_play_cannot_be_unmarked(tmp_path):
