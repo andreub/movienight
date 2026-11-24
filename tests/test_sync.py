@@ -163,3 +163,32 @@ async def test_details_backfills_release_date_for_library_films_only(tmp_path):
         with db.session(cfg.db_path) as c:
             await mgr._details(c)
     assert fetched == [1]
+
+
+def test_empty_server_list_keeps_library(tmp_path):
+    # #55: plex.tv answering 200 with no servers must not be taken as "everything unshared"
+    empty = {"on": False}
+
+    def flaky(request):
+        if empty["on"] and request.url.host == "plex.tv" and request.url.path == "/api/v2/resources":
+            return httpx.Response(200, json=[])
+        return handler(request)
+
+    cfg = Config(data_dir=tmp_path / "d", letterboxd_dir=tmp_path / "x", sync_on_start=False, plex_token="T")
+    app = create_app(cfg, transport=httpx.MockTransport(flaky))
+    with TestClient(app) as c:
+        import time
+
+        def sync():
+            c.post("/api/sync", json={"what": "plex"})
+            for _ in range(200):
+                s = c.get("/api/status").json()
+                if not s["sync"]["running"]:
+                    return s
+                time.sleep(0.05)
+
+        assert sync()["plex"]["movies"] == 3
+        empty["on"] = True
+        s = sync()
+        assert s["sync"]["error"] is None and s["plex"]["movies"] == 3
+        assert {x["id"] for x in s["plex"]["servers"]} == {"mach1", "mach2"}
