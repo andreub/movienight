@@ -15,9 +15,13 @@ Then filmographies, which have no order of their own:
   top 5 of ACTOR_MIN_SEEN seen films. Their credits (cached /person/{id}?append_to_response=movie_credits) skip
   documentaries, TV films, unreleased and little-voted films, unless seen. Someone eligible as both is a director.
 
+Then canonical lists, bundled with the app (data/lists/*.json, built by scripts/build_list.py; no TMDB call at
+runtime): **list**, e.g. every Best Picture winner or the Sight and Sound 2022 poll, once one of their films is seen.
+They have no order of their own either.
+
 Groups are built from the engine state plus the cached TMDB tables (tmdb_collections, tmdb_lookups,
 tmdb_details, tmdb_person_credits), memoised on the state like tags.py. Keys are path-safe: collection-556,
-franchise-spider-man, series-357318, director-525, actor-6193.
+franchise-spider-man, series-357318, director-525, actor-6193, list-oscars-best-picture.
 """
 from __future__ import annotations
 
@@ -26,12 +30,16 @@ import math
 import re
 import sqlite3
 from datetime import date, datetime, timezone
+from functools import cache
+from pathlib import Path
 
 from . import library, tmdb
 
 SAGA_KINDS = ("collection", "franchise", "series")
+LIST_KINDS = ("list",)
 PEOPLE_KINDS = ("director", "actor")
-KINDS = SAGA_KINDS + PEOPLE_KINDS
+KINDS = SAGA_KINDS + LIST_KINDS + PEOPLE_KINDS
+LISTS_DIR = Path(__file__).parent / "data" / "lists"
 COLLECTION_TTL_DAYS = 30
 LOOKUP_TTL_DAYS = 30
 PERSON_TTL_DAYS = 30
@@ -347,6 +355,34 @@ def _raw_groups(conn: sqlite3.Connection, seen: set[int]) -> list[dict]:
     return [g for g in groups if len(g["films"]) >= 2 and seen.intersection(f["tmdb_id"] for f in g["films"])]
 
 
+def load_lists(folder: Path = LISTS_DIR) -> tuple[dict, ...]:
+    """The canonical lists in `folder` (one JSON file each: key, name, ordered, films), by file name."""
+    out = []
+    for path in sorted(folder.glob("*.json")):
+        d = json.loads(path.read_text(encoding="utf-8"))
+        if d.get("key") and d.get("films"):
+            out.append(d)
+    return tuple(out)
+
+
+@cache
+def bundled_lists() -> tuple[dict, ...]:
+    """The lists shipped with the app, read once per process."""
+    return load_lists()
+
+
+def _list_groups(seen: set[int]) -> list[dict]:
+    """Canonical lists with at least one film seen. Unordered: presented like filmographies (unseen first)."""
+    groups = []
+    for lst in bundled_lists():
+        films = [_film({**f, "id": f["tmdb_id"]}) | ({"rank": f["rank"]} if f.get("rank") is not None else {})
+                 for f in lst["films"] if f.get("tmdb_id")]
+        if seen.intersection(f["tmdb_id"] for f in films):
+            groups.append({"key": f"list-{slug(lst['key'])}", "kind": "list", "name": lst.get("name") or lst["key"],
+                           "films": films, "ordered": bool(lst.get("ordered"))})
+    return groups
+
+
 def keep_credit(p: dict, seen: set[int], today: str) -> bool:
     """A filmography credit worth listing: released, not a documentary or a TV film, voted on by PERSON_MIN_VOTES
     people. A film the user has seen always stays (it counts for progress)."""
@@ -442,9 +478,11 @@ def _decorate(g: dict, seen: set[int], avail: dict, backdrops: dict[int, str] | 
             out["match"] = c.match
             out["poster_url"] = out["poster_url"] or library.poster_of(c)
             out["backdrop_url"] = out["backdrop_url"] or library.backdrop_of(c)
+        if f.get("rank") is not None:
+            out["rank"] = f["rank"]          # a ranked poll's place (ties share it)
         out["_genres"] = f.get("genre_ids") or []
         films.append(out)
-    if not ordered:      # filmographies: unseen first (library, then missing by relevance), seen ones last, newest first
+    if not ordered:      # filmographies and lists: unseen first (library, then missing by relevance), seen ones last, newest first
         films = ranked_unseen(films, aff) + sorted((f for f in films if f["state"] == "seen"),
                                                    key=lambda f: (f["release_date"] or "", f["tmdb_id"]), reverse=True)
     for f in films:
@@ -582,13 +620,14 @@ def genre_affinity(st):
 
 def build(st, conn: sqlite3.Connection) -> list[dict]:
     """Every started group, ranked by score (best first); cached on the state (rebuilt whenever the state is).
-    Sagas (collections, franchises, series) come before filmographies (directors, actors), each block by score."""
+    Sagas (collections, franchises, series) come first, then canonical lists, then filmographies (directors,
+    actors), each block by score."""
     if "completion" in st.cache:
         return st.cache["completion"]
     seen = _seen(st) | set(_tmdb_keyed(conn, "seen"))      # + films marked seen here that are not in the library
     avail = _available(st)
     aff = genre_affinity(st)
-    raw = _raw_groups(conn, seen) + _people_groups(conn, seen, set(avail), aff)
+    raw = _raw_groups(conn, seen) + _list_groups(seen) + _people_groups(conn, seen, set(avail), aff)
     need = {f["tmdb_id"] for g in raw for f in g["films"] if not f.get("backdrop_path")}
     backdrops = {r[0]: r[1] for r in conn.execute(
         "SELECT tmdb_id, json_extract(json,'$.backdrop_path') FROM tmdb_details"
@@ -600,9 +639,14 @@ def build(st, conn: sqlite3.Connection) -> list[dict]:
         d = _decorate(g, seen, avail, backdrops, aff)
         d["score"], d["reason"] = score(d, ratings, mu, today)
         out.append(d)
-    out.sort(key=lambda g: (g["kind"] in PEOPLE_KINDS, -g["score"], g["name"].lower()))
+    out.sort(key=lambda g: (block(g["kind"]), -g["score"], g["name"].lower()))
     st.cache["completion"] = out
     return out
+
+
+def block(kind: str) -> int:
+    """Where a kind's groups go in the "All" view: sagas, then lists, then people."""
+    return 2 if kind in PEOPLE_KINDS else 1 if kind in LIST_KINDS else 0
 
 
 def hidden_keys(conn: sqlite3.Connection) -> set[str]:

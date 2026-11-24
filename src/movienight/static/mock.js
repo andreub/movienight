@@ -310,7 +310,26 @@ const COMPLETIONS = [
     ['Counterweight', 2016, 'm', 8200], ['The Signal', 2012, 'm', 2400], ['Overpass', 2020, 's', 9100], ['Monsoon Run', 2018, 's', 4500],
     ['Quiet Engines', 2014, 's', 3800], ['Rooftops', 2009, 's', 2200]] },
 ];
+// canonical lists (made-up titles): an Oscars-like list of 98 winners and a Sight and Sound-like poll of 100 ranked
+// films (ties share a rank). Unordered like filmographies: completionGroup() sorts them the way the API does.
+const LIST_W1 = ['Silent', 'Golden', 'Last', 'Broken', 'Distant', 'Crimson', 'Hidden', 'Restless', 'Burning', 'Endless', 'Quiet', 'Wild'];
+const LIST_W2 = ['River', 'Empire', 'Harvest', 'Letter', 'Garden', 'Frontier', 'Station', 'Season', 'Promise', 'Mirror', 'Voyage', 'Kingdom'];
+const POLL_W1 = ['Portrait', 'Song', 'Night', 'Memory', 'Chronicle', 'Story', 'Passion', 'Ballad', 'Journey', 'Shadow'];
+const POLL_W2 = ['a Stranger', 'the Sea', 'Two Rivers', 'Winter', 'the Valley', 'a Small Town', 'Lost Time', 'the Bridge', 'Smoke', 'the Moon'];
+COMPLETIONS.push(
+  { key: 'list-oscars-best-picture', kind: 'list', name: 'Oscars \u00b7 Best Picture', score: 1.2, reason: 'Recent \u00b7 2025',
+    films: Array.from({ length: 98 }, (_, i) => {
+      const n = (i * 5) % 144;
+      return [`The ${LIST_W1[n % 12]} ${LIST_W2[Math.floor(n / 12)]}`, 1928 + i, i % 3 === 0 ? 's' : i % 11 === 5 ? 'a' : 'm', 400 + ((i * 2311) % 20000)];
+    }) },
+  { key: 'list-sight-and-sound-2022', kind: 'list', name: 'Sight and Sound \u00b7 Greatest Films 2022', score: 0.7, reason: 'You rated \u26054.1',
+    films: Array.from({ length: 100 }, (_, i) => [`${POLL_W1[i % 10]} of ${POLL_W2[Math.floor(i / 10)]}`, 1924 + ((i * 37) % 98),
+      i % 5 === 0 ? 's' : i % 13 === 4 ? 'a' : 'm', 200 + ((i * 1777) % 15000), i % 7 === 3 ? i : i + 1]) },
+);
 const PEOPLE_KINDS = new Set(['director', 'actor']);
+const UNORDERED = new Set(['director', 'actor', 'list']);
+// "All": sagas, then lists, then people
+const blockOf = (kind) => (PEOPLE_KINDS.has(kind) ? 2 : kind === 'list' ? 1 : 0);
 // ?mock=1&sagas=N pads the list with generated trilogies up to N groups (long lists: the Screen layout's dots).
 for (let n = COMPLETIONS.length; n < Math.min(200, Number(params.get('sagas')) || 0); n += 1) {
   COMPLETIONS.push({ key: `collection-${70000 + n}`, kind: 'collection', name: `Filler Saga ${n}`, score: 0.1, films: [
@@ -324,10 +343,11 @@ const localSeen = new Map();
 const sagaFilms = new Map(); // tmdb id -> [film, group]
 let nextSagaId = 800;
 for (const g of COMPLETIONS) {
-  g.films = g.films.map(([title, year, st, votes], i) => {
+  g.films = g.films.map(([title, year, st, votes, rank], i) => {
     const via = { s: 'letterboxd', p: 'server', h: 'here' }[st] || null;
     const f = { tmdb_id: 90000 + nextSagaId, title, year, release_date: `${year}-06-01`, backdrop_url: null, state: via ? 'seen' : { a: 'available', m: 'missing' }[st], vote_count: votes, vote_average: 6.4 + ((i * 7) % 20) / 10, poster_url: null };
     if (via) f.via = via;
+    if (rank) f.rank = rank;
     if (via === 'here') localSeen.set(f.tmdb_id, 1);
     sagaFilms.set(f.tmdb_id, [f, g]);
     if (f.state === 'available') {
@@ -346,12 +366,17 @@ function sagaState(f) {
   return f.state;
 }
 function completionGroup(g) {
-  const films = g.films.map(({ via, ...f }) => ({ ...f, state: sagaState({ via, ...f }) }));
+  let films = g.films.map(({ via, ...f }) => ({ ...f, state: sagaState({ via, ...f }) }));
+  if (g.kind === 'list') { // as the API sends unordered groups: library, then missing by appeal, then seen newest first
+    const appeal = (f) => Math.log1p(f.vote_count) * f.vote_average;
+    films = [...films.filter((f) => f.state === 'available'), ...films.filter((f) => f.state === 'missing').sort((a, b) => appeal(b) - appeal(a)),
+      ...films.filter((f) => f.state === 'seen').sort((a, b) => b.year - a.year)];
+  }
   const avail = films.filter((f) => f.state === 'available');
   const seen = films.filter((f) => f.state === 'seen').length;
   const next = avail[0];
   return { key: g.key, kind: g.kind, name: g.name, seen, total: films.length, available: avail.length,
-    missing: films.filter((f) => f.state === 'missing').length, complete: seen === films.length, ordered: !PEOPLE_KINDS.has(g.kind),
+    missing: films.filter((f) => f.state === 'missing').length, complete: seen === films.length, ordered: !UNORDERED.has(g.kind),
     ...(PEOPLE_KINDS.has(g.kind) ? { person_id: Number(g.key.split('-')[1]), profile_url: null } : {}),
     next: next ? { movie_id: next.movie_id, title: next.title, year: next.year } : null, films, hidden: hiddenGroups.has(g.key),
     score: g.score ?? 0, reason: g.reason ?? null, backdrop_url: null };
@@ -374,11 +399,11 @@ function sagaFilm(id) {
 
 function completions(p) {
   const all = FRESH ? [] : COMPLETIONS.map(completionGroup);
-  // sagas first, then directors and actors; each block by score
-  all.sort((a, b) => PEOPLE_KINDS.has(a.kind) - PEOPLE_KINDS.has(b.kind) || b.score - a.score || a.name.localeCompare(b.name));
+  // sagas first, then canonical lists, then directors and actors; each block by score
+  all.sort((a, b) => blockOf(a.kind) - blockOf(b.kind) || b.score - a.score || a.name.localeCompare(b.name));
   const visible = all.filter((g) => !g.hidden);
   const pick = (g) => !p.kind || g.kind === p.kind;
-  const counts = { collection: 0, franchise: 0, series: 0, director: 0, actor: 0 };
+  const counts = { collection: 0, franchise: 0, series: 0, list: 0, director: 0, actor: 0 };
   for (const g of visible) counts[g.kind] += 1;
   return {
     groups: visible.filter((g) => pick(g) && !g.complete),

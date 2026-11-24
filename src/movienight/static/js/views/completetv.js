@@ -14,7 +14,7 @@ import { api } from '../api.js';
 import { h, fill, icon, poster, hueOf, errorBox, announce, isTyping } from '../dom.js';
 import { openSagaFilm, KINDS, storedKind, storeKind } from './complete.js';
 
-const KIND_LABEL = { collection: 'Saga', franchise: 'Franchise', series: 'Series', director: 'Director', actor: 'Actor' };
+const KIND_LABEL = { collection: 'Saga', franchise: 'Franchise', series: 'Series', list: 'List', director: 'Director', actor: 'Actor' };
 const STATE_TEXT = { available: 'In your library · OK to open', seen: 'Seen · OK for details', missing: 'Not in your library · OK to mark seen' };
 const STATE_TEXT_WEB = { available: 'In your library · Enter to open', seen: 'Seen · Enter for details', missing: 'Not in your library · Enter to mark seen' };
 
