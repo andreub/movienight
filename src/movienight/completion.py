@@ -823,3 +823,77 @@ def group(st, conn: sqlite3.Connection, key: str) -> dict | None:
     """One group with every film (release order) and its state."""
     g = next((g for g in build(st, conn) if g["key"] == key), None)
     return public(g, hidden_keys(conn)) if g else None
+
+
+# --------------------------------------------------------------------------- elsewhere in the app (detail, Tonight, chat)
+
+FILM_GROUPS_MAX = 2        # sagas and lists named on a film's detail ("Part of X · 4 of 11")
+FILM_PEOPLE_MAX = 1        # ...a filmography only when the film is in no saga or list
+CHAT_GROUPS = 8            # list_completions: groups by default (at most CHAT_GROUPS_MAX)
+CHAT_GROUPS_MAX = 20
+CHAT_NEXT = 3              # ...and the next films of each
+
+
+def summary(g: dict) -> dict:
+    return {"key": g["key"], "name": g["name"], "kind": g["kind"], "seen": g["seen"], "total": g["total"]}
+
+
+def _membership(st, conn: sqlite3.Connection) -> dict[int, list[dict]]:
+    """tmdb id -> the groups holding it, best first (the order of `build`); cached on the state like `build`."""
+    if "completion_members" not in st.cache:
+        out: dict[int, list[dict]] = {}
+        for g in build(st, conn):
+            for f in g["films"]:
+                held = out.setdefault(f["tmdb_id"], [])
+                if not held or held[-1] is not g:
+                    held.append(g)
+        st.cache["completion_members"] = out
+    return st.cache["completion_members"]
+
+
+def groups_of(st, conn: sqlite3.Connection, tmdb_id: int | None) -> list[dict]:
+    """The groups a film belongs to, for its detail ("Part of X · n of N"): [{key, name, kind, seen, total}], best
+    first. At most FILM_GROUPS_MAX sagas and lists; a director's or actor's filmography only when the film is in none
+    of those (at most FILM_PEOPLE_MAX). Hidden groups stay out."""
+    found = _membership(st, conn).get(tmdb_id) if tmdb_id else None
+    if not found:
+        return []
+    hidden = hidden_keys(conn)
+    found = [g for g in found if g["key"] not in hidden]
+    main = [g for g in found if g["kind"] not in PEOPLE_KINDS][:FILM_GROUPS_MAX]
+    return [summary(g) for g in (main or [g for g in found if g["kind"] in PEOPLE_KINDS][:FILM_PEOPLE_MAX])]
+
+
+def saga_next(st, conn: sqlite3.Connection) -> dict[int, dict]:
+    """Library movie id -> the started saga it continues (`summary`): for each visible saga in progress (collection,
+    franchise or keyword series), its next film in the library (the earliest unseen one there). A film that continues
+    two sagas counts for the better one. Tonight's "Complete a saga"."""
+    hidden = hidden_keys(conn)
+    out: dict[int, dict] = {}
+    for g in build(st, conn):
+        nxt = g.get("next")
+        if g["kind"] in SAGA_KINDS and not g["complete"] and g["key"] not in hidden and nxt and nxt.get("movie_id"):
+            out.setdefault(nxt["movie_id"], summary(g))
+    return out
+
+
+def saga_reason(g: dict) -> dict:
+    """The quiet hint on a Tonight suggestion that continues a saga (shaped like the recommender's reasons)."""
+    return {"kind": "trophy", "text": f"Next in {g['name']} · {g['seen']} of {g['total']} seen"}
+
+
+def chat_overview(st, conn: sqlite3.Connection, kind: str | None = None, limit: int = CHAT_GROUPS,
+                  per_group: int = CHAT_NEXT) -> dict:
+    """Started groups for the chat assistant, compact: the ranking of `overview` (in progress, not hidden), each with
+    its progress, the "why" and the next films to watch, those in the library first (with their movie id), then the
+    missing ones (in release order for sagas, by relevance for lists and filmographies)."""
+    ov = overview(st, conn, kind=kind)
+    out = []
+    for g in ov["groups"][:limit]:
+        films = ([f for f in g["films"] if f["state"] == "available"]
+                 + [f for f in g["films"] if f["state"] == "missing"])[:per_group]
+        nxt = [{"title": f["title"], "year": f["year"], "movie_id": f["movie_id"]} if f["state"] == "available"
+               else {"title": f["title"], "year": f["year"], "in_library": False} for f in films]
+        out.append({"name": g["name"], "kind": g["kind"], "seen": g["seen"], "total": g["total"],
+                    "in_library": g["available"], "reason": g["reason"], "next": nxt})
+    return {"groups": out, "in_progress": len(ov["groups"]), "completed": len(ov["completed"])}

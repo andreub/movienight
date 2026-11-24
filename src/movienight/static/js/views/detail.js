@@ -5,7 +5,7 @@ import { h, icon, poster, hueOf, runtime, stars, matchStub, reasonList, errorBox
 import { playControl } from '../play.js';
 import { voteButtons, setVote, voteOf, LOVE } from '../vote.js';
 import { setSeen, setSeenVote, isSeen, OUTCOMES } from '../seen.js';
-import { parse } from '../state.js';
+import { parse, href, showGroup } from '../state.js';
 import { serverName } from '../status.js';
 import { TV } from '../tvnav.js';
 import { seenMsg, seenVoteMsg, unseenMsg, voteMsg, hideMsg, neverMsg, unhideMsg, UNMARK_LABEL } from '../messages.js';
@@ -192,6 +192,7 @@ function render(m) {
       m.letterboxd_url ? h('a', { class: 'btn btn--ghost', href: m.letterboxd_url, target: '_blank', rel: 'noopener' }, 'Letterboxd', icon('external', 'icon--end')) : null),
     m.seen_here ? h('p', { class: 'detail__seen' }, icon('check'), "You've seen this",
       h('button', { type: 'button', class: 'linkbtn', onclick: () => markSeen(m, false) }, UNMARK_LABEL)) : null,
+    partOf(m.groups),
     m.tagline ? h('p', { class: 'detail__tagline', text: m.tagline }) : null,
     m.overview ? h('p', { class: 'detail__overview', text: m.overview }) : null,
     m.reasons?.length ? section('Why it fits you', reasonList(m.reasons)) : null,
@@ -322,9 +323,25 @@ function renderFilm(f) {
       markable ? filmVotes(f) : null,
       h('a', { class: 'btn btn--ghost', href: f.letterboxd_url, target: '_blank', rel: 'noopener' }, 'Letterboxd', icon('external', 'icon--end'))),
     f.seen ? filmSeenLine(f) : null,
+    partOf(f.groups),
     f.tagline ? h('p', { class: 'detail__tagline', text: f.tagline }) : null,
     f.overview ? h('p', { class: 'detail__overview', text: f.overview }) : null,
     facts.length ? h('dl', { class: 'facts' }, facts.map(([k, v]) => h('div', null, h('dt', { text: k }), h('dd', null, v)))) : null);
+}
+
+// "Part of Star Wars · 4 of 11": the started sagas and lists the film belongs to (or, in none, a director's or
+// actor's films), best first, as the API sends them. Each line opens that group on Complete.
+export function partOf(groups, cls = '') {
+  if (!groups?.length) return null;
+  const name = (g) => (g.kind === 'director' || g.kind === 'actor' ? `${g.name}'s films` : g.name);
+  return h('ul', { class: `detail__parts ${cls}`.trim(), 'aria-label': 'Part of' }, groups.map((g) => h('li', null,
+    h('a', {
+      class: 'detail__part', href: href('complete', parse().filters, null, null, g.key),
+      onclick: (e) => { if (e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; e.preventDefault(); showGroup(g.key); },
+    },
+    icon('trophy'),
+    h('span', { class: 'detail__part-text' }, 'Part of ', h('strong', { text: name(g) })),
+    h('span', { class: 'detail__part-n', text: `${g.seen} of ${g.total}` })))));
 }
 
 function sourcesText(plex) {

@@ -1,4 +1,5 @@
-// Quick filters shared by Tonight and Browse: mood, Letterboxd tag, runtime, watchlist only.
+// Quick filters shared by Tonight and Browse: mood, Letterboxd tag, runtime, watchlist only; on Tonight also
+// "Complete a saga" (`saga: true`), shown only while it has a film to offer (see sagaCount).
 import { getMoods, getEras, getTags } from './api.js';
 import { h, icon } from './dom.js';
 import { RUNTIMES, EMPTY_FILTERS, apiFilters, setFilters, hasQuickFilters, CLEAR_QUICK } from './state.js';
@@ -8,7 +9,8 @@ import { timeControl, rememberRuntime } from './timecontrol.js';
 let uid = 0;
 
 // `time: true` (Tonight) swaps the length segments for the clock-aware "Done by" control.
-export function filterBar({ time = false } = {}) {
+// `saga: true` (Tonight) adds the "Complete a saga" toggle beside Watchlist only.
+export function filterBar({ time = false, saga = false } = {}) {
   const timeCtl = time ? timeControl() : null;
   const name = `rt-${++uid}`;
   const moods = h('div', { class: 'chips chips--scroll', role: 'group', 'aria-label': 'Mood' });
@@ -22,6 +24,13 @@ export function filterBar({ time = false } = {}) {
     type: 'button', class: 'chip chip--toggle', 'aria-pressed': 'false',
     onclick: () => setFilters({ wl: watchlist.getAttribute('aria-pressed') !== 'true' }),
   }, icon('watchlist'), h('span', { class: 'chip__label', text: 'Watchlist only' }));
+  // The next film of each saga the user has started, in the library. Hidden until Tonight learns there is one.
+  const sagaChip = saga ? h('button', {
+    type: 'button', class: 'chip chip--toggle', 'aria-pressed': 'false', hidden: true,
+    title: 'The next film of each saga you have started',
+    onclick: () => setFilters({ saga: sagaChip.getAttribute('aria-pressed') !== 'true' }),
+  }, icon('trophy'), h('span', { class: 'chip__label', text: 'Complete a saga' })) : null;
+  let sagaFilms = 0;
   const reset = h('button', {
     type: 'button', class: 'linkbtn', hidden: true,
     onclick: () => { rememberRuntime(null); setFilters(CLEAR_QUICK); },
@@ -45,6 +54,7 @@ export function filterBar({ time = false } = {}) {
       timeCtl ? timeCtl.chip : h('fieldset', { class: 'seg' }, h('legend', { class: 'sr-only', text: 'Length' }), runtimeInputs.map(([, l]) => l)),
       eraCtl.chip,
       watchlist,
+      sagaChip,
       reset),
     timeCtl?.note);
 
@@ -127,8 +137,19 @@ export function filterBar({ time = false } = {}) {
     timeCtl?.sync(f);
     for (const [input] of runtimeInputs) input.checked = input.value === String(f.rt ?? '');
     watchlist.setAttribute('aria-pressed', String(f.wl));
-    reset.hidden = !hasQuickFilters(f);
+    if (sagaChip) {
+      sagaChip.setAttribute('aria-pressed', String(f.saga));
+      sagaChip.hidden = !f.saga && !sagaFilms;
+    }
+    reset.hidden = !(hasQuickFilters(f) || (sagaChip && f.saga));
   }
 
-  return { el, sync };
+  // How many films "Complete a saga" would offer under the other filters (null: unknown, keep the chip as it is).
+  function sagaCount(n) {
+    if (!sagaChip || n == null) return;
+    sagaFilms = n;
+    sagaChip.hidden = !state?.saga && !n;
+  }
+
+  return { el, sync, sagaCount };
 }

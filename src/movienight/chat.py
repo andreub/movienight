@@ -32,7 +32,7 @@ from typing import Any, AsyncIterator
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from . import library, queries, tags as lbtags
+from . import completion, library, queries, tags as lbtags
 from .chat_backends import AnthropicBackend, OpenAIBackend, Usage
 
 log = logging.getLogger("movienight.chat")
@@ -55,6 +55,19 @@ def _load_context(request: Request) -> tuple[Any, dict]:
     except Exception:  # noqa: BLE001 - dismissals are a nicety
         dismissed = {}
     return st, dismissed
+
+
+def _completions_connect(request: Request):
+    """A connection factory for list_completions, or None when the completionist is off (MOVIENIGHT_COMPLETIONIST=0):
+    the tool is then neither offered nor run."""
+    cfg = getattr(request.app.state, "cfg", None)
+    if cfg is None or not getattr(cfg, "completionist", False):
+        return None
+    return request.app.state.engine._connect
+
+
+def _completions(st, conn, kind: str | None, limit: int) -> dict:
+    return completion.chat_overview(st, conn, kind=kind, limit=limit)
 
 
 def _filter_cands(st, dismissed: dict, *, genres, max_runtime, min_year, max_year, watchlist_only,
@@ -412,11 +425,40 @@ TOOLS: list[dict] = [
     },
 ]
 
+# Offered only with the completionist on (TOOLS_COMPLETIONIST), just before recommend.
+COMPLETION_KINDS = ("collection", "franchise", "list", "director", "actor")
+LIST_COMPLETIONS = {
+    "name": "list_completions",
+    "description": (
+        "The sagas, franchises, canonical lists (e.g. Best Picture winners) and director/actor filmographies the user "
+        "has started but not finished, best first (new releases and the ones they rated highest lead). Each has "
+        "seen/total, a short reason, and the next films to watch: those in the library first (with movie_id, usable "
+        "with get_movie and recommend), then ones not in the library (never recommend those). Use it when the user "
+        "wants to continue or finish a saga, series or someone's films."
+    ),
+    "eager_input_streaming": True,
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "enum": list(COMPLETION_KINDS),
+                     "description": "Only this kind: collection (sagas, incl. trilogies), franchise, list, director, actor."},
+            "limit": {"type": "integer", "description": f"1-{completion.CHAT_GROUPS_MAX}, default {completion.CHAT_GROUPS}."},
+        },
+    },
+}
+TOOLS_COMPLETIONIST: list[dict] = TOOLS[:-1] + [LIST_COMPLETIONS] + TOOLS[-1:]
+
+
+def tools_for(completionist: bool) -> list[dict]:
+    return TOOLS_COMPLETIONIST if completionist else TOOLS
+
+
 TOOL_LABELS = {
     "search_library": "Searching your library…",
     "get_movie": "Checking film details…",
     "get_taste_profile": "Looking at your taste…",
     "list_tags": "Checking your tags…",
+    "list_completions": "Checking the sagas you started…",
     "recommend": "Picking your films…",
 }
 
@@ -548,6 +590,18 @@ def tool_list_tags(args: dict, st, dismissed: dict) -> dict:
     return {"families": fams} if fams else {"families": [], "note": "The user has no tagged diary entries."}
 
 
+def tool_list_completions(args: dict, st, dismissed: dict, conn) -> dict:
+    kind = args.get("kind")
+    if kind is not None and kind not in COMPLETION_KINDS:
+        raise ToolError(f"Unknown kind {kind!r}. Use one of: {', '.join(COMPLETION_KINDS)}.")
+    limit = _int(args.get("limit"), 1, completion.CHAT_GROUPS_MAX) or completion.CHAT_GROUPS
+    out = _completions(st, conn, kind, limit)
+    if not out["groups"]:
+        out["note"] = ("Nothing of this kind in progress." if kind else
+                       "Nothing in progress: the user has not started a saga, list or filmography, or finished them all.")
+    return out
+
+
 class ToolError(Exception):
     """Raised by a tool to return an is_error tool_result to the model."""
 
@@ -583,22 +637,33 @@ def tool_recommend(args: dict, st, dismissed: dict) -> Outcome:
 _TOOL_FUNCS = {"search_library": tool_search_library, "get_movie": tool_get_movie,
                "get_taste_profile": tool_get_taste_profile, "list_tags": tool_list_tags,
                "recommend": tool_recommend}
+# tools that read the database: run with a connection, and only known when run_tool gets `connect`
+_CONN_TOOLS = {"list_completions": tool_list_completions}
 
 
-def run_tool(name: str, args: Any, st, dismissed: dict) -> Outcome:
-    """Synchronous; run in a thread. Never raises."""
-    fn = _TOOL_FUNCS.get(name)
+def run_tool(name: str, args: Any, st, dismissed: dict, connect=None) -> Outcome:
+    """Synchronous; run in a thread. Never raises. `connect`: a connection factory for the database tools
+    (list_completions); without it they are unknown, as when the completionist is off."""
+    fn = _TOOL_FUNCS.get(name) or (_CONN_TOOLS.get(name) if connect else None)
     if fn is None:
         return Outcome(f"Unknown tool {name!r}.", True)
     if not isinstance(args, dict):
         return Outcome("Tool input must be a JSON object.", True)
+    conn = None
     try:
-        res = fn(args, st, dismissed)
+        if name in _CONN_TOOLS:
+            conn = connect()
+            res = fn(args, st, dismissed, conn)
+        else:
+            res = fn(args, st, dismissed)
     except ToolError as e:
         return Outcome(str(e), True)
     except Exception as e:  # noqa: BLE001
         log.warning("tool %s failed: %s", name, type(e).__name__)
         return Outcome("The tool failed unexpectedly. Try something simpler.", True)
+    finally:
+        if conn is not None:
+            conn.close()
     if isinstance(res, Outcome):
         return res
     return Outcome(json.dumps(res, ensure_ascii=False, separators=(",", ":"), default=str))
@@ -676,7 +741,8 @@ async def _loop(request: Request, history: list[dict]) -> AsyncIterator[tuple[st
             yield "text", {"delta": budget_message(budget)}
             return
     backend = make_backend(model)
-    backend.start(SYSTEM_PROMPT, TOOLS, list(history))
+    connect = _completions_connect(request)
+    backend.start(SYSTEM_PROMPT, tools_for(connect is not None), list(history))
     counted = False
     st, dismissed = await asyncio.to_thread(_load_context, request)
     json_failures = 0
@@ -722,7 +788,7 @@ async def _loop(request: Request, history: list[dict]) -> AsyncIterator[tuple[st
             for c in calls:
                 yield "tool", {"name": c.name, "label": TOOL_LABELS.get(c.name, "Working…")}
             outcomes = await asyncio.gather(*(
-                asyncio.to_thread(run_tool, c.name, c.args, st, dismissed) if c.args is not None
+                asyncio.to_thread(run_tool, c.name, c.args, st, dismissed, connect) if c.args is not None
                 else asyncio.sleep(0, Outcome(BAD_ARGS, True)) for c in calls))
             results = []
             for c, o in zip(calls, outcomes):

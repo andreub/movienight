@@ -148,9 +148,19 @@ exception is the canonical lists, which ship with the app.
     If `MOVIENIGHT_PUSH_SEEN` had set it played on Plex or Jellyfin, that is undone too, at once.
   - **Seen on Letterboxd** or **seen on Plex/Jellyfin** (played there, not by MovieNight): shown as
     such, with no unmark. It can only be unmarked where it was logged or played.
+- **Elsewhere in the app**:
+  - **Detail sheet**: a film in a started saga or list shows one quiet line per group, e.g. "Part of
+    Star Wars · 4 of 11" (two at most, best first; a director's or actor's films only when it is in
+    neither). The line opens that group on Complete (`#/complete?group=<key>`): scrolled to, a saga
+    unfolded in full. `/api/movies/{id}` and `/api/films/{tmdb_id}` return it as `groups`.
+  - **Tonight**: a "Complete a saga" chip beside Watchlist only suggests the next film of each started
+    saga that is in your library, each naming its saga ("Next in Before · 1 of 3 seen"). It shows only
+    when there is such a film (`/api/pick?complete=true`; `saga_count` in every pick).
+  - **Ask**: the assistant's `list_completions` tool lists the groups in progress, with progress and
+    the next films to watch (in the library first), optionally of one kind.
 - **Off switch**: `MOVIENIGHT_COMPLETIONIST=0` hides the tab (browser and TV), answers 404 on every
-  `/api/completions*` route and skips the TMDB lookups above (`features.completionist` in
-  `/api/status` tells the frontend).
+  `/api/completions*` route, drops the detail line, the Tonight chip and the chat tool, and skips the
+  TMDB lookups above (`features.completionist` in `/api/status` tells the frontend).
 - **Data**: the TMDB sync stores each film's collection, keyword ids and director/cast ids with its
   details (details stored before these fields existed are backfilled once). It then caches, for 30
   days:

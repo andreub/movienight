@@ -7,6 +7,7 @@ import { endsAt } from '../clock.js';
 import { initialRuntime, rememberRuntime } from '../timecontrol.js';
 import { voteButtons, setVote, voteOf } from '../vote.js';
 import { setSeen, setSeenVote, isSeen } from '../seen.js';
+import { partOf } from './detail.js';
 import { serverName } from '../status.js';
 import { seenMsg, seenAskMsg, seenVoteMsg, unseenMsg, voteMsg, hideMsg } from '../messages.js';
 
@@ -20,7 +21,7 @@ function hintDismissed() {
 export const title = 'Tonight';
 
 export function mount(root, route) {
-  const bar = filterBar({ time: true });
+  const bar = filterBar({ time: true, saga: true });
   const stage = h('div', { class: 'tonight__stage' });
   const hint = h('div', { class: 'tonight__hint' });
   root.append(
@@ -63,6 +64,7 @@ export function mount(root, route) {
       const res = await api.pick({ ...apiFilters(filters), exclude: seen });
       if (token !== req) return;
       data = res;
+      bar.sagaCount(res.saga_count);
       seen = [...new Set([...seen, res.pick.id])].slice(-60);
       render(mode);
     } catch (err) {
@@ -108,7 +110,9 @@ export function mount(root, route) {
             h('h2', { class: 'pick__title', id: 'pick-title', text: m.title }),
             matchStub(m.match)),
           meta(m),
-          reasonList(m.reasons, 'pick__reasons'),
+          // "Part of X · n of N" for a film in a group (the saga chip's "Next in X" reason says the same: one line only)
+          partOf(m.groups?.length ? [m.groups.find((g) => g.key === m.saga?.key) || m.groups[0]] : null, 'pick__part'),
+          reasonList(m.groups?.length && m.saga ? m.reasons.filter((r) => !(r.kind === 'trophy' && r.text.startsWith('Next in '))) : m.reasons, 'pick__reasons'),
           h('div', { class: 'pick__actions' },
             playControl(m, 'pick__play'),
             shuffleBtn,
@@ -272,7 +276,7 @@ export function mount(root, route) {
   }
 
   function empty() {
-    const filtered = hasQuickFilters(filters);
+    const filtered = hasQuickFilters(filters) || filters.saga;
     return h('div', { class: 'state' },
       h('div', { class: 'state__art', 'aria-hidden': 'true' }, genPoster({ title: 'Nothing playing', year: null })),
       h('p', { class: 'state__title', text: filtered ? 'Nothing matches these filters' : 'No picks yet' }),

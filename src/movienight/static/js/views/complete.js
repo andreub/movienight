@@ -9,8 +9,10 @@
 // the photo of the person on the card. Kind chips filter both layouts. Finished and hidden groups stay folded at the bottom.
 // Two layouts: this "List" and "Screen" (completetv.js, one saga per screen). A toggle in the header switches
 // between them in place and the browser remembers the choice; the TV app always gets Screen, with no toggle.
+// `#/complete?group=<key>` (a film's "Part of X" line) shows that group: its kind (or All) is picked for this visit,
+// and the List scrolls to its card (a saga unfolded in full) with a short glow, the Screen layout opens on it.
 import { api } from '../api.js';
-import { go } from '../state.js';
+import { go, GROUP_EVENT } from '../state.js';
 import { h, fill, icon, poster, hueOf, errorBox, toast, announce, quoted } from '../dom.js';
 import { TV } from '../tvnav.js';
 import { mountTv } from './completetv.js';
@@ -179,14 +181,18 @@ function layoutToggle(layout, onPick) {
   return h('fieldset', { class: 'seg seg--small complete__layout' }, h('legend', { class: 'sr-only', text: 'Layout' }), items);
 }
 
-export function mount(root) {
-  if (TV) return mountTv(root); // the Android TV app: always one saga per screen, no toggle
+// The kind chip that lists a group, from its key ("series-357318" -> Sagas).
+export const kindOfKey = (key) => chipKind(String(key || '').split('-')[0]);
+
+export function mount(root, route) {
+  if (TV) return mountTv(root, { target: route?.group }); // the Android TV app: always one saga per screen, no toggle
   let inner = null;
   function render(layout, { refocus = false } = {}) {
     inner?.destroy();
     root.replaceChildren();
     const toggle = layoutToggle(layout, (next) => { storeLayout(next); render(next, { refocus: true }); });
-    inner = layout === 'screen' ? mountTv(root, { web: true, toolbar: toggle }) : mountList(root, toggle);
+    const target = refocus ? null : route?.group;
+    inner = layout === 'screen' ? mountTv(root, { web: true, toolbar: toggle, target }) : mountList(root, toggle, target);
     if (refocus) toggle.querySelector('input:checked')?.focus({ preventScroll: true });
   }
   render(storedLayout());
@@ -196,13 +202,16 @@ export function mount(root) {
   };
 }
 
-function mountList(root, toggle) {
+function mountList(root, toggle, group = null) {
   let kind = storedKind();
+  let target = group; // a group to show once loaded (see mount)
+  let shownTarget = group;
   let alive = true;
   let token = 0;
   let data = null;
   const expanded = new Set(); // keys shown in full ("Show all"), kept across reloads
   const observers = new Set();
+  let renders = []; // each card's tile layout, run at once on paint so heights are final before scrolling to a group
 
   const chips = KINDS.map(([id, label]) => h('button', {
     type: 'button', class: 'chip chip--small', 'aria-pressed': String(id === kind), 'data-kind': id || '',
@@ -264,6 +273,7 @@ function mountList(root, toggle) {
     ro.observe(grid);
     observers.add(ro);
 
+    renders.push(render);
     const li = h('li', { class: 'cgroup', 'data-key': g.key },
       h('div', { class: `cgroup__head${person ? ' cgroup__head--person' : ''}` },
         person ? face(g, 'cgroup__face') : null,
@@ -281,7 +291,7 @@ function mountList(root, toggle) {
   }
 
   function row(g, { action } = {}) {
-    return h('li', { class: 'crow' },
+    return h('li', { class: 'crow', 'data-key': g.key },
       h('span', { class: 'crow__icon' }, icon(g.complete ? 'trophy' : 'eyeoff')),
       h('span', { class: 'crow__name', text: g.name }),
       h('span', { class: 'crow__meta', text: g.complete ? `All ${g.total} seen` : `${g.seen} of ${g.total}` }),
@@ -320,7 +330,9 @@ function mountList(root, toggle) {
     paintChips();
     disconnect();
     const groups = data.groups;
+    renders = [];
     fill(list, groups.map(card));
+    for (const r of renders) r();
     if (!groups.length) {
       const any = data.completed.length || data.hidden_count;
       fill(status, h('div', { class: 'state' },
@@ -346,8 +358,25 @@ function mountList(root, toggle) {
     fill(folds, parts);
   }
 
+  // The target group's card (or its row among the completed ones, folded open), scrolled to with a short glow.
+  function reveal(key) {
+    const el = [...root.querySelectorAll('[data-key]')].find((x) => x.dataset.key === key);
+    if (!el) return;
+    const fold = el.closest('details');
+    if (fold) fold.open = true;
+    el.classList.add('is-target');
+    // Jump (a smooth scroll over a long list drifts as cards above settle), then correct once if layout moved.
+    const place = () => el.scrollIntoView({ block: 'start', behavior: 'auto' });
+    requestAnimationFrame(() => {
+      place();
+      setTimeout(() => { if (alive && Math.abs(el.getBoundingClientRect().top - parseFloat(getComputedStyle(el).scrollMarginTop || '0')) > 4) place(); }, 300);
+    });
+  }
+
   async function load() {
     const t = ++token;
+    const want = target;
+    if (want && kind && kind !== kindOfKey(want)) { kind = null; paintChips(); } // for this visit only (not stored)
     if (!data) fill(list, Array.from({ length: 3 }, () => h('li', { class: 'cgroup cgroup--skeleton', 'aria-hidden': 'true' },
       h('div', { class: 'skel skel--line skel--short' }), h('div', { class: 'skel skel--line' }),
       h('ul', { class: 'cgrid cgrid--skeleton' }, Array.from({ length: 8 }, () => h('li', { class: 'cfilm' }, h('div', { class: 'poster skel' })))))));
@@ -360,7 +389,9 @@ function mountList(root, toggle) {
         return load();
       }
       data = r;
+      if (want && data.groups.find((g) => g.key === want)?.ordered) expanded.add(want); // a saga in full
       paint();
+      if (want) { target = null; reveal(want); }
     } catch (err) {
       if (alive && t === token) { fill(list); fill(status, errorBox(err, load)); }
     }
@@ -372,8 +403,16 @@ function mountList(root, toggle) {
   paintChips();
   load();
 
+  // The "Part of" line asks for its group even when it is the one already shown (scrolled away from since).
+  const onGroup = (e) => { shownTarget = target = e.detail; load(); };
+  window.addEventListener(GROUP_EVENT, onGroup);
+
   return {
-    update() {},
-    destroy() { alive = false; disconnect(); window.removeEventListener('movienight:marked', onSeen); },
+    update(route) {
+      if (!route.group || route.group === shownTarget) return;
+      shownTarget = target = route.group;
+      load();
+    },
+    destroy() { alive = false; disconnect(); window.removeEventListener('movienight:marked', onSeen); window.removeEventListener(GROUP_EVENT, onGroup); },
   };
 }

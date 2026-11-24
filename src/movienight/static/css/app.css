@@ -898,6 +898,21 @@ html.kb-open .composer { bottom: var(--kb); padding-bottom: 8px; }
 .detail__seen { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; color: var(--ok); font-weight: 700; }
 .detail__seen .linkbtn { font-weight: 400; }
 
+/* "Part of Star Wars · 4 of 11": one quiet line per started group, each opening it on Complete */
+.detail__parts { display: grid; gap: 2px; margin: -8px 0 0; padding: 0; list-style: none; }
+.detail__part {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 36px; max-width: 100%;
+  color: var(--muted); text-decoration: none;
+}
+.detail__part .icon { flex: none; width: 1.05em; height: 1.05em; }
+.detail__part-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail__part strong { color: var(--paper); font-weight: 700; }
+.detail__part-n { flex: none; }
+.detail__part-n::before { content: "· "; }
+.pick__parts, .pick__part { margin: 0; }
+.pick__part { animation: rise .55s var(--ease) both; animation-delay: .08s; }
+.detail__part:hover strong, .detail__part:focus-visible strong { text-decoration: underline; text-underline-offset: .18em; }
+
 .tonight__hint:not(:empty) { padding: 0 var(--gutter); margin-bottom: 14px; }
 @media (min-width: 960px) { .tonight__hint:not(:empty) { max-width: calc(var(--maxw) - 64px); margin: 0 auto 14px; width: 100%; } }
 .note--hint { align-items: center; flex-wrap: wrap; }
@@ -1001,6 +1016,14 @@ main > .complete { max-width: 1040px; }
 }
 @media (max-width: 479px) { .cgroup { padding: 16px 14px 14px; } }
 .cgroup.is-leaving { opacity: 0; transform: scale(.98); }
+/* the group a film's "Part of" line opened: scrolled to, below the sticky bar, with a short glow */
+.cgroup, .crow { scroll-margin-top: 84px; }
+.cgroup.is-target, .crow.is-target { animation: target-glow 2.4s var(--ease) both; }
+@keyframes target-glow {
+  0%, 40% { box-shadow: 0 0 0 2px var(--bulb); }
+  100% { box-shadow: 0 0 0 2px transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .cgroup.is-target, .crow.is-target { animation: none; box-shadow: 0 0 0 2px var(--bulb); } }
 .cgroup--skeleton { gap: 10px; }
 .cgroup--skeleton .skel--line { margin: 0; }
 .cgroup__head { display: flex; align-items: flex-start; gap: 8px; }
