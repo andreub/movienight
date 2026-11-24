@@ -1,6 +1,7 @@
 import { api, getChatStatus } from '../api.js';
 import { h, fill, icon, num, ago, toast, errorBox } from '../dom.js';
 import { subscribe, refreshStatus, STAGES, syncPercent, serverName, serverStatus } from '../status.js';
+import { seerrAccountLine } from '../seerr.js';
 
 export const title = 'Setup';
 
@@ -337,6 +338,7 @@ function syncStep() {
   const s = step(3, 'Sync', 'MovieNight refreshes everything every few hours. Run it now after a big change.');
   const body = h('div');
   s.content.append(body);
+  let seerrLine = null; // this user's Seerr account (made once, kept across re-renders)
   async function start(e) {
     e.currentTarget.disabled = true;
     try {
@@ -371,7 +373,8 @@ function syncStep() {
           h('div', null, h('dt', { text: serverName(st) }), h('dd', { text: `read ${ago(serverStatus(st).last_sync)}` })),
           h('div', null, h('dt', { text: 'Letterboxd' }), h('dd', { text: `read ${ago(st.letterboxd?.last_sync)}` })),
           serverStatus(st).seen_pushed != null ? h('div', null, h('dt', { text: 'Seen marks' }), h('dd', { text: `${num(serverStatus(st).seen_pushed)} pushed to ${serverName(st)}` })) : null,
-          tmdb.configured ? h('div', null, h('dt', { text: 'TMDB' }), h('dd', { text: `details for ${num(tmdb.enriched)} films${tmdb.pending ? `, ${num(tmdb.pending)} to go` : ''}` })) : null),
+          tmdb.configured ? h('div', null, h('dt', { text: 'TMDB' }), h('dd', { text: `details for ${num(tmdb.enriched)} films${tmdb.pending ? `, ${num(tmdb.pending)} to go` : ''}` })) : null,
+          st.features?.seerr ? h('div', null, h('dt', { text: 'Seerr' }), seerrLine ??= seerrAccountLine()) : null),
         tmdb.configured ? null : h('p', { class: 'note' }, icon('info'),
           h('span', null, `TMDB is not set up, so recommendations use ${serverName(st)} metadata only and are less precise. Add `,
             h('code', { text: 'MOVIENIGHT_TMDB_TOKEN' }), ' to the server environment to enable it.')));

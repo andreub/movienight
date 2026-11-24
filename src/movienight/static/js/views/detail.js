@@ -8,6 +8,7 @@ import { setSeen, setSeenVote, isSeen, OUTCOMES } from '../seen.js';
 import { parse, href, showGroup } from '../state.js';
 import { serverName } from '../status.js';
 import { TV } from '../tvnav.js';
+import { seerrEnabled, seerrState, requestFilm, stateChip, CHIP } from '../seerr.js';
 import { seenMsg, seenVoteMsg, unseenMsg, voteMsg, hideMsg, neverMsg, unhideMsg, UNMARK_LABEL } from '../messages.js';
 
 const dialog = document.getElementById('detail');
@@ -218,10 +219,30 @@ const outcomeOf = (f) => {
 };
 
 // A film in the library also gets its Play sources (from the library entry).
+// With Seerr set up, its request state is asked for alongside (cached a few minutes; a failure means no button).
 async function loadFilm(tmdbId) {
-  const f = await api.film(tmdbId);
+  const [f, request] = await Promise.all([api.film(tmdbId), seerrEnabled() ? seerrState(tmdbId).catch(() => null) : null]);
   if (f.movie_id) f.plex = await api.movie(f.movie_id).then((m) => m.plex || [], () => []);
+  f.request = f.in_library ? null : request;
   return f;
+}
+
+// Not in the library: "Request" (Seerr) in place of the disabled Play, or the request's state once there is one.
+function notInLibrary(f) {
+  if (f.request === 'none') {
+    return h('button', {
+      type: 'button', class: 'btn btn--primary', 'data-act': 'request', title: 'Ask Seerr to get this film',
+      onclick: async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        const state = await requestFilm(f);
+        if (state && currentId === `tmdb:${f.tmdb_id}`) load({ quiet: true, focus: '[data-act="seen"], .votes__btn' });
+        else btn.disabled = false;
+      },
+    }, icon('download'), 'Request');
+  }
+  if (f.request && CHIP[f.request]) return stateChip(f.request);
+  return h('button', { type: 'button', class: 'btn btn--primary', disabled: true }, icon('play'), 'Not in your library');
 }
 
 let filmBusy = false;
@@ -316,8 +337,7 @@ function renderFilm(f) {
           runtime(f.runtime) ? h('span', { text: runtime(f.runtime) }) : null,
           f.genres?.length ? h('span', { text: f.genres.join(', ') }) : null))),
     h('div', { class: 'detail__actions' },
-      f.in_library ? playControl(f)
-        : h('button', { type: 'button', class: 'btn btn--primary', disabled: true }, icon('play'), 'Not in your library'),
+      f.in_library ? playControl(f) : notInLibrary(f),
       !f.seen ? h('button', { type: 'button', class: 'btn btn--ghost', 'data-act': 'seen', title: OUTCOMES[1].label,
         onclick: () => saveFilm(f, true, 0, '.votes__btn--up') }, icon('eye'), 'Seen it') : null,
       markable ? filmVotes(f) : null,

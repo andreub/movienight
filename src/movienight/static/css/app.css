@@ -897,6 +897,12 @@ html.kb-open .composer { bottom: var(--kb); padding-bottom: 8px; }
 
 .detail__seen { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; color: var(--ok); font-weight: 700; }
 .detail__seen .linkbtn { font-weight: 400; }
+/* Seerr request state, in place of the Request button: sized like the buttons beside it, but quiet */
+.reqchip {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 48px; padding: 0 18px;
+  border-radius: var(--r-m); border: 1px dashed var(--line); color: var(--muted); font-weight: 700; white-space: nowrap;
+}
+.reqchip--available { color: var(--ok); }
 
 /* "Part of Star Wars · 4 of 11": one quiet line per started group, each opening it on Complete */
 .detail__parts { display: grid; gap: 2px; margin: -8px 0 0; padding: 0; list-style: none; }
@@ -1073,6 +1079,10 @@ button.cfilm__btn:focus-visible { outline-offset: 3px; border-radius: var(--r-s)
   background: rgb(27 21 48 / .8); color: var(--ok);
 }
 .cfilm__seen .icon { width: 14px; height: 14px; }
+/* Seerr: a missing film requested, on its way or available there (quiet, not the library's gold) */
+.cfilm__badge--req { background: rgb(27 21 48 / .88); color: var(--paper); box-shadow: 0 0 0 1px var(--line), 0 2px 8px rgb(0 0 0 / .35); }
+.cfilm__badge--available { color: var(--ok); }
+@media (max-width: 479px) { .cfilm__badge--req { background: var(--paper); } .cfilm__badge--available { background: var(--ok); } }
 
 /* a run of seen films folded into one poster-sized tile */
 .cfold-tile {
