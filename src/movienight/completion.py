@@ -406,9 +406,10 @@ def _people_groups(conn: sqlite3.Connection, seen: set[int], avail: set[int] = f
             f"SELECT person_id, name, profile_path, json FROM tmdb_person_credits WHERE person_id IN ({marks})",
             sorted(ids))}
     groups = []
+    emitted: set[int] = set()    # people whose director group was kept: they get no actor group
     for kind, field in (("director", "directed"), ("actor", "acted")):
         for pid, _ in want[kind]:
-            if (kind == "actor" and pid in directors) or pid not in rows:
+            if (kind == "actor" and pid in emitted) or pid not in rows:
                 continue
             _, name, profile, js = rows[pid]
             p = json.loads(js or "{}")
@@ -422,6 +423,8 @@ def _people_groups(conn: sqlite3.Connection, seen: set[int], avail: set[int] = f
             n_seen = sum(f["tmdb_id"] in seen for f in films)
             if not n_seen or n_seen == len(films):
                 continue
+            if kind == "director":
+                emitted.add(pid)
             groups.append({"key": f"{kind}-{pid}", "kind": kind, "name": name or p.get("name") or "",
                            "films": _by_date(films), "ordered": False, "person_id": pid,
                            "profile_path": profile or p.get("profile_path")})
