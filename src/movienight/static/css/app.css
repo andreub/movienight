@@ -377,7 +377,12 @@ main > .tonight { max-width: none; }
   width: 100%; padding: 10px; text-align: left;
   background: var(--ink-2); border: 1px solid transparent; border-radius: var(--r-m);
 }
+.alt { position: relative; }
 .alt:hover { border-color: var(--line); }
+.alt__title { padding: 0; background: none; border: 0; color: inherit; font: inherit; font-weight: 700; text-align: left; cursor: pointer; }
+.alt__title::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+.alt__title:focus-visible { outline: none; }
+.alt__title:focus-visible::after { outline: 2px solid var(--paper); outline-offset: 2px; }
 .alt__body { display: grid; gap: 2px; min-width: 0; }
 .alt__title { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .alt__meta { color: var(--muted); font-size: .875rem; }
@@ -916,6 +921,10 @@ html.kb-open .composer { bottom: var(--kb); padding-bottom: 8px; }
 .detail__part-n { flex: none; }
 .detail__part-n::before { content: "· "; }
 .pick__parts, .pick__part { margin: 0; }
+/* on an "Also good tonight" card: the same line, smaller, above the card's stretched link */
+.alt__part { margin: 2px 0 0; min-width: 0; }
+.alt__part li { min-width: 0; }
+.alt__part .detail__part { position: relative; z-index: 1; min-height: 24px; font-size: .8125rem; gap: 6px; }
 .pick__part { animation: rise .55s var(--ease) both; animation-delay: .08s; }
 .detail__part:hover strong, .detail__part:focus-visible strong { text-decoration: underline; text-underline-offset: .18em; }
 
