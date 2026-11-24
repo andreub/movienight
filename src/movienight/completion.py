@@ -25,7 +25,7 @@ import json
 import math
 import re
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from . import library, tmdb
 
@@ -349,7 +349,8 @@ def _raw_groups(conn: sqlite3.Connection, seen: set[int]) -> list[dict]:
 
 def keep_credit(p: dict, seen: set[int], today: str) -> bool:
     """A filmography credit worth listing: released, not a documentary or a TV film, voted on by PERSON_MIN_VOTES
-    people. A film the user has seen always stays (it counts for progress)."""
+    people, unless it came out within the recent window (RECENT_FULL_DAYS), when it has had no time to gather votes.
+    A film the user has seen always stays (it counts for progress)."""
     if p.get("id") in seen:
         return True
     when = p.get("release_date") or ""
@@ -357,6 +358,8 @@ def keep_credit(p: dict, seen: set[int], today: str) -> bool:
         return False
     if PERSON_SKIP_GENRES.intersection(p.get("genre_ids") or []):
         return False
+    if when >= (date.fromisoformat(today) - timedelta(days=RECENT_FULL_DAYS)).isoformat():
+        return True
     return (p.get("vote_count") or 0) >= PERSON_MIN_VOTES
 
 
@@ -547,7 +550,7 @@ def _stars(x: float) -> str:
 
 def score(g: dict, ratings: dict[int, tuple[float, bool]], mu: float, today: date) -> tuple[float, str | None]:
     """The group's rank score and a short "why" for the card. Recency weighs most, then taste, then a film in the
-    library, then the share seen."""
+    library, then the share seen. A New/Recent reason names its film (see `build`, which exposes `reason_film`)."""
     rec, recent = recency(g["films"], today)
     rated = [ratings[f["tmdb_id"]] for f in g["films"] if f["state"] == "seen" and f["tmdb_id"] in ratings]
     t = taste([r for r, _ in rated], mu)
@@ -557,7 +560,7 @@ def score(g: dict, ratings: dict[int, tuple[float, bool]], mu: float, today: dat
     real = [r for r, is_real in rated if is_real]
     if recent is not None:
         fresh = (today - _date(recent["release_date"])).days <= RECENT_FULL_DAYS
-        reason = f"{'New' if fresh else 'Recent'} · {recent['year'] or recent['release_date'][:4]}"
+        reason = f"{'New' if fresh else 'Recent'} {recent['year'] or recent['release_date'][:4]}: {recent['title']}"
     elif t >= 0.25:
         reason = (f"You rated {_stars(sum(real) / len(real))}" if real
                   else "You liked their films" if g.get("kind") in PEOPLE_KINDS else "You liked these")
@@ -599,6 +602,13 @@ def build(st, conn: sqlite3.Connection) -> list[dict]:
     for g in raw:
         d = _decorate(g, seen, avail, backdrops, aff)
         d["score"], d["reason"] = score(d, ratings, mu, today)
+        d["reason_film"] = None
+        if d["reason"] and d["reason"].startswith(("New ", "Recent ")):
+            # the card names this film, so it must be visible: first tile (unordered groups), or kept on show (sagas)
+            film = recency(d["films"], today)[1]
+            d["reason_film"] = film["tmdb_id"]
+            if not d["ordered"]:
+                d["films"] = [film] + [f for f in d["films"] if f is not film]
         out.append(d)
     out.sort(key=lambda g: (g["kind"] in PEOPLE_KINDS, -g["score"], g["name"].lower()))
     st.cache["completion"] = out

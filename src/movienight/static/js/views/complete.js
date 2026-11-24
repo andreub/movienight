@@ -110,7 +110,8 @@ function foldTile(run, onOpen) {
 // The tiles of an ordered group for `cap` slots: every film when it fits; otherwise runs of seen films folded
 // (keeping the neighbours of unseen films, then without them), and cut at `cap` only as a last resort.
 // `open` holds the start index of runs the user unfolded; once one is open the card no longer truncates.
-export function sagaLayout(films, cap, open = new Set()) {
+// `pin` (a tmdb id: the film the card's New/Recent reason names) always stays on show, even when cutting.
+export function sagaLayout(films, cap, open = new Set(), pin = null) {
   const all = films.map((f, i) => ({ film: f, i }));
   if (films.length <= cap && !open.size) return { items: all, cut: 0 };
   let items = all;
@@ -128,7 +129,10 @@ export function sagaLayout(films, cap, open = new Set()) {
     flush();
     if (items.length <= cap || open.size) return { items, cut: 0 };
   }
-  return { items: items.slice(0, cap), cut: items.length - cap };
+  const shown = items.slice(0, cap);
+  const at = items.findIndex((it) => it.film && it.film.tmdb_id === pin);
+  if (at >= cap) shown[cap - 1] = items[at];
+  return { items: shown, cut: items.length - cap };
 }
 
 // Unordered groups (filmographies): unseen films first (the API already ranks them), then the seen ones folded
@@ -242,7 +246,7 @@ function mountList(root, toggle) {
       if (c === cols && !force) return;
       cols = c;
       const cap = expanded.has(g.key) ? Infinity : c * rowsFor(c, g.ordered);
-      const { items, cut } = g.ordered ? sagaLayout(g.films, cap, open) : listLayout(g.films, cap, expanded.has(g.key), open.has('seen'));
+      const { items, cut } = g.ordered ? sagaLayout(g.films, cap, open, g.reason_film) : listLayout(g.films, cap, expanded.has(g.key), open.has('seen'));
       fill(grid, items.map((it) => (it.fold ? foldTile(it.fold, () => { open.add(it.start); render(true); }) : film(it.film))));
       const all = expanded.has(g.key);
       moreBtn.hidden = !cut && !all;
@@ -264,7 +268,7 @@ function mountList(root, toggle) {
             h('span', { class: 'cgroup__kind', text: g.kind === 'director' ? 'Director' : 'Actor' }),
             h('h2', { class: 'cgroup__name', text: g.name }))
           : h('h2', { class: 'cgroup__name', text: g.name }),
-        g.reason ? h('span', { class: 'cgroup__why', text: g.reason }) : null,
+        g.reason ? h('span', { class: 'cgroup__why', text: g.reason, title: g.reason, 'aria-label': g.reason }) : null,
         h('button', { type: 'button', class: 'cgroup__hide', 'aria-label': `Hide ${g.name}`, title: 'Hide', onclick: () => hide(g, li) }, icon('close'))),
       progress(g),
       grid,
