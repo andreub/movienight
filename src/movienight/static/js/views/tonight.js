@@ -137,13 +137,29 @@ export function mount(root, route) {
     return h('section', { class: 'alts', 'aria-labelledby': 'alts-title' },
       h('h2', { class: 'alts__title', id: 'alts-title', text: 'Also good tonight' }),
       h('ul', { class: 'alts__list' }, list.map((m) => h('li', null,
-        h('button', { type: 'button', class: 'alt', onclick: () => go({ movie: m.id }) },
+        // A card, not a button: its "Part of" line is a link of its own. The title's button stretches over the card.
+        h('div', { class: 'alt' },
           poster(m, { cls: 'alt__poster' }),
           h('span', { class: 'alt__body' },
-            h('span', { class: 'alt__title', text: m.title }),
+            h('button', { type: 'button', class: 'alt__title', onclick: () => go({ movie: m.id }), text: m.title }),
             h('span', { class: 'alt__meta' }, [m.year, runtime(m.runtime)].filter(Boolean).join(', '), m.runtime ? ', ' : '', endsAt(m.runtime, { prefix: 'ends ' })),
-            m.reasons?.[0] ? h('span', { class: 'alt__why', text: m.reasons[0].text }) : null),
+            altWhy(m),
+            altPart(m)),
           matchStub(m.match, { size: 'sm' }))))));
+  }
+
+  // The first reason; the saga's "Next in X" says what the "Part of" line below does, so it gives way (as on the hero).
+  function altWhy(m) {
+    const r = (m.groups?.length && m.saga ? m.reasons.filter((x) => !(x.kind === 'trophy' && x.text.startsWith('Next in '))) : m.reasons)?.[0];
+    return r ? h('span', { class: 'alt__why', text: r.text }) : null;
+  }
+
+  // "Part of X · n of N" under a card, one line; the same saga the hero names. Opens it on Complete, not the card.
+  function altPart(m) {
+    const g = m.groups?.length ? m.groups.find((x) => x.key === m.saga?.key) || m.groups[0] : null;
+    const el = partOf(g ? [g] : null, 'alt__part');
+    el?.addEventListener('click', (e) => e.stopPropagation());
+    return el;
   }
 
   function shuffle() {
