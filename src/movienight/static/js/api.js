@@ -155,7 +155,7 @@ export function getPlayers() {
 // AI chat availability, fetched once. Any failure (old backend, network) counts as "off".
 let chatPromise = null;
 export function getChatStatus() {
-  chatPromise ??= api.chatStatus().then((s) => ({ enabled: Boolean(s?.enabled), model: s?.model || '' })).catch(() => ({ enabled: false, model: '' }));
+  chatPromise ??= api.chatStatus().then((s) => ({ ...s, enabled: Boolean(s?.enabled), model: s?.model || '' })).catch(() => ({ enabled: false, model: '' }));
   return chatPromise;
 }
 
