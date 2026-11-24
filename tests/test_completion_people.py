@@ -308,7 +308,7 @@ def test_all_lists_sagas_before_people(people, monkeypatch):
     by = {g["key"]: g for g in r["groups"]}
     assert by["director-525"]["score"] > by["collection-900"]["score"]          # a better score...
     assert [g["key"] for g in r["groups"]] == ["collection-900", "director-525"]  # ...still after the sagas
-    assert r["counts"] == {"collection": 1, "franchise": 0, "series": 0, "director": 1, "actor": 0}
+    assert r["counts"] == {"collection": 1, "franchise": 0, "series": 0, "list": 0, "director": 1, "actor": 0}
     d = people.get("/api/completions", params={"kind": "director"}).json()
     assert [g["key"] for g in d["groups"]] == ["director-525"]
     assert people.post("/api/completions/director-525/hide").json() == {"ok": True}

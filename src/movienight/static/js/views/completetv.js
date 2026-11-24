@@ -12,9 +12,9 @@
 // Directors and actors have no order: their row lists the films to see first, then the seen ones.
 import { api } from '../api.js';
 import { h, fill, icon, poster, hueOf, errorBox, announce, isTyping } from '../dom.js';
-import { openSagaFilm, KINDS, storedKind, storeKind } from './complete.js';
+import { openSagaFilm, KINDS, storedKind, storeKind, chipKind } from './complete.js';
 
-const KIND_LABEL = { collection: 'Saga', franchise: 'Franchise', series: 'Series', director: 'Director', actor: 'Actor' };
+const KIND_LABEL = { collection: 'Saga', franchise: 'Franchise', series: 'Saga', list: 'List', director: 'Director', actor: 'Actor' };
 const STATE_TEXT = { available: 'In your library · OK to open', seen: 'Seen · OK for details', missing: 'Not in your library · OK to mark seen' };
 const STATE_TEXT_WEB = { available: 'In your library · Enter to open', seen: 'Seen · Enter for details', missing: 'Not in your library · Enter to mark seen' };
 
@@ -49,7 +49,7 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
     h('h1', { class: 'sr-only', text: 'Complete' }), stage, nav, h('div', { class: 'ctv__toolbar' }, toolbar, kinds));
   root.append(el);
 
-  const ofKind = (g) => !kind || g.kind === kind;
+  const ofKind = (g) => !kind || chipKind(g.kind) === kind;
   const shownChips = () => chips.filter((c) => !c.hidden);
 
   function paintChips() {
@@ -347,7 +347,7 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
       if (!alive) return;
       everything = r.groups;
       counts = {};
-      for (const g of everything) counts[g.kind] = (counts[g.kind] || 0) + 1;
+      for (const g of everything) counts[chipKind(g.kind)] = (counts[chipKind(g.kind)] || 0) + 1;
       if (kind && !counts[kind]) { kind = null; storeKind(null); } // a remembered kind with nothing left: All
       groups = everything.filter(ofKind);
       paintChips();

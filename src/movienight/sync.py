@@ -510,7 +510,8 @@ class SyncManager:
 
     async def _collections(self, conn) -> None:
         """Completionist data, each item refreshed after its TTL (30 days): collection searches on the stems of
-        the seen films' sagas (franchise siblings), those collections, and the films of series keywords."""
+        the seen films' sagas (franchise siblings), those collections, the films of series keywords, and the orphan
+        candidates of each started saga."""
         def cutoff(days):
             return (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -552,8 +553,41 @@ class SyncManager:
             await self._batches(kws, lambda kw: self.tmdb.keyword_movies(kw[0]),
                                 lambda kw, res: store(f"keyword:{kw[0]}", {"id": kw[0], "name": kw[1], **(res or {})}))
             changed = True
+
+        # orphans: films in no collection that carry a started saga's name (after the collections, which name them)
+        targets = completion.wanted_orphans(conn, seen)
+        phrases = [p for p in sorted(targets, key=str.lower) if completion.orphan_key(p) not in fresh_lookups]
+        if phrases:
+            await self._batches(phrases, lambda p: self._orphans(conn, p, targets[p]),
+                                lambda p, res: store(completion.orphan_key(p), res))
+            changed = True
         if changed:
             self.engine.invalidate()
+
+    async def _orphans(self, conn, phrase: str, targets: list[dict]) -> dict:
+        """One saga name's orphan candidates: a keyword named exactly like it (if it is on few films) and the title
+        search, filtered as far as the hits allow, then the details (own collection, runtime) of at most
+        ORPHAN_MAX_DETAILS of them. At most 3 + ORPHAN_MAX_DETAILS calls."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        want = completion.norm_words(phrase)
+        kw = next((k for k in await self.tmdb.search_keywords(phrase) if completion.norm_words(k["name"]) == want), None)
+        kw_parts: list[dict] = []
+        if kw:
+            res = await self.tmdb.keyword_movies(kw["id"], today)
+            if res["total"] <= completion.ORPHAN_KEYWORD_MAX_TOTAL:
+                kw_parts = res["parts"]
+        hits = await self.tmdb.search_movies(phrase, today)
+        cands = completion.orphan_candidates(phrase, hits, kw_parts, targets, today)
+
+        async def detail(p):
+            row = conn.execute("SELECT json FROM tmdb_details WHERE tmdb_id=?", (p["id"],)).fetchone()
+            d = json.loads(row[0] or "{}") if row else {}
+            if "collection" not in d or not d.get("runtime"):
+                d = await self.tmdb.details(p["id"]) or {}
+            return {**p, "collection_id": (d.get("collection") or {}).get("id"), "runtime": d.get("runtime")}
+
+        films = await asyncio.gather(*(detail(p) for p in cands))
+        return {"phrase": phrase, "keyword_id": kw["id"] if kw else None, "films": list(films)}
 
     async def _people(self, conn) -> None:
         """Completionist filmographies: the film credits of the directors and actors the user has seen several films

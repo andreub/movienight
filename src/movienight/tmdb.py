@@ -130,6 +130,16 @@ class Tmdb:
         return {"total": int(data.get("total_results") or 0),
                 "parts": compact_collection({"parts": data.get("results") or []}, today)["parts"]}
 
+    async def search_keywords(self, query: str) -> list[dict]:
+        """Keywords whose name matches `query` (first page): [{id, name}]."""
+        data = await self.get("/search/keyword", {"query": query})
+        return [{"id": r["id"], "name": r.get("name") or ""} for r in (data or {}).get("results") or [] if r.get("id")]
+
+    async def search_movies(self, query: str, today: str | None = None) -> list[dict]:
+        """Released films matching `query` (first page), shaped like a collection's parts."""
+        data = await self.get("/search/movie", {"query": query, "include_adult": "false"})
+        return compact_collection({"parts": (data or {}).get("results") or []}, today)["parts"]
+
     async def person_credits(self, pid: int) -> dict | None:
         """A person's name, profile photo and film credits (directed, and billed in the top 5). None on 404."""
         raw = await self.get(f"/person/{int(pid)}", {"append_to_response": "movie_credits"})
@@ -160,7 +170,8 @@ def compact_collection(raw: dict, today: str | None = None) -> dict:
         parts.append({"id": p["id"], "title": p.get("title") or p.get("original_title") or "",
                       "year": int(date[:4]) if date[:4].isdigit() else None, "release_date": date,
                       "poster_path": p.get("poster_path"), "backdrop_path": p.get("backdrop_path"),
-                      "vote_count": p.get("vote_count") or 0, "vote_average": p.get("vote_average")})
+                      "vote_count": p.get("vote_count") or 0, "vote_average": p.get("vote_average"),
+                      "genre_ids": [g for g in p.get("genre_ids") or [] if isinstance(g, int)]})
     parts.sort(key=lambda p: (p["release_date"], p["id"]))
     return {"id": raw.get("id"), "name": raw.get("name") or "", "poster_path": raw.get("poster_path"),
             "backdrop_path": raw.get("backdrop_path"), "parts": parts}

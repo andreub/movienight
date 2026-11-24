@@ -5,7 +5,7 @@
 // can be marked seen with a verdict, or unmarked), so it is clear where the
 // gaps fall. When a saga does not fit in a few rows, long runs of seen films fold into a "✓ 7 seen" tile (tap
 // opens it); unseen films and their neighbours always stay. "Show all" appears only if it still overflows.
-// Directors and actors (no order) list unseen films first, then the seen ones folded into one "✓ N seen" tile, with
+// Directors, actors and canonical lists (Best Picture winners, a critics' poll: no order) list unseen films first, then the seen ones folded into one "✓ N seen" tile, with
 // the photo of the person on the card. Kind chips filter both layouts. Finished and hidden groups stay folded at the bottom.
 // Two layouts: this "List" and "Screen" (completetv.js, one saga per screen). A toggle in the header switches
 // between them in place and the browser remembers the choice; the TV app always gets Screen, with no toggle.
@@ -19,7 +19,7 @@ export const title = 'Complete';
 
 // The kind chips, shared with the Screen layout. A chip whose kind has no group is hidden (unless it is the current one).
 export const KINDS = [
-  [null, 'All'], ['collection', 'Sagas'], ['franchise', 'Franchises'], ['series', 'Series'],
+  [null, 'All'], ['collection', 'Sagas'], ['franchise', 'Franchises'], ['list', 'Lists'],
   ['director', 'Directors'], ['actor', 'Actors'],
 ];
 export const PEOPLE = new Set(['director', 'actor']);
@@ -30,7 +30,7 @@ const KIND_KEY = 'movienight.completeKind';
 export function storedKind() {
   try {
     const k = localStorage.getItem(KIND_KEY);
-    return KINDS.some(([id]) => id && id === k) ? k : null;
+    return KINDS.some(([id]) => id && id === chipKind(k)) ? chipKind(k) : null;
   } catch { return null; }
 }
 
@@ -39,9 +39,13 @@ export function storeKind(kind) {
 }
 
 // How many groups a chip stands for, from the API's `counts` (All = every kind).
+// Keyword-detected series ("Cornetto Trilogy") are sagas to the user: they share the Sagas chip.
+export const chipKind = (kind) => (kind === 'series' ? 'collection' : kind);
+
 export function kindCount(counts, id) {
   if (!counts) return null;
-  return id ? counts[id] || 0 : Object.values(counts).reduce((a, b) => a + b, 0);
+  if (!id) return Object.values(counts).reduce((a, b) => a + b, 0);
+  return id === 'collection' ? (counts.collection || 0) + (counts.series || 0) : counts[id] || 0;
 }
 
 // A director's or actor's face (TMDB w185), or their initials on a colour of their own when TMDB has none.
@@ -211,7 +215,7 @@ function mountList(root, toggle) {
   root.append(h('div', { class: 'complete' },
     h('div', { class: 'complete__top' },
       h('div', { class: 'complete__head' }, h('h1', { class: 'page-title', text: 'Complete' }), toggle),
-      h('p', { class: 'lede', text: 'Sagas, franchises and series you have started, then the directors and actors you keep coming back to. New releases and the ones you rated highest come first.' }),
+      h('p', { class: 'lede', text: 'Sagas, franchises and series you have started, the great lists you have dipped into, then the directors and actors you keep coming back to. New releases and the ones you rated highest come first.' }),
       h('div', { class: 'chips chips--scroll complete__kinds', role: 'group', 'aria-label': 'Kind of group' }, chips)),
     status, list, folds));
 
@@ -221,7 +225,7 @@ function mountList(root, toggle) {
       c.setAttribute('aria-pressed', String(id === kind));
       const n = kindCount(data?.counts, id);
       c.querySelector('.chip__count').textContent = n == null ? '' : String(n);
-      c.hidden = Boolean(id) && data?.counts && !data.counts[id] && id !== kind;
+      c.hidden = Boolean(id) && data?.counts && !kindCount(data.counts, id) && id !== kind;
     }
   }
 
@@ -350,7 +354,7 @@ function mountList(root, toggle) {
     try {
       const r = await api.completions({ kind });
       if (!alive || t !== token) return;
-      if (kind && !r.counts?.[kind]) { // a remembered kind with no groups left: back to All
+      if (kind && !kindCount(r.counts, kind)) { // a remembered kind with no groups left: back to All
         kind = null;
         storeKind(null);
         return load();

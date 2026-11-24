@@ -80,6 +80,13 @@ def no_network(request):
     raise AssertionError(f"unexpected network call: {request.url.host}")
 
 
+@pytest.fixture(autouse=True)
+def no_bundled_lists(monkeypatch):
+    """The Completionist's canonical lists (real TMDB ids) stay out of tests that do not set their own."""
+    from movienight import completion
+    monkeypatch.setattr(completion, "bundled_lists", lambda: ())
+
+
 @pytest.fixture
 def client(cfg):
     app = create_app(cfg, transport=httpx.MockTransport(no_network))

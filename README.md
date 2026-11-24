@@ -63,11 +63,12 @@ The RSS feed carries no tags, so new tags arrive with the next export.
 ## Completionist
 
 The **Complete** tab lists the sagas, franchises and series you have started (at least one film
-seen), then the directors and actors you keep coming back to, with your progress ("4 of 9 seen") and what is left. Each film is **seen** (Letterboxd, played
+seen), the canonical lists you have dipped into, then the directors and actors you keep coming back to, with your progress ("4 of 9 seen") and what is left. Each film is **seen** (Letterboxd, played
 on the media server, or marked seen here), **available** (in the library and unwatched: tap it to
 open the film) or **missing** (not in the library, greyed out).
 
-Nothing is hand-written: groups are discovered from your own data and the TMDB cache.
+Nothing is hand-written: groups are discovered from your own data and the TMDB cache. The
+exception is the canonical lists, which ship with the app.
 
 - **Sagas**: the TMDB collection a seen film belongs to.
 - **Franchises**: collections merged when one's stem names the others and most of their films
@@ -75,7 +76,11 @@ Nothing is hand-written: groups are discovered from your own data and the TMDB c
   Siblings are found with a collection search on the stem. Collections with a far less popular
   offshoot (TV films, animated spin-offs), a name without the stem (Venom) or a generic stem
   ("Before", "Matrix") are not merged.
-- **Series**: a TMDB keyword on a seen film whose name ends in a series word, such as
+- **Orphans**: films in no TMDB collection join the started saga or franchise whose name opens their title or follows
+  a colon (Rogue One: A Star Wars Story), or that carry a keyword named like it on few films (Bumblebee), in release
+  order. Animated films (unless the saga is), TV films, documentaries, shorts, same-name remakes, films in another
+  collection and films with under a fifth of the saga's median votes (half, for a keyword alone) stay out.
+- **Series** (shown as sagas, under the Sagas chip): a TMDB keyword on a seen film whose name ends in a series word, such as
   `cornetto trilogy`, expanded to its films with TMDB's discover. Generic keywords ("trilogy",
   "family saga") and keywords on more than 20 films (themes, not series) are skipped. Entries with
   fewer than 20 votes (shorts, fan films) are dropped. A series whose films are all in a saga is
@@ -83,6 +88,16 @@ Nothing is hand-written: groups are discovered from your own data and the TMDB c
 - A director's ordinary filmography, with recurring cast and themes, never becomes a saga. Some
   trilogies have no shared collection or keyword on TMDB (Park Chan-wook's Vengeance trilogy, for
   example), so they do not show up.
+- **Lists**: canonical lists bundled in `src/movienight/data/lists/` (every Academy Award Best
+  Picture winner; the Sight and Sound 2022 critics' poll top 100, with its ranks). A list shows once
+  you have seen one of its films (on Letterboxd, on the media server or marked seen here, in the
+  library or not) and goes to Completed when you have seen them all. No TMDB call at runtime: each
+  file already carries the TMDB ids, posters, votes and genres. Lists have no order of their own and
+  are presented like filmographies (below).
+  - To add or refresh one, keep its `title`, `year`[, `rank`][, `tmdb_id`] TSV in `scripts/lists/`
+    and run `MOVIENIGHT_TMDB_TOKEN=... uv run python scripts/build_list.py scripts/lists/<key>.tsv
+    --key <key> --name "<name>"`. Each row must match TMDB's title and year (±1); anything less
+    exact is printed for review and can be pinned with the `tmdb_id` column.
 - **Directors**: someone who directed at least 3 films you have seen. **Actors**: someone billed in
   the top 5 of at least 4 films you have seen. The 40 of each with the most films seen are looked
   up. A person who qualifies as both shows only as a director.
@@ -101,8 +116,8 @@ Nothing is hand-written: groups are discovered from your own data and the TMDB c
   stay visible, and "Show all" appears only if the card still overflows. Finished groups and hidden
   ones (the × on a card, with undo) stay folded at the bottom.
 - **Order**: each group gets a score, and one quiet hint on its card says why ("New 2026: Title",
-  "You rated ★4.4", "In your library"). In "All", sagas, franchises and series come first and
-  directors and actors after them, each block ordered by score.
+  "You rated ★4.4", "In your library"). In "All", sagas (keyword series included) and franchises come
+  first, then the lists, then directors and actors, each block ordered by score.
   `score = 3 × recency + 1.5 × taste + 0.75 × library + 0.5 × share seen`.
   - *Recency* is 1 when an unseen film came out in the last 18 months, fading to 0 at 5 years.
   - *Taste* compares your ratings of the group's seen films (Letterboxd; an app vote when there is
@@ -113,7 +128,7 @@ Nothing is hand-written: groups are discovered from your own data and the TMDB c
   backdrop of the next film to watch, the name, progress, the hint and the whole saga as a poster
   row. Left and right move through the films, OK opens the side panel of any of them, down and up
   go to the next and previous group.
-- **Kind chips** (All, Sagas, Franchises, Series, Directors, Actors) filter both layouts. A chip whose
+- **Kind chips** (All, Sagas, Franchises, Lists, Directors, Actors) filter both layouts. A chip whose
   kind has no group is hidden, and the browser remembers the choice. In Screen they sit at the top,
   beside the layout toggle, on one line that scrolls sideways on phones. Picking one starts over at
   the first group of that kind ("1 of N"). On the TV, Up on the first group moves to the chips
@@ -147,19 +162,20 @@ Nothing is hand-written: groups are discovered from your own data and the TMDB c
     `/person/{id}?append_to_response=movie_credits` call per person, at most 80 per sync, none when
     nothing is stale).
 - **API**:
-  - `GET /api/completions?kind=collection|franchise|series|director|actor&hidden=true` returns the
+  - `GET /api/completions?kind=collection (also the keyword series)|franchise|series|list|director|actor&hidden=true` returns the
     groups with `films` (each with its `state`), `ordered`, `seen`, `total`, `available`, `next`,
-    `score`, `reason` and `backdrop_url`: sagas first, each block best score first. Sagas are
-    `ordered` (the whole group in release order); filmographies are not (films to see first, ranked,
-    then the seen ones) and add `person_id` and `profile_url`.
+    `score`, `reason` and `backdrop_url`: sagas first, then lists, then people, each block best score
+    first. Sagas are `ordered` (the whole group in release order); filmographies and lists are not
+    (films to see first, ranked, then the seen ones). Filmographies add `person_id` and `profile_url`;
+    films of a ranked list carry their `rank`.
   - `GET /api/completions/{key}` returns one group.
   - `POST` and `DELETE /api/completions/{key}/hide` hide and unhide a group.
   - `GET /api/films/{tmdb_id}` returns a film by TMDB id, in the library or not, with `seen_via`
     (`letterboxd`, `server`, `here`), `can_unmark`, `my_vote` and `movie_id` when it is in the
     library. `POST /api/films/{tmdb_id}/seen` takes `{"seen": true, "vote": 2}` like the library
     route; unmarking a film seen on Letterboxd or played on the server answers 409.
-  - Keys look like `collection-556`, `franchise-spider-man`, `series-357318`, `director-525` and
-    `actor-6193`.
+  - Keys look like `collection-556`, `franchise-spider-man`, `series-357318`,
+    `list-oscars-best-picture`, `director-525` and `actor-6193`.
 
 ## Quick start (Docker)
 
@@ -203,7 +219,7 @@ The UI can run without a backend in mock mode at http://localhost:8080/?mock=1.
 | `MOVIENIGHT_PUSH_SEEN` | off | `1`/`true`/`yes`: marks films you flag "seen it" as played on the media server (writes to that account). `MOVIENIGHT_PLEX_PUSH_SEEN` is the older name and still works |
 | `MOVIENIGHT_LOGIN` | `plex` (Plex), empty (Jellyfin) | Login methods, comma-separated: `plex`, `oidc`, or `none`. See [Login](#login) |
 | `MOVIENIGHT_PLEX_OWNER` | empty | Plex login only: the account id, username or email allowed in; empty = the first sign-in (or the account of the stored token) |
-| `MOVIENIGHT_COMPLETIONIST` | on | The Complete tab (sagas, franchises, series, directors, actors). `0`/`false`/`no`: tab hidden, `/api/completions*` answers 404, and the sync skips the collection, collection-search, keyword and person-credit lookups |
+| `MOVIENIGHT_COMPLETIONIST` | on | The Complete tab (sagas, franchises, series, lists, directors, actors). `0`/`false`/`no`: tab hidden, `/api/completions*` answers 404, and the sync skips the collection, collection-search, keyword and person-credit lookups |
 | `MOVIENIGHT_PORT` | `8080` | Compose only: host port |
 | `TZ` | `Europe/Madrid` | Compose only: container timezone |
 
@@ -413,8 +429,10 @@ network (VPN or a reverse proxy with access control).
 ```
 src/movienight/          FastAPI app, sync jobs, SQLite storage
 src/movienight/static/   Vanilla JS/CSS frontend (no build step)
+src/movienight/data/     Bundled data (Completionist canonical lists)
 tests/                   pytest suite
 scripts/deploy.sh        Deploy to the home server
+scripts/build_list.py    Builds a canonical list from scripts/lists/*.tsv (dev only, needs a TMDB token)
 Dockerfile               Non-root image, read-only root filesystem at runtime
 docker-compose.yml       Local run with a private data volume
 ```

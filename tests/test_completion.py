@@ -89,11 +89,12 @@ def test_compact_collection_sorts_and_drops_unreleased():
     raw = {"id": 5, "name": "Saga Collection", "parts": [
         {"id": 3, "title": "Three", "release_date": "2030-01-01"}, {"id": 2, "title": "Two", "release_date": "2010-01-01"},
         {"id": 4, "title": "Four", "release_date": ""}, {"id": 1, "title": "One", "release_date": "2005-01-01",
-                                                          "vote_count": 10, "vote_average": 7.5}]}
+                                                          "vote_count": 10, "vote_average": 7.5, "genre_ids": [16, 12]}]}
     c = tmdb.compact_collection(raw, today="2026-11-22")
     assert [p["id"] for p in c["parts"]] == [1, 2]
     assert c["parts"][0] == {"id": 1, "title": "One", "year": 2005, "release_date": "2005-01-01", "poster_path": None,
-                             "backdrop_path": None, "vote_count": 10, "vote_average": 7.5}
+                             "backdrop_path": None, "vote_count": 10, "vote_average": 7.5, "genre_ids": [16, 12]}
+    assert c["parts"][1]["genre_ids"] == []
 
 
 def test_migrations_12_13_tables(cfg):
@@ -201,6 +202,8 @@ async def test_discovery_sync_fetches_once_ttl_and_no_loop(tmp_path):
             return httpx.Response(200, json={"total_results": 2, "results": [
                 {"id": 1, "title": "A", "release_date": "2000-01-01", "vote_count": 50},
                 {"id": 9, "title": "Z", "release_date": "2004-01-01", "vote_count": 60}]})
+        if path in ("/3/search/keyword", "/3/search/movie"):      # orphans of the started sagas: none
+            return httpx.Response(200, json={"results": []})
         if path.startswith("/3/collection/"):
             cid = int(path.rsplit("/", 1)[1])
             if cid == 78:
@@ -215,14 +218,15 @@ async def test_discovery_sync_fetches_once_ttl_and_no_loop(tmp_path):
 
     run = _runner(cfg, handler)
     # details: only 3 (backfill); search: the distinctive stem; collections: 77 (seen), 79 (search hit whose
-    # name carries the stem; not 80), 78 (backfilled film 3, a 404); discover: the series keyword only
+    # name carries the stem; not 80), 78 (backfilled film 3, a 404); discover: the series keyword only; orphan
+    # searches on the names of the two started sagas (C77, C79)
     assert await run() == ["/3/collection/77", "/3/collection/78", "/3/collection/79", "/3/discover/movie",
-                           "/3/movie/3", "/3/search/collection"]
+                           "/3/movie/3", "/3/search/collection"] + ["/3/search/keyword"] * 2 + ["/3/search/movie"] * 2
     with db.session(cfg.db_path) as c:
         rows = {r[0]: json.loads(r[1]) for r in c.execute("SELECT collection_id, json FROM tmdb_collections")}
         lookups = {r[0]: json.loads(r[1]) for r in c.execute("SELECT key, json FROM tmdb_lookups")}
     assert rows[78] == {} and [p["id"] for p in rows[77]["parts"]] == [1, 9]
-    assert set(lookups) == {"collsearch:web-slinger", "keyword:5001"}
+    assert set(lookups) == {"collsearch:web-slinger", "keyword:5001", "orphans:c77", "orphans:c79"}
     assert lookups["keyword:5001"]["name"] == "pint trilogy" and lookups["keyword:5001"]["total"] == 2
     assert [p["id"] for p in lookups["keyword:5001"]["parts"]] == [1, 9]
     assert await run() == []                      # nothing pending: no refetch loop
@@ -279,7 +283,7 @@ def test_groups_discovered_dedupe_and_ranking(cc, monkeypatch):
             "series-5002", "series-5003",                                # a theme; inside collection 900
             "collection-940", "collection-950", "collection-999"}        # not started, too small, 404
     assert not gone & set(keys + [g["key"] for g in r["completed"]])
-    assert r["counts"] == {"collection": 3, "franchise": 1, "series": 1, "director": 0, "actor": 0}
+    assert r["counts"] == {"collection": 3, "franchise": 1, "series": 1, "list": 0, "director": 0, "actor": 0}
     assert r["hidden"] == [] and r["hidden_count"] == 0
 
     fr = next(g for g in r["groups"] if g["key"] == "franchise-web-slinger")
@@ -316,6 +320,10 @@ def test_long_saga_returns_every_film(cc):
 def test_kind_filter(cc):
     r = cc.get("/api/completions", params={"kind": "series"}).json()
     assert [g["key"] for g in r["groups"]] == ["series-5001"] and r["completed"] == []
+    # the Sagas chip (kind=collection) also holds the keyword series
+    s = cc.get("/api/completions", params={"kind": "collection"}).json()
+    assert {"collection-960", "collection-900", "series-5001"} <= {g["key"] for g in s["groups"]}
+    assert "franchise-web-slinger" not in {g["key"] for g in s["groups"]}
     assert cc.get("/api/completions", params={"kind": "curated"}).status_code == 422
 
 
@@ -437,3 +445,122 @@ async def test_collection_parts_without_backdrop_refetched_once(tmp_path):
     run = _runner(cfg, handler)
     assert await run() == ["/3/collection/77"]           # stored before parts carried backdrop_path
     assert await run() == []                             # a null backdrop is stored: no refetch loop
+
+
+# ---------------------------------------------------------------- canonical lists
+
+def lf(tid, year, vc=1000, va=7.0, rank=None):
+    f = {"tmdb_id": tid, "title": f"Film {tid}", "year": year, "poster_path": f"/l{tid}.jpg",
+         "release_date": f"{year}-03-01", "vote_count": vc, "vote_average": va, "genre_ids": [18]}
+    return f | ({"rank": rank} if rank else {})
+
+
+# seeded: 101 and 202 are seen on Letterboxd only (not in the library); 111 and 115 are unwatched library films
+LISTS = (
+    {"key": "best-ever", "name": "Best Ever", "ordered": False, "films": [
+        lf(9702, 1950, vc=50, va=6.0, rank=4), lf(101, 2015, rank=1), lf(9701, 1960, vc=9000, va=8.5, rank=2),
+        lf(111, 2016, rank=2)]},
+    {"key": "unstarted", "name": "Unstarted", "ordered": False, "films": [lf(9801, 1970), lf(115, 1975)]},
+    {"key": "all-done", "name": "All Done", "ordered": False, "films": [lf(101, 2015), lf(202, 2019)]},
+)
+
+
+@pytest.fixture
+def lists(cc, monkeypatch):
+    monkeypatch.setattr(completion, "bundled_lists", lambda: LISTS)
+    cc.app.state.engine.invalidate()
+    return cc
+
+
+def test_list_appears_once_a_film_is_seen(lists):
+    r = lists.get("/api/completions").json()
+    keys = [g["key"] for g in r["groups"]]
+    assert "list-best-ever" in keys and "list-unstarted" not in keys
+    assert [g["key"] for g in r["completed"]] == ["collection-970", "list-all-done"]    # seen on Letterboxd only
+    assert r["counts"]["list"] == 2
+    with db.session(lists.cfg.db_path) as c:                          # marked seen here, outside the library
+        c.execute("INSERT INTO seen(key, created_at) VALUES('tmdb:9801', '2026-01-01T00:00:00Z')")
+    lists.app.state.engine.invalidate()
+    g = lists.get("/api/completions/list-unstarted").json()
+    assert (g["kind"], g["seen"], g["total"], g["available"]) == ("list", 1, 2, 1)
+
+
+def test_list_film_states_and_unordered_presentation(lists):
+    g = lists.get("/api/completions/list-best-ever").json()
+    assert (g["kind"], g["name"], g["ordered"]) == ("list", "Best Ever", False)
+    # unseen first: in the library, then missing by appeal (votes x rating); the seen ones last
+    assert [(f["tmdb_id"], f["state"]) for f in g["films"]] == [
+        (111, "available"), (9701, "missing"), (9702, "missing"), (101, "seen")]
+    assert [f["rank"] for f in g["films"]] == [2, 2, 4, 1]
+    assert (g["seen"], g["total"], g["available"], g["missing"], g["complete"]) == (1, 4, 1, 2, False)
+    assert g["films"][0]["movie_id"] and g["next"]["movie_id"] == g["films"][0]["movie_id"]
+    assert g["films"][1]["poster_url"].endswith("/l9701.jpg")
+    assert "score" in g and "reason" in g and "_mean" not in g
+    assert lists.post("/api/films/9701/seen", json={"seen": True}).status_code == 200    # known through the list
+    g = lists.get("/api/completions/list-best-ever").json()
+    assert g["seen"] == 2 and next(f["state"] for f in g["films"] if f["tmdb_id"] == 9701) == "seen"
+
+
+def test_all_orders_sagas_then_lists_then_people(lists, monkeypatch):
+    monkeypatch.setattr(completion, "_today", lambda: date(2026, 11, 22))
+    with db.session(lists.cfg.db_path) as c:
+        for tid in (101, 202, 303):
+            c.execute("UPDATE tmdb_details SET json=json_set(json,'$.director_ids',json('[525]')) WHERE tmdb_id=?", (tid,))
+        p = {"id": 525, "name": "Dee Rector", "profile_path": None, "acted": [], "directed": [
+            {"id": t, "title": f"P{t}", "release_date": f"{y}-05-01", "vote_count": 1000, "vote_average": 7.0,
+             "genre_ids": [18]} for t, y in ((101, 2015), (202, 2019), (303, 2001), (9850, 2026))]}
+        c.execute("INSERT INTO tmdb_person_credits(person_id,name,profile_path,json,fetched_at) VALUES(525,?,NULL,?,?)",
+                  (p["name"], json.dumps(p), "2026-11-01T00:00:00Z"))
+    lists.app.state.engine.invalidate()
+    groups = lists.get("/api/completions").json()["groups"]
+    kinds = [g["kind"] for g in groups]
+    assert {"list", "director", "collection"} <= set(kinds)
+    assert kinds == sorted(kinds, key=completion.block)          # sagas, then lists, then people
+    by = {g["key"]: g for g in groups}
+    assert by["director-525"]["score"] > by["list-best-ever"]["score"]      # a better score stays after the lists
+    assert kinds.index("list") > max(i for i, k in enumerate(kinds) if k in completion.SAGA_KINDS)
+    assert kinds.index("director") > kinds.index("list")
+
+
+def test_list_kind_filter_and_hide(lists):
+    r = lists.get("/api/completions", params={"kind": "list"}).json()
+    assert [g["key"] for g in r["groups"]] == ["list-best-ever"]
+    assert [g["key"] for g in r["completed"]] == ["list-all-done"]
+    assert lists.post("/api/completions/list-best-ever/hide").json() == {"ok": True}
+    r = lists.get("/api/completions", params={"kind": "list"}).json()
+    assert r["groups"] == [] and r["hidden_count"] == 1 and r["counts"]["list"] == 1
+    h = lists.get("/api/completions", params={"kind": "list", "hidden": "true"}).json()["hidden"]
+    assert [g["key"] for g in h] == ["list-best-ever"]
+    assert lists.delete("/api/completions/list-best-ever/hide").json() == {"ok": True}
+    assert [g["key"] for g in lists.get("/api/completions", params={"kind": "list"}).json()["groups"]] == ["list-best-ever"]
+    assert lists.post("/api/completions/list-unstarted/hide").status_code == 404
+
+
+def test_lists_flag_off(cfg, monkeypatch):
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+
+    from conftest import seed
+    from movienight.app import create_app
+    monkeypatch.setattr(completion, "bundled_lists", lambda: LISTS)
+    app = create_app(replace(cfg, completionist=False), transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+    with TestClient(app) as c:
+        seed(cfg.db_path)
+        app.state.engine.invalidate()
+        assert c.get("/api/completions", params={"kind": "list"}).status_code == 404
+        assert c.get("/api/completions/list-best-ever").status_code == 404
+        assert c.get("/api/films/9701").status_code == 404           # not even known through a list
+
+
+@pytest.mark.parametrize("key, least", [("oscars-best-picture", 95), ("sight-and-sound-2022", 100)])
+def test_bundled_lists_are_valid(key, least):
+    d = {x["key"]: x for x in completion.load_lists()}[key]
+    assert d["name"] and d["ordered"] is False and len(d["films"]) >= least
+    ids = [f["tmdb_id"] for f in d["films"]]
+    assert len(ids) == len(set(ids)) and all(isinstance(i, int) and i > 0 for i in ids)
+    for f in d["films"]:
+        assert f["title"] and isinstance(f["year"], int) and 1890 < f["year"] < 2100 and "poster_path" in f
+    ranked = [f["rank"] for f in d["films"] if "rank" in f]
+    assert not ranked or (len(ranked) == len(ids) and min(ranked) == 1 and max(ranked) <= 100)
+    assert completion.kind_of(f"list-{key}") == "list" and completion.slug(key) == key
