@@ -995,7 +995,7 @@ main > .complete { max-width: 1040px; }
 
 .cgroups { display: grid; gap: 16px; }
 .cgroup {
-  display: grid; gap: 14px; padding: 18px 18px 16px; border-radius: var(--r-l);
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 18px 18px 16px; border-radius: var(--r-l);
   background: var(--ink-2); border: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
   transition: opacity .2s, transform .2s var(--ease);
 }
@@ -1004,7 +1004,7 @@ main > .complete { max-width: 1040px; }
 .cgroup--skeleton { gap: 10px; }
 .cgroup--skeleton .skel--line { margin: 0; }
 .cgroup__head { display: flex; align-items: flex-start; gap: 8px; }
-.cgroup__name { flex: 1; min-width: 0; font: 800 1.625rem/1.05 var(--font-display); letter-spacing: .01em; padding-top: 4px; overflow-wrap: anywhere; }
+.cgroup__name { flex: 1; min-width: 0; font: 800 1.625rem/1.05 var(--font-display); letter-spacing: .01em; padding-top: 4px; overflow-wrap: break-word; word-break: normal; }
 .cgroup__hide {
   display: grid; place-items: center; width: 40px; height: 40px; margin: -6px -8px 0 0; flex: none;
   border: 0; border-radius: 50%; background: none; color: var(--muted); opacity: .7;
@@ -1092,7 +1092,7 @@ button.cfilm__btn:focus-visible { outline-offset: 3px; border-radius: var(--r-s)
 
 /* the "why" of a group's rank: one quiet hint beside the name */
 .cgroup__why {
-  flex: none; align-self: center; max-width: 45%; margin-top: 4px; padding: 2px 10px; border-radius: 999px;
+  flex: 0 1 auto; min-width: 0; align-self: center; max-width: min(45%, 15rem); margin-top: 4px; padding: 2px 10px; border-radius: 999px;
   background: rgb(255 255 255 / .05); color: var(--muted); font-size: .8125rem; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis;
 }
@@ -1229,7 +1229,7 @@ html:has(.ctv--web), html:has(.ctv--web) body { overscroll-behavior-x: none; } /
   display: grid; place-items: center; width: 100%; height: 100%; background: hsl(var(--h) 40% 28%);
   color: hsl(var(--h) 70% 92%); font: 800 1.125rem/1 var(--font-display); letter-spacing: .04em;
 }
-.cgroup__who { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.cgroup__who { flex: 1 0 auto; max-width: 62%; min-width: 0; display: grid; gap: 2px; }
 .cgroup__who .cgroup__name { padding-top: 0; }
 .cgroup__kind { color: var(--bulb); font-size: .75rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 
@@ -1251,4 +1251,11 @@ html.tv .ctv__kinds .chip { min-height: 48px; padding: 0 22px; font-size: 1.125r
 @media (max-width: 767px) {
   .ctv--web .ctv__toolbar { left: 0; right: 0; max-width: none; flex-wrap: wrap; gap: 8px; padding-inline: var(--gutter); }
   .ctv--web .ctv__kinds { flex: 0 0 calc(100% + 2 * var(--gutter)); margin: 0 calc(-1 * var(--gutter)); padding: 2px var(--gutter); scroll-padding-inline: var(--gutter); }
+}
+
+/* a person's card on a phone: the name keeps its width, so the reason chip drops under it instead of squeezing it */
+@media (max-width: 520px) {
+  .cgroup__head--person { flex-wrap: wrap; }
+  .cgroup__head--person .cgroup__who { flex: 1 1 0; min-width: 8ch; max-width: none; }
+  .cgroup__head--person .cgroup__why { order: 3; margin: 0 0 0 68px; max-width: calc(100% - 68px); }
 }
