@@ -35,6 +35,8 @@ KINDS = SAGA_KINDS + PEOPLE_KINDS
 COLLECTION_TTL_DAYS = 30
 LOOKUP_TTL_DAYS = 30
 PERSON_TTL_DAYS = 30
+PERSON_ACTIVE_TTL_DAYS = 7      # people with a film released in the last PERSON_ACTIVE_DAYS days (or upcoming)
+PERSON_ACTIVE_DAYS = 180
 
 # filmographies: a director with this many films seen, an actor with this many seen in the top 5 billing (cast_ids)
 DIRECTOR_MIN_SEEN = 3
@@ -119,12 +121,14 @@ def slug(s: str) -> str:
 
 # --------------------------------------------------------------------------- sync helpers (SQL only)
 
-def seen_tmdb_ids(conn: sqlite3.Connection) -> set[int]:
-    """TMDB ids the user has seen: Letterboxd, played on the media server, or marked seen here."""
+def seen_tmdb_ids(conn: sqlite3.Connection, count_watched: bool = True) -> set[int]:
+    """TMDB ids the user has seen: Letterboxd, played on the media server, or marked seen here. `count_watched` is
+    the backend's flag (off for e.g. a shared Jellyfin account): server play counts then do not count, as in build()."""
+    played = (" UNION SELECT m.tmdb_id FROM movies m JOIN media_items i ON i.movie_id=m.id"
+              "  WHERE m.tmdb_id IS NOT NULL AND COALESCE(json_extract(i.json,'$.view_count'),0) > 0"
+              if count_watched else "")
     return {r[0] for r in conn.execute(
-        "SELECT tmdb_id FROM lb_films WHERE tmdb_id IS NOT NULL AND watched=1"
-        " UNION SELECT m.tmdb_id FROM movies m JOIN media_items i ON i.movie_id=m.id"
-        "  WHERE m.tmdb_id IS NOT NULL AND COALESCE(json_extract(i.json,'$.view_count'),0) > 0"
+        "SELECT tmdb_id FROM lb_films WHERE tmdb_id IS NOT NULL AND watched=1" + played +
         " UNION SELECT CAST(substr(key,6) AS INTEGER) FROM seen WHERE key LIKE 'tmdb:%'") if r[0]}
 
 
@@ -406,9 +410,10 @@ def _people_groups(conn: sqlite3.Connection, seen: set[int], avail: set[int] = f
             f"SELECT person_id, name, profile_path, json FROM tmdb_person_credits WHERE person_id IN ({marks})",
             sorted(ids))}
     groups = []
+    emitted: set[int] = set()    # people whose director group was kept: they get no actor group
     for kind, field in (("director", "directed"), ("actor", "acted")):
         for pid, _ in want[kind]:
-            if (kind == "actor" and pid in directors) or pid not in rows:
+            if (kind == "actor" and pid in emitted) or pid not in rows:
                 continue
             _, name, profile, js = rows[pid]
             p = json.loads(js or "{}")
@@ -422,6 +427,8 @@ def _people_groups(conn: sqlite3.Connection, seen: set[int], avail: set[int] = f
             n_seen = sum(f["tmdb_id"] in seen for f in films)
             if not n_seen or n_seen == len(films):
                 continue
+            if kind == "director":
+                emitted.add(pid)
             groups.append({"key": f"{kind}-{pid}", "kind": kind, "name": name or p.get("name") or "",
                            "films": _by_date(films), "ordered": False, "person_id": pid,
                            "profile_path": profile or p.get("profile_path")})

@@ -348,7 +348,7 @@ export function mountTv(root, { web = false, toolbar = null } = {}) {
       everything = r.groups;
       counts = {};
       for (const g of everything) counts[g.kind] = (counts[g.kind] || 0) + 1;
-      if (kind && !counts[kind] && !groups.length) kind = null; // a remembered kind with nothing left: All
+      if (kind && !counts[kind]) { kind = null; storeKind(null); } // a remembered kind with nothing left: All
       groups = everything.filter(ofKind);
       paintChips();
       if (!groups.length) {
