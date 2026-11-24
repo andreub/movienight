@@ -25,7 +25,7 @@ import json
 import math
 import re
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from . import library, tmdb
 
@@ -349,7 +349,8 @@ def _raw_groups(conn: sqlite3.Connection, seen: set[int]) -> list[dict]:
 
 def keep_credit(p: dict, seen: set[int], today: str) -> bool:
     """A filmography credit worth listing: released, not a documentary or a TV film, voted on by PERSON_MIN_VOTES
-    people. A film the user has seen always stays (it counts for progress)."""
+    people, unless it came out within the recent window (RECENT_FULL_DAYS), when it has had no time to gather votes.
+    A film the user has seen always stays (it counts for progress)."""
     if p.get("id") in seen:
         return True
     when = p.get("release_date") or ""
@@ -357,6 +358,8 @@ def keep_credit(p: dict, seen: set[int], today: str) -> bool:
         return False
     if PERSON_SKIP_GENRES.intersection(p.get("genre_ids") or []):
         return False
+    if when >= (date.fromisoformat(today) - timedelta(days=RECENT_FULL_DAYS)).isoformat():
+        return True
     return (p.get("vote_count") or 0) >= PERSON_MIN_VOTES
 
 

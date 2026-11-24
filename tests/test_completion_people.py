@@ -77,10 +77,28 @@ def test_compact_person_directed_and_top_billed():
     (credit(1, date_="2027-03-01"), set(), False),            # not out yet
     (credit(1, vc=99), set(), False),                         # too few votes
     (credit(1, vc=100), set(), True),
+    (credit(1, vc=3, date_="2026-06-01"), set(), True),       # recent release: bypasses the vote floor
+    (credit(1, vc=3, date_="2025-05-01"), set(), False),      # older than the window: floor applies
+    (credit(1, vc=3, date_="2026-12-01"), set(), False),      # recent-looking but not out yet
+    (credit(1, vc=3, date_="2026-06-01", genres=(99,)), set(), False),  # documentaries stay out
     (credit(1, genres=(99,), vc=3, date_=""), {1}, True),     # seen: always kept
 ])
 def test_credit_filters(c, seen, keep):
     assert completion.keep_credit(c, seen, TODAY) is keep
+
+
+def test_recent_low_vote_film_in_group_fires_recency_reason(tmp_path):
+    cfg = _cfg(tmp_path)
+    with db.session(cfg.db_path) as c:
+        for tid in range(1, 5):
+            seen_film(c, tid, directors=[7])
+        store_person(c, person(7, "New Director", directed=[credit(t) for t in range(1, 5)]
+                               + [credit(60, vc=2, date_="2026-09-01"), credit(61, vc=2, date_="2015-09-01")]))
+        g = completion._people_groups(c, {1, 2, 3, 4}, today=TODAY)[0]
+    ids = {f["tmdb_id"] for f in g["films"]}
+    assert 60 in ids and 61 not in ids
+    d = completion._decorate(g, {1, 2, 3, 4}, {})
+    assert completion.score(d, {}, 3.0, date.fromisoformat(TODAY))[1] == "New · 2026"
 
 
 # ---------------------------------------------------------------- eligibility
