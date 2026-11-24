@@ -1,13 +1,14 @@
 // Film detail: bottom sheet on phones, side panel on wider screens (one <dialog>). Library films by id (#movie=),
 // and any film by TMDB id (#film=, Complete's saga films, in the library or not) in the same sheet.
 import { api } from '../api.js';
-import { h, icon, poster, hueOf, runtime, stars, matchStub, reasonList, errorBox, toast, quoted, num } from '../dom.js';
+import { h, icon, poster, hueOf, runtime, stars, matchStub, reasonList, errorBox, toast, num } from '../dom.js';
 import { playControl } from '../play.js';
 import { voteButtons, setVote, voteOf, LOVE } from '../vote.js';
 import { setSeen, setSeenVote, isSeen, OUTCOMES } from '../seen.js';
 import { parse } from '../state.js';
 import { serverName } from '../status.js';
 import { TV } from '../tvnav.js';
+import { seenMsg, seenVoteMsg, unseenMsg, voteMsg, hideMsg, neverMsg, unhideMsg, UNMARK_LABEL } from '../messages.js';
 
 const dialog = document.getElementById('detail');
 const body = dialog.querySelector('.sheet__body');
@@ -87,7 +88,8 @@ async function setDismissed(m, days) {
     return;
   }
   window.dispatchEvent(new CustomEvent('movienight:changed', { detail: { id: m.id, dismissed: days !== null } }));
-  toast(days === null ? `${quoted(m)} is back in your picks.` : days === 0 ? `${quoted(m)} won't be suggested again.` : `Hid ${quoted(m)} for 30 days.`);
+  if (days === null) toast(unhideMsg(m));
+  else toast(days === 0 ? neverMsg(m) : hideMsg(m), { action: { label: 'Undo', run: () => setDismissed(m, null) } });
   load();
 }
 
@@ -107,7 +109,7 @@ async function markSeen(m, seen) {
   if (!(await setSeen(m, seen, 'sheet'))) return;
   window.dispatchEvent(new CustomEvent('movienight:marked', { detail: { id: m.id, seen } }));
   if (!seen) {
-    toast(`${quoted(m)} is back in your picks.`);
+    toast(unseenMsg(m));
     load();
     return;
   }
@@ -115,7 +117,7 @@ async function markSeen(m, seen) {
   // itself replaces the film and offers its own toast through movienight:seen-saved.
   onRequestClose();
   if (parse().view === 'tonight') return;
-  toast(`Marked ${quoted(m)} as seen.`, {
+  toast(seenMsg(m), {
     timeout: 3000,
     action: { label: 'Undo', run: () => setSeen(m, false, 'undo') },
   });
@@ -141,10 +143,9 @@ function votesControl(m) {
     window.dispatchEvent(new CustomEvent('movienight:marked', { detail: { id: m.id, vote } }));
     if (vote === 0) return; // cleared
     onRequestClose();
-    const what = vote > 1 ? `${quoted(m)} is a favourite.` : vote > 0 ? `you liked ${quoted(m)}.` : `less like ${quoted(m)}.`;
-    if (!markedSeen) { toast(`Noted: ${what}`, { timeout: 3000 }); return; }
+    if (!markedSeen) { toast(voteMsg(m, vote), { timeout: 3000 }); return; }
     if (parse().view === 'tonight') return; // Tonight shows its own toast for the seen mark
-    toast(`Seen · ${what}`, {
+    toast(seenVoteMsg(m, vote), {
       timeout: 3000,
       action: { label: 'Undo', run: () => setSeenVote(m, false, previousVote, 'undo') },
     });
@@ -187,7 +188,7 @@ function render(m) {
       votesControl(m),
       m.letterboxd_url ? h('a', { class: 'btn btn--ghost', href: m.letterboxd_url, target: '_blank', rel: 'noopener' }, 'Letterboxd', icon('external', 'icon--end')) : null),
     m.seen_here ? h('p', { class: 'detail__seen' }, icon('check'), "You've seen this",
-      h('button', { type: 'button', class: 'linkbtn', onclick: () => markSeen(m, false) }, 'Undo')) : null,
+      h('button', { type: 'button', class: 'linkbtn', onclick: () => markSeen(m, false) }, UNMARK_LABEL)) : null,
     m.tagline ? h('p', { class: 'detail__tagline', text: m.tagline }) : null,
     m.overview ? h('p', { class: 'detail__overview', text: m.overview }) : null,
     m.reasons?.length ? section('Why it fits you', reasonList(m.reasons)) : null,
@@ -232,8 +233,7 @@ async function saveFilm(f, seen, vote, focus) {
     filmBusy = false;
   }
   window.dispatchEvent(new CustomEvent('movienight:seen', { detail: { id: `tmdb:${f.tmdb_id}`, tmdb_id: f.tmdb_id, seen, source: 'film' } }));
-  const message = !seen ? `${quoted(f)} is no longer marked as seen.`
-    : !f.seen ? `Marked ${quoted(f)} as seen.` : `Saved your verdict for ${quoted(f)}.`;
+  const message = !seen ? unseenMsg(f) : !f.seen ? (vote ? seenVoteMsg(f, vote) : seenMsg(f)) : vote ? voteMsg(f, vote) : seenMsg(f);
   if (marked({ id: `tmdb:${f.tmdb_id}`, tmdb_id: f.tmdb_id, seen }, message)) return;
   if (!seen) toast(message);
   else if (!f.seen) toast(message);
@@ -263,7 +263,7 @@ function filmSeenLine(f) {
       h('button', {
         type: 'button', class: 'linkbtn', 'data-act': 'unmark', title: f.pushed ? `Also sets it back to unplayed on ${server}` : null,
         onclick: () => saveFilm(f, false, 0, '[data-act="seen"]'),
-      }, 'Unmark as seen'));
+      }, UNMARK_LABEL));
   }
   const where = f.seen_via.includes('letterboxd') ? 'Letterboxd' : server;
   return h('p', { class: 'detail__seen', title: `Seen on ${where}, so it can only be unmarked there` }, icon('check'), `Seen on ${where}`);
@@ -299,9 +299,9 @@ function renderFilm(f) {
     h('div', { class: 'detail__actions' },
       f.in_library ? playControl(f)
         : h('button', { type: 'button', class: 'btn btn--primary', disabled: true }, icon('play'), 'Not in your library'),
-      markable ? filmVotes(f) : null,
       !f.seen ? h('button', { type: 'button', class: 'btn btn--ghost', 'data-act': 'seen', title: OUTCOMES[1].label,
         onclick: () => saveFilm(f, true, 0, '.votes__btn--up') }, icon('eye'), 'Seen it') : null,
+      markable ? filmVotes(f) : null,
       h('a', { class: 'btn btn--ghost', href: f.letterboxd_url, target: '_blank', rel: 'noopener' }, 'Letterboxd', icon('external', 'icon--end'))),
     f.seen ? filmSeenLine(f) : null,
     f.tagline ? h('p', { class: 'detail__tagline', text: f.tagline }) : null,
