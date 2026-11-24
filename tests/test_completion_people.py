@@ -227,6 +227,18 @@ def test_director_wins_over_actor_and_needs_seen_and_unseen(tmp_path):
     assert all(g["ordered"] is False for g in groups)
 
 
+def test_actor_group_kept_when_director_group_is_dropped(tmp_path):
+    cfg = _cfg(tmp_path)
+    with db.session(cfg.db_path) as c:
+        for tid in range(1, 5):
+            seen_film(c, tid, directors=[7], cast=[7])
+        # 7 is eligible as both, but every film they directed is seen: no director group, so the actor one stays.
+        store_person(c, person(7, "Both Ways", directed=[credit(t) for t in range(1, 5)],
+                               acted=[credit(t) for t in range(1, 5)] + [credit(51)]))
+        groups = completion._people_groups(c, {1, 2, 3, 4}, today=TODAY)
+    assert [(g["key"], g["kind"]) for g in groups] == [("actor-7", "actor")]
+
+
 def test_actor_capped_at_30_keeping_seen_films(tmp_path):
     cfg = _cfg(tmp_path)
     seen = set(range(1, 6))
