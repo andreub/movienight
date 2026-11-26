@@ -10,6 +10,7 @@
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white)
 ![Docker](https://img.shields.io/badge/docker-ghcr.io-2496ED?logo=docker&logoColor=white)
 ![Plex](https://img.shields.io/badge/Plex-supported-E5A00D?logo=plex&logoColor=white)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 ![Jellyfin](https://img.shields.io/badge/Jellyfin-supported-00A4DC?logo=jellyfin&logoColor=white)
 
 </div>
@@ -57,6 +58,7 @@ network.
 - [Testing](#testing)
 - [Project layout](#project-layout)
 - [Credits and attribution](#credits-and-attribution)
+- [License](#license)
 
 ## How it gets data
 
@@ -641,9 +643,20 @@ docker-compose.yml         Local run with a private data volume
 This product uses the TMDB API but is not endorsed or certified by TMDB. Film data and images come from
 [The Movie Database](https://www.themoviedb.org).
 
-Letterboxd, Plex, Jellyfin, Google Cast, Anthropic, OpenAI and any other AI provider you configure are
+Letterboxd, Plex, Jellyfin, Seerr, Google Cast, Anthropic, OpenAI and any other AI provider you configure are
 trademarks of their respective owners. MovieNight is an independent project and is not affiliated with or
 endorsed by any of them.
 
+The bundled Completionist lists in `src/movienight/data/lists/` follow the Academy Awards Best Picture winners and the
+BFI Sight and Sound 2022 critics' poll; the film details and images in them come from TMDB.
+
 The frontend has no bundled third-party JavaScript, CSS or icons. Its two fonts (Atkinson Hyperlegible, Big Shoulders
 Display) are loaded from Google Fonts and are licensed under the SIL Open Font License 1.1.
+
+## License
+
+Copyright (C) 2026 andreub (https://github.com/andreub)
+
+MovieNight is free software, licensed under the [GNU Affero General Public License v3.0](LICENSE) or, at your
+option, any later version. If you run a modified version as a network service, the AGPL requires you to offer
+its users the corresponding source code.

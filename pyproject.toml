@@ -3,6 +3,8 @@ name = "movienight"
 version = "0.1.0"
 description = "Recommends which movie to watch tonight from your Plex libraries using your Letterboxd history"
 requires-python = ">=3.13"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
 dependencies = [
     "anthropic>=2.8.0",
     "defusedxml>=0.7.1",
