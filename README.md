@@ -14,6 +14,14 @@
 
 </div>
 
+<p align="center">
+  <img src="docs/screenshots/tonight.png" width="520" alt="Tonight's pick with mood filters and a match score">
+  <img src="docs/screenshots/mobile.png" width="200" alt="MovieNight on a phone">
+</p>
+<p align="center">
+  <img src="docs/screenshots/browse.png" width="800" alt="Browse the library with genre and length filters">
+</p>
+
 MovieNight ranks the movies available on your **Plex** servers (or your **Jellyfin** server, see
 [Media server](#feature-guides)) using your **Letterboxd** history (watched films, ratings,
 likes, watchlist) and **TMDB** metadata, then suggests what to put on tonight.
