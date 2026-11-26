@@ -1,10 +1,53 @@
-# MovieNight
+<div align="center">
 
-"What do I watch tonight?" MovieNight ranks the movies available on your Plex servers (or your
-Jellyfin server, see [Media server](#media-server-plex-or-jellyfin)) using your Letterboxd history (watched films, ratings, likes, watchlist) and TMDB metadata.
-It is a single-user app. With Plex, sign-in with the Plex account it belongs to is on by default;
-with Jellyfin, sign-in is OIDC or switched off (see [Login](#login)). Without a login, run it only
-on a private network.
+# 🎬 MovieNight
+
+**"What do I watch tonight?" — answered from your own library and your own taste.**
+
+[![CI: Release](https://github.com/andreub/movienight/actions/workflows/release.yml/badge.svg)](https://github.com/andreub/movienight/actions/workflows/release.yml)
+![Python](https://img.shields.io/badge/python-3.13+-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white)
+![Docker](https://img.shields.io/badge/docker-ghcr.io-2496ED?logo=docker&logoColor=white)
+![Plex](https://img.shields.io/badge/Plex-supported-E5A00D?logo=plex&logoColor=white)
+![Jellyfin](https://img.shields.io/badge/Jellyfin-supported-00A4DC?logo=jellyfin&logoColor=white)
+
+</div>
+
+MovieNight ranks the movies available on your **Plex** servers (or your **Jellyfin** server, see
+[Media server](#media-server-plex-or-jellyfin)) using your **Letterboxd** history (watched films, ratings,
+likes, watchlist) and **TMDB** metadata, then suggests what to put on tonight.
+It is a single-user app. With Plex, sign-in with the Plex account it belongs to is on by default; with
+Jellyfin, sign-in is OIDC or switched off (see [Login](#login)). Without a login, run it only on a private
+network.
+
+## Features
+
+- 🎯 **Tonight's pick and Browse**: taste-ranked recommendations from your library, with moods, length and watchlist filters.
+- 📥 **Letterboxd import**: export folder or ZIP upload as the baseline, plus new diary entries from the public RSS feed.
+- 🏷️ **Letterboxd tags as reference groups**: "Like my Sitges 2025" style filters.
+- 🎞️ **Plex or Jellyfin**: one media server at a time; Plex PIN login, Jellyfin user and password from the environment.
+- 👍 **Votes and "seen it" marks**: teach the recommender about films you never rated; optionally pushed back as played on the media server.
+- 🧩 **Completionist**: sagas, franchises, series, canonical lists (Oscars Best Picture, Sight and Sound 2022), directors and actors, with what is left to watch.
+- 🙋 **Seerr requests** (optional): request missing films through Overseerr or Jellyseerr with your own account.
+- 📺 **Play on your TV**: Google Cast to Chromecasts and Android TVs (Plex).
+- 🤖 **Android TV app**: a separate app loads this UI; D-pad navigation built in.
+- 💬 **AI chat** (optional): ask for "something like..." and get films from your library (Anthropic or any OpenAI-compatible endpoint).
+- 🔐 **Login options**: Plex, OpenID Connect (PKCE) or none.
+- 🚀 **Automatic releases and preview deploys**: versioned multi-arch images, DB backup before every deploy, branch/PR previews.
+- 🪶 **Light stack**: FastAPI + SQLite, a vanilla JS frontend with no build step, a hardened non-root read-only container.
+
+## Table of contents
+
+- [How it gets data](#how-it-gets-data)
+- [Architecture](#architecture)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Feature guides](#feature-guides): votes, tags, Completionist, TV, media server, Letterboxd refresh
+- [Login](#login) · [AI chat](#ai-chat-optional) · [Privacy](#privacy) · [Health](#health)
+- [Releases and deployment](#releases-and-deployment)
+- [Testing](#testing)
+- [Project layout](#project-layout)
 
 ## How it gets data
 
@@ -18,7 +61,113 @@ on a private network.
 - **TMDB**: metadata (genres, cast, crew, keywords, posters, ratings) and recommendations.
   Responses are cached forever in the local database.
 
-## Votes and "seen it" marks
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Clients
+        WEB["Browser / phone"]
+        TV["Android TV app"]
+    end
+    subgraph Container["MovieNight container"]
+        API["FastAPI app"]
+        SYNC["Background sync"]
+        REC["Recommender and Completionist"]
+        CHAT["AI chat (optional)"]
+        DB[("SQLite and image cache")]
+        UI["Static frontend"]
+    end
+    LB["Letterboxd export and RSS"]
+    MS["Plex or Jellyfin"]
+    TMDB["TMDB"]
+    SEERR["Seerr (optional)"]
+    LLM["AI provider (optional)"]
+    CAST["Chromecast / Android TV"]
+
+    WEB --> UI
+    TV --> UI
+    UI --> API
+    API --> REC
+    API --> CHAT
+    REC --> DB
+    SYNC --> DB
+    API --> DB
+    SYNC --> LB
+    SYNC --> MS
+    SYNC --> TMDB
+    API --> SEERR
+    API -->|"Google Cast"| CAST
+    CHAT --> LLM
+    CHAT --> REC
+```
+
+The sync job runs every `MOVIENIGHT_SYNC_HOURS` hours (default 6) and on demand. Everything the UI shows
+comes from the local SQLite database; TMDB responses are cached there.
+
+## Quick start
+
+<details open>
+<summary><b>Docker (compose)</b></summary>
+
+```sh
+cp .env.example .env          # optional: fill in TMDB token, Letterboxd username
+mkdir -p data letterboxd      # put your unpacked Letterboxd export in ./letterboxd if you have one
+docker compose up -d --build
+```
+
+Open http://localhost:8080 and connect Plex in Settings (with Jellyfin, set its variables instead).
+
+</details>
+
+<details open>
+<summary><b>Local development (uv)</b></summary>
+
+```sh
+uv sync
+uv run uvicorn movienight.app:app --reload --port 8080
+uv run pytest
+```
+
+The UI can run without a backend in mock mode at http://localhost:8080/?mock=1.
+
+</details>
+
+## Configuration
+
+<details>
+<summary><b>Environment variables</b></summary>
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MOVIENIGHT_DATA_DIR` | `./data` (`/data` in image) | SQLite database and image cache |
+| `MOVIENIGHT_LETTERBOXD_DIR` | `./letterboxd` (`/letterboxd` in image) | Unpacked Letterboxd export, imported at start if present or changed |
+| `MOVIENIGHT_LETTERBOXD_USER` | empty | Username for RSS sync; empty = read from `profile.csv` |
+| `MOVIENIGHT_TMDB_TOKEN` | empty | TMDB v4 bearer token (`eyJ...`) or v3 API key; empty = degraded mode |
+| `MOVIENIGHT_MEDIA_SERVER` | `plex` | `plex` or `jellyfin`: where the library comes from (one at a time; any other value stops the app at start) |
+| `MOVIENIGHT_PLEX_TOKEN` | empty | Plex only: optional pre-set Plex token (otherwise PIN login in the UI) |
+| `MOVIENIGHT_JELLYFIN_URL` | empty | Jellyfin only: server URL as opened in the browser, e.g. `https://jellyfin.example.com` |
+| `MOVIENIGHT_JELLYFIN_USER` / `_PASSWORD` | empty | Jellyfin only: the account MovieNight signs in with |
+| `MOVIENIGHT_JELLYFIN_WATCHED` | on | `0`: ignore what was played in Jellyfin (use it when the account is shared with other people) |
+| `MOVIENIGHT_SYNC_HOURS` | `6` | Background sync interval |
+| `MOVIENIGHT_PLEX_HISTORY_FIX` | on | Plex only, with `MOVIENIGHT_PUSH_SEEN`: marking a film played on a server does not make it watched on plex.tv, so the film is also marked watched on plex.tv (Discover) with your account token; plex.tv then adds a "watched just now" history entry, which is set to the film's Letterboxd diary date, or removed when there is none (marks made in Movienight never use the time you clicked). Films pushed by older versions are settled once on the next sync. Unmarking also unmarks on plex.tv. Uses undocumented plex.tv APIs, best effort. `0`/`false`/`no` = off |
+| `MOVIENIGHT_PLEX_HISTORY_PACE` | `6` | Seconds between plex.tv history writes (it rate-limits; slower is safer). When rate limited it waits the server's retryAfter, else 1, 2, 4, 8, 10 minutes, retrying the same film, and stops the batch if still limited; the next batch follows 30 minutes later while unsettled films remain |
+| `MOVIENIGHT_LOG_LEVEL` | `INFO` | Level of the app's own log lines (`docker logs`): `DEBUG`, `INFO`, `WARNING`... |
+| `MOVIENIGHT_PUSH_LETTERBOXD_BACKFILL` | off | Plex only, with `MOVIENIGHT_PUSH_SEEN`: films that become watched on Letterboxd after this was first run are also marked played on Plex, dated with their diary date (or with no history entry when there is none). The Letterboxd history that already existed on that first run is skipped. `1` opts in to pushing that older history too, 25 films per sync (and plex.tv paced), so it spreads over several syncs: switch it off again when done |
+| `MOVIENIGHT_CAST_HOSTS` | empty | Plex only: IPs/hostnames (comma-separated) of Chromecasts / Android TVs to offer under Play on, for when they are not found automatically (see Play on your TV) |
+| `MOVIENIGHT_PUSH_SEEN` | off | `1`/`true`/`yes`: marks films you flag "seen it" as played on the media server (writes to that account). `MOVIENIGHT_PLEX_PUSH_SEEN` is the older name and still works |
+| `MOVIENIGHT_LOGIN` | `plex` (Plex), empty (Jellyfin) | Login methods, comma-separated: `plex`, `oidc`, or `none`. See [Login](#login) |
+| `MOVIENIGHT_PLEX_OWNER` | empty | Plex login only: the account id, username or email allowed in; empty = the first sign-in (or the account of the stored token) |
+| `MOVIENIGHT_COMPLETIONIST` | on | The Complete tab (sagas, franchises, series, lists, directors, actors). `0`/`false`/`no`: tab hidden, `/api/completions*` answers 404, and the sync skips the collection, collection-search, keyword and person-credit lookups |
+| `MOVIENIGHT_SEERR_URL` | empty | Overseerr / Jellyseerr API base including `/api/v1` (e.g. `https://seerr.example.com/api/v1`): each user connects their own Seerr account through Plex to request films missing from the library (see Completionist). No API key; unset = feature hidden |
+| `MOVIENIGHT_PORT` | `8080` | Compose only: host port |
+| `TZ` | see `docker-compose.yml` | Compose only: container timezone |
+
+</details>
+
+## Feature guides
+
+<details>
+<summary><b>🗳️ Votes and "seen it" marks</b></summary>
 
 - **Votes** on a film (detail sheet, tonight's pick, browse cards): thumbs down (-1), thumbs up (1)
   and ❤ "a favourite" (2). A vote teaches the recommender about films you never rated on
@@ -37,7 +186,10 @@ on a private network.
 - With `MOVIENIGHT_PUSH_SEEN` on, marks are also set as played on Plex or Jellyfin, whichever way they are
   made. Only items the app marked itself are ever set back to unplayed.
 
-## Letterboxd tags
+</details>
+
+<details>
+<summary><b>🏷️ Letterboxd tags</b></summary>
 
 Tags on diary entries (`diary.csv` and `reviews.csv` of the export, comma-separated, compared in lower
 case) are stored per entry. A tag ending in a 4-digit year is an edition of a family: `sitges2024`,
@@ -60,7 +212,10 @@ the ones I tagged X".
 
 The RSS feed carries no tags, so new tags arrive with the next export.
 
-## Completionist
+</details>
+
+<details>
+<summary><b>🧩 Completionist</b></summary>
 
 The **Complete** tab lists the sagas, franchises and series you have started (at least one film
 seen), the canonical lists you have dipped into, then the directors and actors you keep coming back to, with your progress ("4 of 9 seen") and what is left. Each film is **seen** (Letterboxd, played
@@ -212,54 +367,10 @@ exception is the canonical lists, which ship with the app.
   - Keys look like `collection-556`, `franchise-spider-man`, `series-357318`,
     `list-oscars-best-picture`, `director-525` and `actor-6193`.
 
-## Quick start (Docker)
+</details>
 
-```sh
-cp .env.example .env          # optional: fill in TMDB token, Letterboxd username
-mkdir -p data letterboxd      # put your unpacked Letterboxd export in ./letterboxd if you have one
-docker compose up -d --build
-```
-
-Open http://localhost:8080 and connect Plex in Settings (with Jellyfin, set its variables instead).
-
-## Local development (uv)
-
-```sh
-uv sync
-uv run uvicorn movienight.app:app --reload --port 8080
-uv run pytest
-```
-
-The UI can run without a backend in mock mode at http://localhost:8080/?mock=1.
-
-## Configuration
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `MOVIENIGHT_DATA_DIR` | `./data` (`/data` in image) | SQLite database and image cache |
-| `MOVIENIGHT_LETTERBOXD_DIR` | `./letterboxd` (`/letterboxd` in image) | Unpacked Letterboxd export, imported at start if present or changed |
-| `MOVIENIGHT_LETTERBOXD_USER` | empty | Username for RSS sync; empty = read from `profile.csv` |
-| `MOVIENIGHT_TMDB_TOKEN` | empty | TMDB v4 bearer token (`eyJ...`) or v3 API key; empty = degraded mode |
-| `MOVIENIGHT_MEDIA_SERVER` | `plex` | `plex` or `jellyfin`: where the library comes from (one at a time; any other value stops the app at start) |
-| `MOVIENIGHT_PLEX_TOKEN` | empty | Plex only: optional pre-set Plex token (otherwise PIN login in the UI) |
-| `MOVIENIGHT_JELLYFIN_URL` | empty | Jellyfin only: server URL as opened in the browser, e.g. `https://jellyfin.example.com` |
-| `MOVIENIGHT_JELLYFIN_USER` / `_PASSWORD` | empty | Jellyfin only: the account MovieNight signs in with |
-| `MOVIENIGHT_JELLYFIN_WATCHED` | on | `0`: ignore what was played in Jellyfin (use it when the account is shared with other people) |
-| `MOVIENIGHT_SYNC_HOURS` | `6` | Background sync interval |
-| `MOVIENIGHT_PLEX_HISTORY_FIX` | on | Plex only, with `MOVIENIGHT_PUSH_SEEN`: marking a film played on a server does not make it watched on plex.tv, so the film is also marked watched on plex.tv (Discover) with your account token; plex.tv then adds a "watched just now" history entry, which is set to the film's Letterboxd diary date, or removed when there is none (marks made in Movienight never use the time you clicked). Films pushed by older versions are settled once on the next sync. Unmarking also unmarks on plex.tv. Uses undocumented plex.tv APIs, best effort. `0`/`false`/`no` = off |
-| `MOVIENIGHT_PLEX_HISTORY_PACE` | `6` | Seconds between plex.tv history writes (it rate-limits; slower is safer). When rate limited it waits the server's retryAfter, else 1, 2, 4, 8, 10 minutes, retrying the same film, and stops the batch if still limited; the next batch follows 30 minutes later while unsettled films remain |
-| `MOVIENIGHT_LOG_LEVEL` | `INFO` | Level of the app's own log lines (`docker logs`): `DEBUG`, `INFO`, `WARNING`... |
-| `MOVIENIGHT_PUSH_LETTERBOXD_BACKFILL` | off | Plex only, with `MOVIENIGHT_PUSH_SEEN`: films that become watched on Letterboxd after this was first run are also marked played on Plex, dated with their diary date (or with no history entry when there is none). The Letterboxd history that already existed on that first run is skipped. `1` opts in to pushing that older history too, 25 films per sync (and plex.tv paced), so it spreads over several syncs: switch it off again when done |
-| `MOVIENIGHT_CAST_HOSTS` | empty | Plex only: IPs/hostnames (comma-separated) of Chromecasts / Android TVs to offer under Play on, for when they are not found automatically (see Play on your TV) |
-| `MOVIENIGHT_PUSH_SEEN` | off | `1`/`true`/`yes`: marks films you flag "seen it" as played on the media server (writes to that account). `MOVIENIGHT_PLEX_PUSH_SEEN` is the older name and still works |
-| `MOVIENIGHT_LOGIN` | `plex` (Plex), empty (Jellyfin) | Login methods, comma-separated: `plex`, `oidc`, or `none`. See [Login](#login) |
-| `MOVIENIGHT_PLEX_OWNER` | empty | Plex login only: the account id, username or email allowed in; empty = the first sign-in (or the account of the stored token) |
-| `MOVIENIGHT_COMPLETIONIST` | on | The Complete tab (sagas, franchises, series, lists, directors, actors). `0`/`false`/`no`: tab hidden, `/api/completions*` answers 404, and the sync skips the collection, collection-search, keyword and person-credit lookups |
-| `MOVIENIGHT_SEERR_URL` | empty | Overseerr / Jellyseerr API base including `/api/v1` (e.g. `https://seerr.example.com/api/v1`): each user connects their own Seerr account through Plex to request films missing from the library (see Completionist). No API key; unset = feature hidden |
-| `MOVIENIGHT_PORT` | `8080` | Compose only: host port |
-| `TZ` | `Europe/Madrid` | Compose only: container timezone |
-
-## Play on your TV
+<details>
+<summary><b>📺 Play on your TV</b></summary>
 
 With Plex, the play button also lists the Chromecasts and Android TVs (anything with Google Cast built in) on
 your network as "Play on <name>", so one click starts the movie there; "Open in Plex Web" stays in the menu.
@@ -276,7 +387,10 @@ Android TV: a separate app (repo movienight-androidtv) loads this UI; the UI det
 agent and enables D-pad navigation (arrow keys move focus to the nearest control, Enter opens it, a larger focus
 ring) and opens Plex links in the Plex app, as on phones.
 
-## Media server: Plex or Jellyfin
+</details>
+
+<details>
+<summary><b>🎞️ Media server: Plex or Jellyfin</b></summary>
 
 `MOVIENIGHT_MEDIA_SERVER` picks one: `plex` (default) or `jellyfin`. The app never reads both.
 
@@ -302,7 +416,10 @@ The database tables are `media_servers` and `media_items` since schema version 7
 upgrade: `scripts/deploy.sh` backs up the database automatically before every deploy (see Deploy), and
 you roll back by restoring that copy together with the previous code.
 
-## Refreshing Letterboxd data
+</details>
+
+<details>
+<summary><b>🔄 Refreshing Letterboxd data</b></summary>
 
 1. On letterboxd.com go to Settings, then Data, then Export, and download the ZIP.
 2. In MovieNight open Settings and upload the ZIP (or unpack it into the Letterboxd folder: it is
@@ -310,89 +427,7 @@ you roll back by restoring that copy together with the previous code.
 
 Between exports, new diary entries arrive through RSS automatically (without their tags).
 
-## Releases
-
-Every push to `main` publishes a new version: a `vX.Y.Z` git tag, a GitHub Release and a Docker
-image (linux/amd64 and linux/arm64) at `ghcr.io/andreub/movienight`, tagged `X.Y.Z`, `X.Y`, `X`,
-`latest` and `sha-<short>`. The GHCR package is private, like the repo.
-
-The version comes from the title of the merged PR, which must follow Conventional Commits
-(`type(scope): subject`; a PR check enforces it). If the push has no PR, the commit subject is used.
-
-| Title | Bump |
-| --- | --- |
-| `type!: ...` or `BREAKING CHANGE:` in the PR body | major |
-| `feat: ...` | minor |
-| anything else (`fix`, `perf`, `refactor`, `docs`, `chore`, `ci`, `test`, `build`, `style`, `revert`) | patch |
-
-The bump applies to the latest `vX.Y.Z` tag; with no tag yet the first release is `v1.0.0`. Tests
-must pass before a release is cut.
-
-## Deploy
-
-Merging a PR to `main` runs the Release workflow (see Releases), which pushes
-`ghcr.io/andreub/movienight:latest`. The home server runs that image and Watchtower pulls it on its
-own schedule, so nothing else is needed.
-
-To get it immediately, from a checkout at `origin/main`:
-
-```sh
-scripts/deploy.sh                       # HOST defaults to the ssh alias "homeserver"
-CONTAINER=movienight-jf scripts/deploy.sh   # another instance running the same image
-SKIP_WAIT=1 scripts/deploy.sh           # do not wait for the Release workflow
-```
-
-The script checks that `HEAD` is `origin/main`, waits for that commit's Release run, asks Watchtower
-on the server to update the image (HTTP API `POST /v1/update?image=...`, token read on the server),
-and waits up to five minutes until the container is healthy and its
-`org.opencontainers.image.version` label matches the released version.
-
-Settings (`HOST`, `CONTAINER`, `IMAGE`, `TAG_VAR`) can also live in a git-ignored `.deploy.env.local`
-at the repo root; copy `.deploy.env.example`. Variables set in the environment win over the file.
-
-### Automatic database backup
-
-Before it changes the container (a release, a preview, or the return to `latest`) the script backs up
-the database inside the running container with SQLite's online backup API, so the copy is consistent
-while the app writes, and checks it with `PRAGMA integrity_check`. The copy is
-`movienight.db.bak-auto-<UTC time>-pre-<target>` next to the database; the newest `KEEP_BACKUPS` (5)
-are kept and other files are never touched. If the backup fails the deploy stops; if the container is
-not running it only warns. Settings: `DB_PATH` (default `/data/movienight.db`, a path inside the
-container), `KEEP_BACKUPS`, and `NO_BACKUP=1` to skip it.
-
-To restore: stop the container, copy the chosen `.bak-auto-*` file over `movienight.db`, delete
-`movienight.db-wal` and `movienight.db-shm`, and start the container (on the matching code version).
-
-### Testing a branch or PR before merging
-
-```sh
-scripts/deploy.sh 12          # a PR number
-scripts/deploy.sh feat/x      # or a branch name
-scripts/deploy.sh             # from main: back to :latest
-```
-
-The script resolves the branch head on `origin`, dispatches the manual **Preview image** workflow
-on `main` with the branch as its `ref` input, so branches cut before that workflow existed work too
-(tests, then a multi-arch image of the branch head tagged `sha-<7>` and `branch-<name>`, never
-`latest`, no release), unless that commit already has a successful Release run (a `main` commit).
-Previews are always rebuilt. The script then recreates the container on `sha-<7>` through its
-docker compose project and waits until it is healthy and its `org.opencontainers.image.revision`
-label is the commit. `SKIP_WAIT=1` skips the build wait. Local `HEAD` differing from the branch, or
-unpushed commits, only produce a warning: what gets deployed is `origin/<branch>`.
-
-One-time change on the server: the compose file must take the tag from a variable, so the script can
-choose it (the variable name can be changed with `TAG_VAR`; the script refuses to deploy otherwise):
-
-```yaml
-image: ghcr.io/andreub/movienight:${MOVIENIGHT_TAG:-latest}
-```
-
-Notes:
-
-- Watchtower does not move a preview: the container stays on its `sha-<7>` tag. Run
-  `scripts/deploy.sh` with no argument from an up-to-date `main` to recreate it on `latest`.
-- A preview runs against the same data volume as production. For a PR with migrations, take a
-  database backup first (see above; the script makes one automatically).
+</details>
 
 ## Login
 
@@ -409,6 +444,9 @@ with PKCE** there, with the redirect `<MOVIENIGHT_PUBLIC_URL>/login/callback`.
 no client id the app answers 503: it never runs open by accident. Sessions last 30 days.
 
 ## AI chat (optional)
+
+<details>
+<summary><b>Providers, budget and example</b></summary>
 
 An "Ask" tab lets you describe what you feel like watching; an AI model answers with films from your
 library, using tools that search the library, read film details and your taste profile. Two kinds of
@@ -445,6 +483,8 @@ never trips; the usage line then shows questions and tokens only. Once the budge
 questions get a short "budget used" reply (no API call) until the 1st. A hard cap can also be set on the
 provider's console.
 
+</details>
+
 ## Privacy
 
 Your Letterboxd export and the Plex token or Jellyfin access token are stored only in the local data
@@ -460,15 +500,123 @@ network (VPN or a reverse proxy with access control).
 
 `GET /healthz` returns `{"ok": true}`. The container health check uses the same endpoint.
 
+## Releases and deployment
+
+<details>
+<summary><b>Releases (versioning)</b></summary>
+
+Every push to `main` publishes a new version: a `vX.Y.Z` git tag, a GitHub Release and a Docker
+image (linux/amd64 and linux/arm64) at `ghcr.io/andreub/movienight`, tagged `X.Y.Z`, `X.Y`, `X`,
+`latest` and `sha-<short>`. The GHCR package is private, like the repo.
+
+The version comes from the title of the merged PR, which must follow Conventional Commits
+(`type(scope): subject`; a PR check enforces it). If the push has no PR, the commit subject is used.
+
+| Title | Bump |
+| --- | --- |
+| `type!: ...` or `BREAKING CHANGE:` in the PR body | major |
+| `feat: ...` | minor |
+| anything else (`fix`, `perf`, `refactor`, `docs`, `chore`, `ci`, `test`, `build`, `style`, `revert`) | patch |
+
+The bump applies to the latest `vX.Y.Z` tag; with no tag yet the first release is `v1.0.0`. Tests
+must pass before a release is cut.
+
+</details>
+
+<details>
+<summary><b>Deploy, backups and preview deploys</b></summary>
+
+Merging a PR to `main` runs the Release workflow (see Releases), which pushes
+`ghcr.io/andreub/movienight:latest`. The home server runs that image and Watchtower pulls it on its
+own schedule, so nothing else is needed.
+
+To get it immediately, from a checkout at `origin/main`:
+
+```sh
+scripts/deploy.sh                       # HOST defaults to your ssh alias, see .deploy.env.example
+CONTAINER=movienight-jf scripts/deploy.sh   # another instance running the same image
+SKIP_WAIT=1 scripts/deploy.sh           # do not wait for the Release workflow
+```
+
+The script checks that `HEAD` is `origin/main`, waits for that commit's Release run, asks Watchtower
+on the server to update the image (HTTP API `POST /v1/update?image=...`, token read on the server),
+and waits up to five minutes until the container is healthy and its
+`org.opencontainers.image.version` label matches the released version.
+
+Settings (`HOST`, `CONTAINER`, `IMAGE`, `TAG_VAR`) can also live in a git-ignored `.deploy.env.local`
+at the repo root; copy `.deploy.env.example`. Variables set in the environment win over the file.
+
+#### Automatic database backup
+
+Before it changes the container (a release, a preview, or the return to `latest`) the script backs up
+the database inside the running container with SQLite's online backup API, so the copy is consistent
+while the app writes, and checks it with `PRAGMA integrity_check`. The copy is
+`movienight.db.bak-auto-<UTC time>-pre-<target>` next to the database; the newest `KEEP_BACKUPS` (5)
+are kept and other files are never touched. If the backup fails the deploy stops; if the container is
+not running it only warns. Settings: `DB_PATH` (default `/data/movienight.db`, a path inside the
+container), `KEEP_BACKUPS`, and `NO_BACKUP=1` to skip it.
+
+To restore: stop the container, copy the chosen `.bak-auto-*` file over `movienight.db`, delete
+`movienight.db-wal` and `movienight.db-shm`, and start the container (on the matching code version).
+
+#### Testing a branch or PR before merging
+
+```sh
+scripts/deploy.sh 12          # a PR number
+scripts/deploy.sh feat/x      # or a branch name
+scripts/deploy.sh             # from main: back to :latest
+```
+
+The script resolves the branch head on `origin`, dispatches the manual **Preview image** workflow
+on `main` with the branch as its `ref` input, so branches cut before that workflow existed work too
+(tests, then a multi-arch image of the branch head tagged `sha-<7>` and `branch-<name>`, never
+`latest`, no release), unless that commit already has a successful Release run (a `main` commit).
+Previews are always rebuilt. The script then recreates the container on `sha-<7>` through its
+docker compose project and waits until it is healthy and its `org.opencontainers.image.revision`
+label is the commit. `SKIP_WAIT=1` skips the build wait. Local `HEAD` differing from the branch, or
+unpushed commits, only produce a warning: what gets deployed is `origin/<branch>`.
+
+One-time change on the server: the compose file must take the tag from a variable, so the script can
+choose it (the variable name can be changed with `TAG_VAR`; the script refuses to deploy otherwise):
+
+```yaml
+image: ghcr.io/andreub/movienight:${MOVIENIGHT_TAG:-latest}
+```
+
+Notes:
+
+- Watchtower does not move a preview: the container stays on its `sha-<7>` tag. Run
+  `scripts/deploy.sh` with no argument from an up-to-date `main` to recreate it on `latest`.
+- A preview runs against the same data volume as production. For a PR with migrations, take a
+  database backup first (see above; the script makes one automatically).
+
+</details>
+
+## Testing
+
+```sh
+uv run pytest
+```
+
+pytest with `pytest-asyncio` (auto mode); the suite lives in `tests/` and covers the API, sync, recommender,
+Completionist, Plex/Jellyfin/Seerr clients, login and chat. Tests must pass before a release is cut.
+
 ## Project layout
 
 ```
-src/movienight/          FastAPI app, sync jobs, SQLite storage
-src/movienight/static/   Vanilla JS/CSS frontend (no build step)
-src/movienight/data/     Bundled data (Completionist canonical lists)
-tests/                   pytest suite
-scripts/deploy.sh        Deploy to the home server
-scripts/build_list.py    Builds a canonical list from scripts/lists/*.tsv (dev only, needs a TMDB token)
-Dockerfile               Non-root image, read-only root filesystem at runtime
-docker-compose.yml       Local run with a private data volume
+src/movienight/            FastAPI app (app.py), sync jobs (sync.py), SQLite storage (db.py)
+  recommender.py           Taste scoring and recommendations
+  completion.py            Completionist groups (sagas, lists, people)
+  letterboxd.py, tmdb.py   Letterboxd import/RSS and TMDB client
+  plex.py, jellyfin.py     Media server clients (servers.py picks one)
+  seerr.py, cast.py        Seerr requests, Google Cast playback
+  auth.py, chat.py         Login (Plex / OIDC) and the optional AI chat
+  static/                  Vanilla JS/CSS frontend (no build step)
+  data/lists/              Bundled canonical lists for Completionist
+tests/                     pytest suite
+scripts/deploy.sh          Deploy / preview deploy to your server
+scripts/build_list.py      Builds a canonical list from scripts/lists/*.tsv (dev only, needs a TMDB token)
+.github/workflows/         Release, Preview image, PR title check
+Dockerfile                 Non-root image, read-only root filesystem at runtime
+docker-compose.yml         Local run with a private data volume
 ```
