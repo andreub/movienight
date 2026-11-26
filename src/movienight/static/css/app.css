@@ -582,6 +582,9 @@ main > .tonight { max-width: none; }
 /* ---------- Setup ---------- */
 
 .setup { padding: 0 var(--gutter) 48px; display: grid; gap: 24px; max-width: 820px; }
+.credits { display: grid; gap: 8px; justify-items: start; padding-top: 16px; border-top: 1px solid var(--ink-3); }
+.credits img { display: block; height: 16px; width: auto; opacity: .85; }
+.credits .help { font-size: .8125rem; margin: 0; }
 .setup__intro { display: grid; gap: 10px; }
 .banner { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 16px; border-radius: var(--r-m); background: rgb(134 220 170 / .12); color: var(--ok); }
 .banner .btn { margin-left: auto; }

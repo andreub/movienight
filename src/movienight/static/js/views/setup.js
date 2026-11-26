@@ -9,6 +9,17 @@ const LETTERBOXD_EXPORT = 'https://letterboxd.com/settings/data/';
 const PIN_INTERVAL = 2000;
 const PIN_TIMEOUT = 5 * 60 * 1000;
 
+// TMDB asks for this exact notice and its logo wherever its data is used.
+function credits() {
+  return h('footer', { class: 'credits' },
+    h('a', { href: 'https://www.themoviedb.org', target: '_blank', rel: 'noopener', 'aria-label': 'The Movie Database (TMDB)' },
+      h('img', { src: '/static/tmdb.svg', alt: 'TMDB', width: 120, height: 16 })),
+    h('p', { class: 'help', text: 'This product uses the TMDB API but is not endorsed or certified by TMDB.' }),
+    h('p', { class: 'help', text: 'Letterboxd, Plex, Jellyfin, Seerr, Google Cast, Anthropic and other names are trademarks of their owners. MovieNight is not affiliated with or endorsed by them.' }),
+    h('p', { class: 'help' }, 'MovieNight is free software (AGPL-3.0). ',
+      h('a', { href: 'https://github.com/andreub/movienight', target: '_blank', rel: 'noopener', text: 'Source code' })));
+}
+
 export function mount(root) {
   const intro = h('div', { class: 'setup__intro' });
   const statusError = h('div');
@@ -33,7 +44,7 @@ export function mount(root) {
     me.hidden = false;
   }).catch(() => {});
   root.append(h('div', { class: 'setup' }, intro, statusError,
-    h('ol', { class: 'steps' }, lb.el, plex.el, jf.el, sync.el), triage, chatNote, me));
+    h('ol', { class: 'steps' }, lb.el, plex.el, jf.el, sync.el), triage, chatNote, me, credits()));
 
   let wasReady = null;
   const unsubscribe = subscribe((s, err) => {
