@@ -17,10 +17,11 @@
 
 <p align="center">
   <img src="docs/screenshots/tonight.png" width="520" alt="Tonight's pick with mood filters and a match score">
-  <img src="docs/screenshots/mobile.png" width="200" alt="MovieNight on a phone">
+  <img src="docs/screenshots/mobile.png" width="182" alt="MovieNight on a phone">
 </p>
 <p align="center">
-  <img src="docs/screenshots/browse.png" width="800" alt="Browse the library with genre and length filters">
+  <img src="docs/screenshots/browse.png" width="400" alt="Browse the library with genre and length filters">
+  <img src="docs/screenshots/complete.png" width="400" alt="Completionist: a saga with your progress and what is left to watch">
 </p>
 
 MovieNight ranks the movies available on your **Plex** servers (or your **Jellyfin** server, see
@@ -231,6 +232,10 @@ The RSS feed carries no tags, so new tags arrive with the next export.
 
 <details>
 <summary><b>🧩 Completionist</b></summary>
+
+<p align="center">
+  <img src="docs/screenshots/complete.png" width="640" alt="The Complete tab showing a saga with 5 of 11 films seen">
+</p>
 
 The **Complete** tab lists the sagas, franchises and series you have started (at least one film
 seen), the canonical lists you have dipped into, then the directors and actors you keep coming back to, with your progress ("4 of 9 seen") and what is left. Each film is **seen** (Letterboxd, played
