@@ -56,6 +56,7 @@ network.
 - [Releases and deployment](#releases-and-deployment)
 - [Testing](#testing)
 - [Project layout](#project-layout)
+- [Credits and attribution](#credits-and-attribution)
 
 ## How it gets data
 
@@ -632,3 +633,17 @@ scripts/build_list.py      Builds a canonical list from scripts/lists/*.tsv (dev
 Dockerfile                 Non-root image, read-only root filesystem at runtime
 docker-compose.yml         Local run with a private data volume
 ```
+
+## Credits and attribution
+
+<a href="https://www.themoviedb.org"><img src="https://www.themoviedb.org/assets/v4/logos/v2/blue_short-8e7b30f73a4020692ccca9c88bafe5dcb6f8a62a4c6bc55cd9ba82bb2cd95f6c.svg" alt="TMDB" width="120"></a>
+
+This product uses the TMDB API but is not endorsed or certified by TMDB. Film data and images come from
+[The Movie Database](https://www.themoviedb.org).
+
+Letterboxd, Plex, Jellyfin, Google Cast, Anthropic, OpenAI and any other AI provider you configure are
+trademarks of their respective owners. MovieNight is an independent project and is not affiliated with or
+endorsed by any of them.
+
+The frontend has no bundled third-party JavaScript, CSS or icons. Its two fonts (Atkinson Hyperlegible, Big Shoulders
+Display) are loaded from Google Fonts and are licensed under the SIL Open Font License 1.1.
