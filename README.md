@@ -15,7 +15,7 @@
 </div>
 
 MovieNight ranks the movies available on your **Plex** servers (or your **Jellyfin** server, see
-[Media server](#media-server-plex-or-jellyfin)) using your **Letterboxd** history (watched films, ratings,
+[Media server](#feature-guides)) using your **Letterboxd** history (watched films, ratings,
 likes, watchlist) and **TMDB** metadata, then suggests what to put on tonight.
 It is a single-user app. With Plex, sign-in with the Plex account it belongs to is on by default; with
 Jellyfin, sign-in is OIDC or switched off (see [Login](#login)). Without a login, run it only on a private
@@ -159,6 +159,10 @@ The UI can run without a backend in mock mode at http://localhost:8080/?mock=1.
 | `MOVIENIGHT_PLEX_OWNER` | empty | Plex login only: the account id, username or email allowed in; empty = the first sign-in (or the account of the stored token) |
 | `MOVIENIGHT_COMPLETIONIST` | on | The Complete tab (sagas, franchises, series, lists, directors, actors). `0`/`false`/`no`: tab hidden, `/api/completions*` answers 404, and the sync skips the collection, collection-search, keyword and person-credit lookups |
 | `MOVIENIGHT_SEERR_URL` | empty | Overseerr / Jellyseerr API base including `/api/v1` (e.g. `https://seerr.example.com/api/v1`): each user connects their own Seerr account through Plex to request films missing from the library (see Completionist). No API key; unset = feature hidden |
+| `MOVIENIGHT_PUBLIC_URL` | empty | OIDC login only: the public URL of the app; the redirect is `<MOVIENIGHT_PUBLIC_URL>/login/callback` |
+| `MOVIENIGHT_OIDC_ISSUER` / `_CLIENT_ID` | empty | OIDC login only: issuer URL (turns OIDC on) and public PKCE client id |
+| `MOVIENIGHT_OIDC_ALLOWED_SUBS` | empty | OIDC login only: comma-separated `sub` claims allowed in; empty = anyone the provider signs in |
+| `MOVIENIGHT_AI_*`, `ANTHROPIC_API_KEY` | empty | Optional AI chat: see [AI chat](#ai-chat-optional) |
 | `MOVIENIGHT_PORT` | `8080` | Compose only: host port |
 | `TZ` | see `docker-compose.yml` | Compose only: container timezone |
 
