@@ -728,18 +728,24 @@ async def agent_events(request: Request, history: list[dict]) -> AsyncIterator[t
 BAD_ARGS = "The tool arguments were not valid JSON. Call the tool again with a single JSON object."
 
 
+async def _budget_spent(request: Request, budget: float) -> bool:
+    """Is this month's budget used up? Asked before every turn, so parallel questions stop at their next turn."""
+    if not budget:
+        return False
+    try:
+        state = await asyncio.to_thread(_db_call, request, month_usage)
+    except Exception as e:  # noqa: BLE001 - a broken meter must not take the chat down
+        log.warning("usage lookup failed: %s", type(e).__name__)
+        return False
+    return bool(state["exhausted"])
+
+
 async def _loop(request: Request, history: list[dict]) -> AsyncIterator[tuple[str, dict]]:
     model = model_name()
     budget = monthly_budget()
-    if budget:
-        try:
-            state = await asyncio.to_thread(_db_call, request, month_usage)
-        except Exception as e:  # noqa: BLE001 - a broken meter must not take the chat down
-            log.warning("usage lookup failed: %s", type(e).__name__)
-            state = {"exhausted": False}
-        if state["exhausted"]:
-            yield "text", {"delta": budget_message(budget)}
-            return
+    if await _budget_spent(request, budget):
+        yield "text", {"delta": budget_message(budget)}
+        return
     backend = make_backend(model)
     connect = _completions_connect(request)
     backend.start(SYSTEM_PROMPT, tools_for(connect is not None), list(history))
@@ -748,22 +754,36 @@ async def _loop(request: Request, history: list[dict]) -> AsyncIterator[tuple[st
     json_failures = 0
     try:
         turns = 0
+
+        async def record(turn) -> None:
+            """Count one API request (its tokens when the provider sent them: a failed one counts too)."""
+            nonlocal counted
+            try:
+                await asyncio.to_thread(_db_call, request, lambda c: record_usage(
+                    c, (turn.model if turn else None) or model, turn.usage if turn else None,
+                    new_question=not counted))
+                counted = True
+            except Exception as e:  # noqa: BLE001
+                log.warning("usage record failed: %s", type(e).__name__)
+
         while turns < MAX_TURNS:
+            if turns and await _budget_spent(request, budget):
+                yield "error", {"detail": budget_message(budget)}
+                return
             turns += 1
             turn = None
             try:
-                async for item in backend.turn():
-                    if isinstance(item, str):
-                        yield "text", {"delta": item}
-                    else:
-                        turn = item
-                json_failures = 0
                 try:
-                    await asyncio.to_thread(_db_call, request, lambda c: record_usage(
-                        c, turn.model or model, turn.usage, new_question=not counted))
-                    counted = True
-                except Exception as e:  # noqa: BLE001
-                    log.warning("usage record failed: %s", type(e).__name__)
+                    async for item in backend.turn():
+                        if isinstance(item, str):
+                            yield "text", {"delta": item}
+                        else:
+                            turn = item
+                except BaseException:
+                    await asyncio.shield(record(turn))
+                    raise
+                json_failures = 0
+                await record(turn)
             except ValueError:
                 # tool input JSON the SDK could not parse at all: re-issue the turn (bounded)
                 json_failures += 1
