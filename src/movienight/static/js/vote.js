@@ -25,8 +25,12 @@ export async function setVote(movie, vote) {
   }
 }
 
-export function announceVote(id, vote) {
+export function rememberVote(id, vote) {
   votes.set(id, vote);
+}
+
+export function announceVote(id, vote) {
+  rememberVote(id, vote);
   window.dispatchEvent(new CustomEvent('movienight:vote', { detail: { id, vote } }));
 }
 

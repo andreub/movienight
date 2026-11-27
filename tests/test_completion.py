@@ -283,7 +283,8 @@ def test_groups_discovered_dedupe_and_ranking(cc, monkeypatch):
             "series-5002", "series-5003",                                # a theme; inside collection 900
             "collection-940", "collection-950", "collection-999"}        # not started, too small, 404
     assert not gone & set(keys + [g["key"] for g in r["completed"]])
-    assert r["counts"] == {"collection": 3, "franchise": 1, "series": 1, "list": 0, "director": 0, "actor": 0}
+    # groups in progress only (collection-970 is finished): what the list under each chip holds (#59)
+    assert r["counts"] == {"collection": 2, "franchise": 1, "series": 1, "list": 0, "director": 0, "actor": 0}
     assert r["hidden"] == [] and r["hidden_count"] == 0
 
     fr = next(g for g in r["groups"] if g["key"] == "franchise-web-slinger")
@@ -331,7 +332,7 @@ def test_hide_and_unhide(cc):
     assert cc.post("/api/completions/collection-900/hide").json() == {"ok": True}
     r = cc.get("/api/completions").json()
     assert "collection-900" not in [g["key"] for g in r["groups"]] and r["hidden_count"] == 1
-    assert r["counts"]["collection"] == 2
+    assert r["counts"]["collection"] == 1                      # 960 (970 is finished)
     h = cc.get("/api/completions", params={"hidden": "true"}).json()["hidden"]
     assert [g["key"] for g in h] == ["collection-900"] and h[0]["hidden"] is True
     assert cc.get("/api/completions/collection-900").json()["hidden"] is True
@@ -346,6 +347,28 @@ def test_seen_mark_moves_a_film_to_seen(cc):
     assert cc.post(f"/api/movies/{mid}/seen", json={"seen": True}).status_code == 200
     g = cc.get("/api/completions/collection-900").json()
     assert next(f["state"] for f in g["films"] if f["tmdb_id"] == 111) == "seen" and g["seen"] == 2
+
+
+def test_dismissed_film_is_not_available_nor_next(cc):
+    """#58: a film hidden from suggestions is not offered as the next film of its saga (and comes back when shown
+    again), without waiting for the state to be rebuilt."""
+    g = cc.get("/api/completions/collection-900").json()
+    mid = g["next"]["movie_id"]
+    assert cc.post(f"/api/movies/{mid}/dismiss", json={"days": 0}).status_code == 200
+    g = cc.get("/api/completions/collection-900").json()
+    assert next(f["state"] for f in g["films"] if f["tmdb_id"] == 111) == "missing"
+    assert g["available"] == 0 and g["next"] is None and "movie_id" not in g["films"][1]
+    assert cc.delete(f"/api/movies/{mid}/dismiss").status_code == 200
+    g = cc.get("/api/completions/collection-900").json()
+    assert g["next"]["movie_id"] == mid and g["available"] == 1
+
+
+def test_counts_match_the_groups_listed(cc):
+    """#59: a chip's count is the number of cards its list shows (finished groups are folded away, not counted)."""
+    r = cc.get("/api/completions").json()
+    for kind, n in r["counts"].items():
+        assert n == sum(g["kind"] == kind for g in r["groups"]), kind
+    assert any(g["kind"] == "collection" for g in r["completed"])
 
 
 def test_no_groups_for_a_filmography_without_sagas(client):
@@ -477,7 +500,7 @@ def test_list_appears_once_a_film_is_seen(lists):
     keys = [g["key"] for g in r["groups"]]
     assert "list-best-ever" in keys and "list-unstarted" not in keys
     assert [g["key"] for g in r["completed"]] == ["collection-970", "list-all-done"]    # seen on Letterboxd only
-    assert r["counts"]["list"] == 2
+    assert r["counts"]["list"] == 1                            # list-all-done is finished
     with db.session(lists.cfg.db_path) as c:                          # marked seen here, outside the library
         c.execute("INSERT INTO seen(key, created_at) VALUES('tmdb:9801', '2026-01-01T00:00:00Z')")
     lists.app.state.engine.invalidate()
@@ -528,7 +551,7 @@ def test_list_kind_filter_and_hide(lists):
     assert [g["key"] for g in r["completed"]] == ["list-all-done"]
     assert lists.post("/api/completions/list-best-ever/hide").json() == {"ok": True}
     r = lists.get("/api/completions", params={"kind": "list"}).json()
-    assert r["groups"] == [] and r["hidden_count"] == 1 and r["counts"]["list"] == 1
+    assert r["groups"] == [] and r["hidden_count"] == 1 and r["counts"]["list"] == 0
     h = lists.get("/api/completions", params={"kind": "list", "hidden": "true"}).json()["hidden"]
     assert [g["key"] for g in h] == ["list-best-ever"]
     assert lists.delete("/api/completions/list-best-ever/hide").json() == {"ok": True}
