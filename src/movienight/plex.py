@@ -324,8 +324,8 @@ async def resolve_slug(client: httpx.AsyncClient, client_id: str, guid: str, tok
             return ""
         r.raise_for_status()
         md = (r.json().get("MediaContainer", {}).get("Metadata") or [{}])[0]
-    except (httpx.HTTPError, ValueError):
-        return None
+    except (httpx.HTTPError, ValueError, AttributeError, TypeError, IndexError):
+        return None             # includes a JSON body that is not the expected object
     slug = md.get("slug")
     return slug if isinstance(slug, str) and _SLUG_RE.match(slug) else ""
 

@@ -234,13 +234,15 @@ def load_inputs(conn: sqlite3.Connection, media=None) -> tuple[list, list]:
         if row is None:
             names = {norm_title(c.title), norm_title(c.meta.get("original_title"))} - {""}
             y = c.year
-            for nm in names:
-                for dy in (0, -1, 1):
+            for dy in (0, -1, 1):       # exact year first, then +-1; names sorted so the pick is deterministic
+                for nm in sorted(names):
                     for r in by_ny.get((nm, (y + dy) if y else None), []):
                         # a row already resolved to another TMDB id is a different film
                         if r["tmdb_id"] and c.tmdb_id and r["tmdb_id"] != c.tmdb_id:
                             continue
                         row = row or r
+                if row is not None:
+                    break
         if row is not None:
             c.lb_watched = bool(row["watched"])
             c.my_rating = row["rating"]

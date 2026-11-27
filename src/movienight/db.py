@@ -271,7 +271,11 @@ def migrate(path: Path | str) -> None:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         for i, script in enumerate(MIGRATIONS, start=1):
             if i > version:
-                conn.executescript(script)
+                if "BEGIN" in script:       # the script already brackets itself and bumps user_version
+                    conn.executescript(script)
+                else:                       # script and version bump commit together: a crash can't leave a half step
+                    conn.executescript(f"BEGIN;\n{script}\nPRAGMA user_version={i};\nCOMMIT;")
+                    continue
                 conn.execute(f"PRAGMA user_version={i}")
         conn.commit()
     finally:

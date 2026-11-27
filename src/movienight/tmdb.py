@@ -93,11 +93,17 @@ class Tmdb:
         if not want:
             return None
         years: list[int | None] = [year, year - 1, year + 1] if year else [None]
+        pages = []
         for y in years:
             params = {"query": title, "include_adult": "false"}
             if y:
                 params["year"] = y
             data = await self.get("/search/movie", params)
+            hit = pick_search_result(data, want, fuzzy=False)   # an exact title in any year beats a fuzzy one
+            if hit:
+                return hit
+            pages.append(data)
+        for data in pages:
             hit = pick_search_result(data, want)
             if hit:
                 return hit
@@ -146,12 +152,12 @@ class Tmdb:
         return compact_person(raw) if raw else None
 
 
-def pick_search_result(data: dict | None, want_norm: str) -> int | None:
+def pick_search_result(data: dict | None, want_norm: str, fuzzy: bool = True) -> int | None:
     results = (data or {}).get("results") or []
     for r in results:
         if want_norm in (norm_title(r.get("title")), norm_title(r.get("original_title"))):
             return r["id"]
-    if len(want_norm) >= 6:
+    if fuzzy and len(want_norm) >= 6:
         for r in results:
             t = norm_title(r.get("title"))
             if t and (want_norm in t or t in want_norm) and min(len(t), len(want_norm)) >= 6:
