@@ -432,6 +432,16 @@ def test_score_ordering_and_reasons():
     assert completion.score(votes_only, {4: (5.0, False), 7: (5.0, False)}, mu, TODAY)[1] == "You liked these"
 
 
+def test_rated_reason_needs_four_stars():
+    # a low mean makes 3.5-star films a positive taste, but the card only quotes ratings of 4 stars and up
+    films = [_f(1, "seen", "2010-01-01"), _f(2, "seen", "2011-01-01"), _f(3, "missing", "2012-01-01")]
+    ratings = {1: (3.5, True), 2: (3.5, True)}
+    total, why = completion.score(_g(films), ratings, 2.5, TODAY)
+    assert total > 0 and why == "Almost done"           # not "You rated ★3.5"
+    assert completion.score(_g(films, available=1), ratings, 2.5, TODAY)[1] == "In your library"
+    assert completion.score(_g(films), {1: (4.0, True), 2: (4.5, True)}, 2.5, TODAY)[1] == "You rated ★4.2"
+
+
 def test_user_ratings_prefers_letterboxd_over_votes(client):
     st = client.app.state.engine.get()
     ratings, mu = completion.user_ratings(st)

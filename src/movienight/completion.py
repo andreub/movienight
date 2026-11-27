@@ -37,6 +37,7 @@ from functools import cache
 from pathlib import Path
 
 from . import library, tmdb
+from .recommender import RATING_GOOD
 
 SAGA_KINDS = ("collection", "franchise", "series")
 LIST_KINDS = ("list",)
@@ -755,11 +756,10 @@ def score_reason(g: dict, ratings: dict[int, tuple[float, bool]], mu: float,
         key = "new" if fresh else "recent"
         params = {"year": recent["year"] or int(recent["release_date"][:4]), "title": recent["title"],
                   "tmdb_id": recent["tmdb_id"]}
-    elif t >= 0.25:
-        if real:
-            key, params = "rated", {"stars": _stars(sum(real) / len(real))}
-        else:
-            key = "liked.people" if g.get("kind") in PEOPLE_KINDS else "liked"
+    elif t >= 0.25 and real and sum(real) / len(real) >= RATING_GOOD:
+        key, params = "rated", {"stars": _stars(sum(real) / len(real))}
+    elif t >= 0.25 and not real:
+        key = "liked.people" if g.get("kind") in PEOPLE_KINDS else "liked"
     elif lib:
         key = "library"
     elif progress >= 0.5:
