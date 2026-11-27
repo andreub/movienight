@@ -1,5 +1,6 @@
 // Shared /api/status store. Polls every 2 s only while a sync is running.
 import { api } from './api.js';
+import { t } from './i18n.js';
 
 let current = null;
 let error = null;
@@ -33,11 +34,11 @@ export const serverName = (s = current) => (s?.media_server === 'jellyfin' ? 'Je
 export const serverStatus = (s = current) => (s?.media_server === 'jellyfin' ? s?.jellyfin : s?.plex) || {};
 
 export const STAGES = {
-  plex: 'Reading your Plex libraries',
-  jellyfin: 'Reading your Jellyfin library',
-  letterboxd: 'Reading your Letterboxd history',
-  tmdb: 'Fetching film details from TMDB',
-  profile: 'Updating your taste profile',
+  plex: t('stage.plex'),
+  jellyfin: t('stage.jellyfin'),
+  letterboxd: t('stage.letterboxd'),
+  tmdb: t('stage.tmdb'),
+  profile: t('stage.profile'),
 };
 
 export function syncPercent(sync) {

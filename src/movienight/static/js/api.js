@@ -1,3 +1,5 @@
+import { t } from './i18n.js';
+
 // HTTP layer. With ?mock=1 (or ?mock=fresh for a first-run setup) requests are
 // answered by /static/mock.js instead of the server.
 
@@ -29,9 +31,9 @@ export function checkVersion(headerValue, announce = announceNewVersion) {
 }
 
 function announceNewVersion() {
-  import('/static/js/dom.js').then(({ toast }) => toast('A new version is available.', {
+  import('/static/js/dom.js').then(({ toast }) => toast(t('version.new'), {
     timeout: 0,
-    action: { label: 'Reload', run: () => location.reload() },
+    action: { label: t('version.reload'), run: () => location.reload() },
   })).catch(() => {});
 }
 
@@ -59,7 +61,7 @@ function detailOf(data, status) {
   const d = data?.detail;
   if (typeof d === 'string') return d;
   if (Array.isArray(d)) return d.map((x) => x.msg || JSON.stringify(x)).join('; ');
-  return `The server answered with an error (${status}).`;
+  return t('error.server', { status });
 }
 
 async function request(method, path, { params, json, form } = {}) {
@@ -77,7 +79,7 @@ async function request(method, path, { params, json, form } = {}) {
       body: json ? JSON.stringify(json) : form,
     });
   } catch {
-    throw new ApiError(0, 'Could not reach MovieNight. Check that the server is running and you are online.');
+    throw new ApiError(0, t('error.offline'));
   }
   checkVersion(res.headers.get('X-MovieNight-Version'));
   const data = await res.json().catch(() => null);
@@ -198,7 +200,7 @@ export async function* chatStream(messages, signal) {
     });
   } catch (e) {
     if (e.name === 'AbortError') throw e;
-    throw new ApiError(0, 'Could not reach MovieNight. Check that the server is running and you are online.');
+    throw new ApiError(0, t('error.offline'));
   }
   checkVersion(res.headers.get('X-MovieNight-Version'));
   if (!res.ok) {

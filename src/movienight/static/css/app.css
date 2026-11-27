@@ -586,6 +586,8 @@ main > .tonight { max-width: none; }
 .credits img { display: block; height: 16px; width: auto; opacity: .85; }
 .credits .help { font-size: .8125rem; margin: 0; }
 .setup__intro { display: grid; gap: 10px; }
+.setup__title { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 16px; }
+.setup__title .page-title { margin-bottom: 0; }
 .banner { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 16px; border-radius: var(--r-m); background: rgb(134 220 170 / .12); color: var(--ok); }
 .banner .btn { margin-left: auto; }
 .steps { display: grid; gap: 16px; counter-reset: none; }

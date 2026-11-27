@@ -5,6 +5,7 @@ import { h, icon } from './dom.js';
 import { RUNTIMES, EMPTY_FILTERS, apiFilters, setFilters, hasQuickFilters, CLEAR_QUICK } from './state.js';
 import { dropdown } from './dropdown.js';
 import { timeControl, rememberRuntime } from './timecontrol.js';
+import { t } from './i18n.js';
 
 let uid = 0;
 
@@ -13,9 +14,9 @@ let uid = 0;
 export function filterBar({ time = false, saga = false } = {}) {
   const timeCtl = time ? timeControl() : null;
   const name = `rt-${++uid}`;
-  const moods = h('div', { class: 'chips chips--scroll', role: 'group', 'aria-label': 'Mood' });
+  const moods = h('div', { class: 'chips chips--scroll', role: 'group', 'aria-label': t('filters.mood') });
   // One chip per tag family ("Like my Sitges"); its editions open in a second short row when picked.
-  const editions = h('div', { class: 'chips chips--scroll chips--sub', role: 'group', 'aria-label': 'Tag edition', hidden: true });
+  const editions = h('div', { class: 'chips chips--scroll chips--sub', role: 'group', 'aria-label': t('filters.edition'), hidden: true });
   const runtimeInputs = RUNTIMES.map(([value, label]) => {
     const input = h('input', { type: 'radio', name, value: value ?? '', class: 'seg__input', onchange: () => { rememberRuntime(value); setFilters({ rt: value }); } });
     return [input, h('label', { class: 'seg__item' }, input, h('span', { text: label }))];
@@ -23,35 +24,35 @@ export function filterBar({ time = false, saga = false } = {}) {
   const watchlist = h('button', {
     type: 'button', class: 'chip chip--toggle', 'aria-pressed': 'false',
     onclick: () => setFilters({ wl: watchlist.getAttribute('aria-pressed') !== 'true' }),
-  }, icon('watchlist'), h('span', { class: 'chip__label', text: 'Watchlist only' }));
+  }, icon('watchlist'), h('span', { class: 'chip__label', text: t('filters.watchlist') }));
   // The next film of each saga the user has started, in the library. Hidden until Tonight learns there is one.
   const sagaChip = saga ? h('button', {
     type: 'button', class: 'chip chip--toggle', 'aria-pressed': 'false', hidden: true,
-    title: 'The next film of each saga you have started',
+    title: t('filters.saga.title'),
     onclick: () => setFilters({ saga: sagaChip.getAttribute('aria-pressed') !== 'true' }),
-  }, icon('trophy'), h('span', { class: 'chip__label', text: 'Complete a saga' })) : null;
+  }, icon('trophy'), h('span', { class: 'chip__label', text: t('filters.saga') })) : null;
   let sagaFilms = 0;
   const reset = h('button', {
     type: 'button', class: 'linkbtn', hidden: true,
     onclick: () => { rememberRuntime(null); setFilters(CLEAR_QUICK); },
-  }, 'Clear');
+  }, t('common.clear'));
 
   // Era: a compact menu beside the length control. Hidden until the list loads (and removed if it fails or is empty).
   let eraList = [];
   const eraCtl = dropdown({
     iconName: 'calendar',
     build: () => h('ul', null,
-      eraCtl.item('Any era', null, !state?.era, () => setFilters({ era: null })),
+      eraCtl.item(t('filters.anyEra'), null, !state?.era, () => setFilters({ era: null })),
       eraOptions().map((e) => eraCtl.item(e.label, null, state?.era === e.id, () => setFilters({ era: e.id })))),
   });
   eraCtl.chip.hidden = true;
-  eraCtl.label.textContent = 'Any era';
+  eraCtl.label.textContent = t('filters.anyEra');
 
   const el = h('div', { class: 'filters' },
     moods,
     editions,
     h('div', { class: 'filters__row' },
-      timeCtl ? timeCtl.chip : h('fieldset', { class: 'seg' }, h('legend', { class: 'sr-only', text: 'Length' }), runtimeInputs.map(([, l]) => l)),
+      timeCtl ? timeCtl.chip : h('fieldset', { class: 'seg' }, h('legend', { class: 'sr-only', text: t('filters.length') }), runtimeInputs.map(([, l]) => l)),
       eraCtl.chip,
       watchlist,
       sagaChip,
@@ -74,9 +75,9 @@ export function filterBar({ time = false, saga = false } = {}) {
     families = tags;
     familyButtons = tags.map((fam) => h('button', {
       type: 'button', class: 'chip chip--tag', 'aria-pressed': 'false', 'data-family': fam.family,
-      title: `Films like the ${fam.films} you tagged ${fam.family} on Letterboxd`,
+      title: t('filters.tag.title', { n: fam.films, tag: fam.family }),
       onclick: () => setFilters(state && familyOf(state) === fam ? { tag: null, tagf: null } : { tag: null, tagf: fam.family }),
-    }, icon('tag'), `Like my ${fam.label}`));
+    }, icon('tag'), t('filters.tag', { label: fam.label })));
     moods.replaceChildren(...moodButtons, ...familyButtons);
     if (state) sync(state);
   }).catch(() => moods.remove());
@@ -89,7 +90,7 @@ export function filterBar({ time = false, saga = false } = {}) {
   let erasKey = null, erasSeq = 0, erasLoaded = false;
   function showEras() {
     eraCtl.chip.hidden = !(eraList.length || state?.era);
-    eraCtl.label.textContent = state?.era ? eraLabel(state.era) : 'Any era';
+    eraCtl.label.textContent = state?.era ? eraLabel(state.era) : t('filters.anyEra');
   }
   function loadEras(force) {
     const { era, ...params } = apiFilters(state || EMPTY_FILTERS);
@@ -120,7 +121,7 @@ export function filterBar({ time = false, saga = false } = {}) {
       type: 'button', class: 'chip chip--small', 'aria-pressed': String(pressed), onclick: () => setFilters(patch),
     }, label, h('span', { class: 'chip__count', text: patch.tag ? String(eds.find((e) => e.tag === patch.tag).films) : String(fam.films) }));
     editions.replaceChildren(
-      chip('All', !f.tag, { tag: null, tagf: fam.family }),
+      chip(t('filters.all'), !f.tag, { tag: null, tagf: fam.family }),
       ...eds.map((e) => chip(e.edition ? String(e.edition) : e.tag, f.tag === e.tag, { tag: e.tag, tagf: null })));
     editions.hidden = false;
   }

@@ -4,6 +4,7 @@
 import { h, icon } from './dom.js';
 import { api, getPlayers } from './api.js';
 import { serverName } from './status.js';
+import { t } from './i18n.js';
 
 const RES = { '4k': '4K', 1080: '1080p', 720: '720p', sd: 'SD' };
 const LAST_KEY = 'movienight.lastPlayer';
@@ -40,7 +41,7 @@ const playTarget = (url) => (url.startsWith('plex:') ? null : '_blank');
 export function playControl(movie, cls = '') {
   const sources = movie.plex || [];
   if (!sources.length) {
-    return h('button', { type: 'button', class: `btn btn--primary ${cls}`, disabled: true }, icon('play'), `Not on ${serverName()} right now`);
+    return h('button', { type: 'button', class: `btn btn--primary ${cls}`, disabled: true }, icon('play'), t('play.notOn', { server: serverName() }));
   }
   const holder = h('div', { class: 'play-control', style: { display: 'contents' } }, linkControl(sources, cls));
   // In the TV app we are the TV: Play opens the film in the Plex app, never a cast menu.
@@ -56,16 +57,16 @@ function linkControl(sources, cls) {
   if (sources.length === 1) {
     const url = playHref(sources[0]);
     return h('a', { class: `btn btn--primary ${cls}`, href: url, target: playTarget(url), rel: 'noopener' },
-      icon('play'), `Play on ${serverName()}`);
+      icon('play'), t('play.on', { server: serverName() }));
   }
   return menuControl(sources, cls, (toggle) => sources.map((s) => webItem(s, toggle, true)),
-    [icon('play'), `Play on ${serverName()}`, icon('chevron', 'icon--end')]);
+    [icon('play'), t('play.on', { server: serverName() }), icon('chevron', 'icon--end')]);
 }
 
 function webItem(s, toggle, withServerName) {
   const url = playHref(s);
   return h('li', null, h('a', { class: 'menu__item', href: url, target: playTarget(url), rel: 'noopener', onclick: () => toggle(false) },
-    h('span', { text: withServerName ? s.server : `Open in ${serverName()} Web` }),
+    h('span', { text: withServerName ? s.server : t('play.web', { server: serverName() }) }),
     s.resolution ? h('span', { class: 'badge', text: RES[s.resolution] || s.resolution }) : null));
 }
 
@@ -77,20 +78,20 @@ function playerMenu(movie, sources, players, cls) {
   let busy = false;
   let button;
 
-  const label = () => [icon('play'), `Play on ${serverName()}`, icon('chevron', 'icon--end')];
+  const label = () => [icon('play'), t('play.on', { server: serverName() }), icon('chevron', 'icon--end')];
   const say = (text) => { button.replaceChildren(icon('play'), text); };
 
   async function start(player, source, toggle) {
     toggle(false);
     if (busy) return;
     busy = true;
-    say(`Starting on ${player.name}…`);
+    say(t('play.starting', { player: player.name }));
     try {
       await api.play(player.id, source.server_id, source.rating_key);
       rememberPlayer(player.id);
-      say(`Playing on ${player.name}`);
+      say(t('play.playing', { player: player.name }));
     } catch (e) {
-      say(e.status === 502 ? `Could not reach ${player.name}` : `Could not start on ${player.name}`);
+      say(e.status === 502 ? t('play.unreachable', { player: player.name }) : t('play.failed', { player: player.name }));
     }
     setTimeout(() => { busy = false; button.replaceChildren(...label()); }, 4000);
   }
@@ -98,10 +99,10 @@ function playerMenu(movie, sources, players, cls) {
   const wrapAndButton = menuControl(sources, cls, (toggle) => [
     ...ordered.flatMap((p) => playable.map((s) => h('li', null,
       h('button', { type: 'button', class: 'menu__item', onclick: () => start(p, s, toggle) },
-        h('span', { text: `Play on ${p.name}${several ? ` (${s.server})` : ''}` }),
+        h('span', { text: `${t('play.on', { server: p.name })}${several ? ` (${s.server})` : ''}` }),
         s.resolution ? h('span', { class: 'badge', text: RES[s.resolution] || s.resolution }) : null)))),
     ...sources.map((s) => webItem(s, toggle, false)).map((li, i) => {
-      if (several) li.querySelector('span').textContent = `Open in ${serverName()} Web (${sources[i].server})`;
+      if (several) li.querySelector('span').textContent = `${t('play.web', { server: serverName() })} (${sources[i].server})`;
       return li;
     }),
   ], label());

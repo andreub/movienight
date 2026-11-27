@@ -17,13 +17,14 @@ import { h, fill, icon, poster, hueOf, errorBox, toast, announce, quoted } from 
 import { TV } from '../tvnav.js';
 import { mountTv } from './completetv.js';
 import { seerrEnabled, requestBadges } from '../seerr.js';
+import { t } from '../i18n.js';
 
-export const title = 'Complete';
+export const title = t('tab.complete');
 
 // The kind chips, shared with the Screen layout. A chip whose kind has no group is hidden (unless it is the current one).
 export const KINDS = [
-  [null, 'All'], ['collection', 'Sagas'], ['franchise', 'Franchises'], ['list', 'Lists'],
-  ['director', 'Directors'], ['actor', 'Actors'],
+  [null, t('complete.kind.all')], ['collection', t('complete.kind.collection')], ['franchise', t('complete.kind.franchise')], ['list', t('complete.kind.list')],
+  ['director', t('complete.kind.director')], ['actor', t('complete.kind.actor')],
 ];
 export const PEOPLE = new Set(['director', 'actor']);
 
@@ -70,14 +71,14 @@ function progress(g) {
   return h('div', { class: 'cprog' },
     h('div', {
       class: 'cprog__bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': String(g.total),
-      'aria-valuenow': String(g.seen), 'aria-label': `${g.name}: ${g.seen} of ${g.total} seen`,
+      'aria-valuenow': String(g.seen), 'aria-label': t('complete.progress.aria', { name: g.name, seen: g.seen, total: g.total }),
     }, h('span', { class: 'cprog__fill', style: { width: `${pct(g)}%` } })),
     h('span', { class: 'cprog__label' },
-      h('strong', { text: String(g.seen) }), ` of ${g.total} seen`,
-      g.available ? h('span', { class: 'cprog__avail', text: ` · ${g.available} in library` }) : null));
+      h('strong', { text: String(g.seen) }), t('complete.progress.of', { total: g.total }),
+      g.available ? h('span', { class: 'cprog__avail', text: ` · ${t('complete.progress.avail', { n: g.available })}` }) : null));
 }
 
-const STATE_LABEL = { available: 'in your library', seen: 'seen', missing: 'not in your library' };
+const STATE_LABEL = { available: t('complete.state.available'), seen: t('complete.state.seen'), missing: t('complete.state.missing') };
 
 // Opens a film: one in the library to watch gets the full detail sheet (Play lives there); any other one (seen,
 // or missing from the library) the light panel by TMDB id, to mark it seen with a verdict or undo a mark.
@@ -91,7 +92,7 @@ function film(f) {
   const label = `${f.title}${f.year ? ` (${f.year})` : ''}, ${STATE_LABEL[f.state]}`;
   const art = h('div', { class: 'cfilm__art', 'data-seerr': f.state === 'missing' && seerrEnabled() ? String(f.tmdb_id) : null },
     poster(f, { label }),
-    f.state === 'available' ? h('span', { class: 'cfilm__badge', text: 'In library' }) : null,
+    f.state === 'available' ? h('span', { class: 'cfilm__badge', text: t('complete.inLibrary') }) : null,
     f.state === 'seen' ? h('span', { class: 'cfilm__seen', 'aria-hidden': 'true' }, icon('check')) : null);
   return h('li', { class: `cfilm cfilm--${f.state}` },
     h('button', { type: 'button', class: 'cfilm__btn', 'aria-label': label, title: label, onclick: () => openSagaFilm(f) }, art));
@@ -106,11 +107,11 @@ function foldTile(run, onOpen) {
   return h('li', { class: 'cfilm cfilm--fold' },
     h('button', {
       type: 'button', class: 'cfold-tile', onclick: onOpen,
-      'aria-label': `${run.length} seen films${years ? `, ${years}` : ''}. Show them`,
+      'aria-label': years ? t('complete.fold.ariaYears', { n: run.length, years }) : t('complete.fold.aria', { n: run.length }),
     },
     h('span', { class: 'cfold-tile__check' }, icon('check')),
     h('span', { class: 'cfold-tile__n', text: String(run.length) }),
-    h('span', { class: 'cfold-tile__label', text: 'seen' }),
+    h('span', { class: 'cfold-tile__label', text: t('complete.fold.seen', { n: run.length }) }),
     years ? h('span', { class: 'cfold-tile__years', text: years }) : null));
 }
 
@@ -160,7 +161,7 @@ export function listLayout(films, cap, all = false, seenOpen = false) {
 const rowsFor = (cols, ordered) => (ordered || cols >= 6 ? 3 : 2);
 
 const LAYOUT_KEY = 'movienight.completeLayout';
-const LAYOUTS = [['list', 'List', 'list'], ['screen', 'Screen', 'screen']];
+const LAYOUTS = [['list', t('complete.layout.list'), 'list'], ['screen', t('complete.layout.screen'), 'screen']];
 
 function storedLayout() {
   try { return localStorage.getItem(LAYOUT_KEY) === 'screen' ? 'screen' : 'list'; } catch { return 'list'; }
@@ -179,7 +180,7 @@ function layoutToggle(layout, onPick) {
     });
     return h('label', { class: 'seg__item' }, input, h('span', {}, icon(glyph), label));
   });
-  return h('fieldset', { class: 'seg seg--small complete__layout' }, h('legend', { class: 'sr-only', text: 'Layout' }), items);
+  return h('fieldset', { class: 'seg seg--small complete__layout' }, h('legend', { class: 'sr-only', text: t('complete.layout') }), items);
 }
 
 // The kind chip that lists a group, from its key ("series-357318" -> Sagas).
@@ -227,9 +228,9 @@ function mountList(root, toggle, group = null) {
 
   root.append(h('div', { class: 'complete' },
     h('div', { class: 'complete__top' },
-      h('div', { class: 'complete__head' }, h('h1', { class: 'page-title', text: 'Complete' }), toggle),
-      h('p', { class: 'lede', text: 'Sagas, franchises and series you have started, the great lists you have dipped into, then the directors and actors you keep coming back to. New releases and the ones you rated highest come first.' }),
-      h('div', { class: 'chips chips--scroll complete__kinds', role: 'group', 'aria-label': 'Kind of group' }, chips)),
+      h('div', { class: 'complete__head' }, h('h1', { class: 'page-title', text: t('tab.complete') }), toggle),
+      h('p', { class: 'lede', text: t('complete.lede') }),
+      h('div', { class: 'chips chips--scroll complete__kinds', role: 'group', 'aria-label': t('complete.kinds') }, chips)),
     status, list, folds));
 
   function paintChips() {
@@ -243,7 +244,7 @@ function mountList(root, toggle, group = null) {
   }
 
   function card(g) {
-    const grid = h('ul', { class: 'cgrid', 'aria-label': g.ordered ? `${g.name}, in release order` : `Still to watch in ${g.name}` });
+    const grid = h('ul', { class: 'cgrid', 'aria-label': g.ordered ? t('complete.grid.ordered', { name: g.name }) : t('complete.grid.todo', { name: g.name }) });
     const moreBtn = h('button', { type: 'button', class: 'cmore', hidden: true, onclick: () => { toggleAll(); } });
     const open = new Set();
     let cols = 0;
@@ -268,7 +269,7 @@ function mountList(root, toggle, group = null) {
       requestBadges(grid); // Seerr: requested / on its way, on missing posters
       const all = expanded.has(g.key);
       moreBtn.hidden = !cut && !all;
-      moreBtn.textContent = all ? 'Show less' : `Show all ${g.total}`;
+      moreBtn.textContent = all ? t('complete.less') : t('complete.all', { n: g.total });
       moreBtn.setAttribute('aria-expanded', String(all));
     }
 
@@ -286,11 +287,11 @@ function mountList(root, toggle, group = null) {
         person ? face(g, 'cgroup__face') : null,
         person
           ? h('div', { class: 'cgroup__who' },
-            h('span', { class: 'cgroup__kind', text: g.kind === 'director' ? 'Director' : 'Actor' }),
+            h('span', { class: 'cgroup__kind', text: g.kind === 'director' ? t('complete.director') : t('complete.actor') }),
             h('h2', { class: 'cgroup__name', text: g.name }))
           : h('h2', { class: 'cgroup__name', text: g.name }),
         g.reason ? h('span', { class: 'cgroup__why', text: g.reason, title: g.reason, 'aria-label': g.reason }) : null,
-        h('button', { type: 'button', class: 'cgroup__hide', 'aria-label': `Hide ${g.name}`, title: 'Hide', onclick: () => hide(g, li) }, icon('close'))),
+        h('button', { type: 'button', class: 'cgroup__hide', 'aria-label': t('complete.hide.aria', { name: g.name }), title: t('complete.hide'), onclick: () => hide(g, li) }, icon('close'))),
       progress(g),
       grid,
       h('div', { class: 'cgroup__foot' }, moreBtn));
@@ -301,7 +302,7 @@ function mountList(root, toggle, group = null) {
     return h('li', { class: 'crow', 'data-key': g.key },
       h('span', { class: 'crow__icon' }, icon(g.complete ? 'trophy' : 'eyeoff')),
       h('span', { class: 'crow__name', text: g.name }),
-      h('span', { class: 'crow__meta', text: g.complete ? `All ${g.total} seen` : `${g.seen} of ${g.total}` }),
+      h('span', { class: 'crow__meta', text: g.complete ? t('complete.row.all', { n: g.total }) : t('complete.row.of', { seen: g.seen, total: g.total }) }),
       action || null);
   }
 
@@ -311,12 +312,12 @@ function mountList(root, toggle, group = null) {
       await api.hideCompletion(g.key);
     } catch (err) {
       li.classList.remove('is-leaving');
-      toast(err.detail || 'Could not hide it.');
+      toast(err.detail || t('complete.hide.error'));
       return;
     }
-    announce(`${g.name} hidden.`);
-    toast(`Hid ${quoted({ title: g.name })}.`, {
-      action: { label: 'Undo', run: () => api.unhideCompletion(g.key).then(load).catch((e) => toast(e.detail || 'Could not undo.')) },
+    announce(t('complete.hidden.announce', { name: g.name }));
+    toast(t('complete.hidden', { name: quoted({ title: g.name }) }), {
+      action: { label: t('common.undo'), run: () => api.unhideCompletion(g.key).then(load).catch((e) => toast(e.detail || t('complete.undo.error'))) },
     });
     load();
   }
@@ -343,20 +344,20 @@ function mountList(root, toggle, group = null) {
     if (!groups.length) {
       const any = data.completed.length || data.hidden_count;
       fill(status, h('div', { class: 'state' },
-        h('p', { class: 'state__title', text: any ? 'All caught up' : 'Nothing started yet' }),
+        h('p', { class: 'state__title', text: any ? t('complete.empty.done') : t('complete.empty.none') }),
         h('p', { class: 'state__text', text: any
-          ? 'Every saga you have started here is finished or hidden.'
-          : 'Watch one film of a saga, franchise or trilogy and it shows up here, with what is left to see.' })));
+          ? t('complete.empty.doneText')
+          : t('complete.empty.noneText') })));
     } else fill(status);
     const parts = [];
-    if (data.completed.length) parts.push(folded(`Completed (${data.completed.length})`, data.completed.map((g) => row(g))));
+    if (data.completed.length) parts.push(folded(t('complete.completed', { n: data.completed.length }), data.completed.map((g) => row(g))));
     if (data.hidden_count) {
-      parts.push(folded(`Show hidden (${data.hidden_count})`, [], {
+      parts.push(folded(t('complete.showHidden', { n: data.hidden_count }), [], {
         onOpen: async (body) => {
           try {
             const r = await api.completions({ kind, hidden: true });
             fill(body, r.hidden.map((g) => row(g, {
-              action: h('button', { type: 'button', class: 'linkbtn', onclick: () => api.unhideCompletion(g.key).then(load).catch((e) => toast(e.detail || 'Could not unhide it.')) }, 'Unhide'),
+              action: h('button', { type: 'button', class: 'linkbtn', onclick: () => api.unhideCompletion(g.key).then(load).catch((e) => toast(e.detail || t('complete.unhide.error'))) }, t('complete.unhide')),
             })));
           } catch (err) { fill(body, errorBox(err)); }
         },
@@ -403,7 +404,7 @@ function mountList(root, toggle, group = null) {
   }
 
   async function load() {
-    const t = ++token;
+    const seq = ++token;
     const want = target;
     if (want && kind && kind !== kindOfKey(want)) { kind = null; paintChips(); } // for this visit only (not stored)
     if (!data) fill(list, Array.from({ length: 3 }, () => h('li', { class: 'cgroup cgroup--skeleton', 'aria-hidden': 'true' },
@@ -411,7 +412,7 @@ function mountList(root, toggle, group = null) {
       h('ul', { class: 'cgrid cgrid--skeleton' }, Array.from({ length: 8 }, () => h('li', { class: 'cfilm' }, h('div', { class: 'poster skel' })))))));
     try {
       const r = await api.completions({ kind });
-      if (!alive || t !== token) return;
+      if (!alive || seq !== token) return;
       if (kind && !kindCount(r.counts, kind)) { // a remembered kind with no groups left: back to All
         kind = null;
         storeKind(null);
@@ -422,7 +423,7 @@ function mountList(root, toggle, group = null) {
       paint();
       if (want) { target = null; anchorPending = false; reveal(want); } else if (anchorPending) { anchorPending = false; keepInView(anchor); }
     } catch (err) {
-      if (alive && t === token) { fill(list); fill(status, errorBox(err, load)); }
+      if (alive && seq === token) { fill(list); fill(status, errorBox(err, load)); }
     }
   }
 

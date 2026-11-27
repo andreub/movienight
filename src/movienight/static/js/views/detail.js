@@ -1,7 +1,7 @@
 // Film detail: bottom sheet on phones, side panel on wider screens (one <dialog>). Library films by id (#movie=),
 // and any film by TMDB id (#film=, Complete's saga films, in the library or not) in the same sheet.
 import { api } from '../api.js';
-import { h, icon, poster, hueOf, runtime, stars, matchStub, reasonList, errorBox, toast, num } from '../dom.js';
+import { h, icon, poster, hueOf, runtime, stars, matchStub, reasonList, errorBox, toast, num, fixed } from '../dom.js';
 import { playControl } from '../play.js';
 import { voteButtons, setVote, voteOf, LOVE } from '../vote.js';
 import { setSeen, setSeenVote, isSeen, rememberSeen, OUTCOMES } from '../seen.js';
@@ -10,6 +10,7 @@ import { serverName } from '../status.js';
 import { TV } from '../tvnav.js';
 import { seerrEnabled, seerrState, requestFilm, stateChip, CHIP } from '../seerr.js';
 import { seenMsg, seenVoteMsg, unseenMsg, voteMsg, hideMsg, neverMsg, unhideMsg, UNMARK_LABEL } from '../messages.js';
+import { t, lang } from '../i18n.js';
 
 const dialog = document.getElementById('detail');
 const body = dialog.querySelector('.sheet__body');
@@ -70,14 +71,14 @@ async function load({ quiet = false, focus = null } = {}) {
 }
 
 function closeButton() {
-  return h('button', { type: 'button', class: 'sheet__close iconbtn', 'aria-label': 'Close', onclick: () => onRequestClose() }, icon('close'));
+  return h('button', { type: 'button', class: 'sheet__close iconbtn', 'aria-label': t('detail.close'), onclick: () => onRequestClose() }, icon('close'));
 }
 
 function hiddenUntil(m) {
   if (!m.dismissed_until) return null;
   const d = new Date(m.dismissed_until);
   if (Number.isNaN(d.getTime()) || d < new Date()) return null;
-  return d.getFullYear() >= 9000 ? 'Hidden for good' : `Hidden until ${d.toLocaleDateString('en', { day: 'numeric', month: 'short' })}`;
+  return d.getFullYear() >= 9000 ? t('detail.hiddenForGood') : t('detail.hiddenUntil', { date: d.toLocaleDateString(lang, { day: 'numeric', month: 'short' }) });
 }
 
 async function setDismissed(m, days) {
@@ -90,7 +91,7 @@ async function setDismissed(m, days) {
   }
   window.dispatchEvent(new CustomEvent('movienight:changed', { detail: { id: m.id, dismissed: days !== null } }));
   if (days === null) toast(unhideMsg(m));
-  else toast(days === 0 ? neverMsg(m) : hideMsg(m), { action: { label: 'Undo', run: () => setDismissed(m, null) } });
+  else toast(days === 0 ? neverMsg(m) : hideMsg(m), { action: { label: t('common.undo'), run: () => setDismissed(m, null) } });
   load();
 }
 
@@ -124,7 +125,7 @@ async function markSeen(m, seen) {
   if (parse().view === 'tonight') return;
   toast(seenMsg(m), {
     timeout: 3000,
-    action: { label: 'Undo', run: async () => { if (await setSeen(m, false, 'undo')) announceMarked({ id: m.id, seen: false }); } },
+    action: { label: t('common.undo'), run: async () => { if (await setSeen(m, false, 'undo')) announceMarked({ id: m.id, seen: false }); } },
   });
 }
 
@@ -153,7 +154,7 @@ function votesControl(m) {
     if (parse().view === 'tonight') return; // Tonight shows its own toast for the seen mark
     toast(seenVoteMsg(m, vote), {
       timeout: 3000,
-      action: { label: 'Undo', run: async () => { if (await setSeenVote(m, false, previousVote, 'undo')) announceMarked({ id: m.id, seen: false }); } },
+      action: { label: t('common.undo'), run: async () => { if (await setSeenVote(m, false, previousVote, 'undo')) announceMarked({ id: m.id, seen: false }); } },
     });
   };
   return voteButtons(m, { save, onVote });
@@ -166,20 +167,20 @@ function render(m) {
     : h('div', { class: 'detail__backdrop detail__backdrop--gen', 'aria-hidden': 'true' });
 
   const facts = [
-    ['Directed by', m.directors?.join(', ')],
-    ['Starring', m.cast?.slice(0, 8).join(', ')],
-    ['Language', languageName(m.language)],
-    ['Countries', m.countries?.join(', ')],
-    ['TMDB rating', m.tmdb_rating != null ? `${m.tmdb_rating.toFixed(1)} / 10${m.tmdb_votes ? ` from ${num(m.tmdb_votes)} votes` : ''}` : null],
-    ['Your rating', m.my_rating != null ? stars(m.my_rating) : null],
-    [`On ${serverName()}`, sourcesText(m.plex)],
+    [t('detail.directed'), m.directors?.join(', ')],
+    [t('detail.starring'), m.cast?.slice(0, 8).join(', ')],
+    [t('detail.language'), languageName(m.language)],
+    [t('detail.countries'), m.countries?.join(', ')],
+    [t('sort.rating'), m.tmdb_rating != null ? tmdbRating(m) : null],
+    [t('detail.yourRating'), m.my_rating != null ? stars(m.my_rating) : null],
+    [t('detail.on', { server: serverName() }), sourcesText(m.plex)],
   ].filter(([, v]) => v);
 
   return h('article', { class: 'detail', style: { '--h': String(hueOf(m)) } },
     closeButton(),
     h('div', { class: 'detail__art' }, art),
     h('header', { class: 'detail__head' },
-      poster(m, { label: `Poster for ${m.title}`, eager: true, cls: 'detail__poster' }),
+      poster(m, { label: t('poster.aria', { title: m.title }), eager: true, cls: 'detail__poster' }),
       h('div', { class: 'detail__titles' },
         h('h2', { class: 'detail__title', id: 'detail-title', text: m.title }),
         m.original_title && m.original_title !== m.title ? h('p', { class: 'detail__original', lang: m.language || null, text: m.original_title }) : null,
@@ -190,24 +191,24 @@ function render(m) {
       matchStub(m.match)),
     h('div', { class: 'detail__actions' },
       playControl(m),
-      !m.watched ? h('button', { type: 'button', class: 'btn btn--ghost', onclick: () => markSeen(m, true) }, icon('eye'), 'Seen it') : null,
+      !m.watched ? h('button', { type: 'button', class: 'btn btn--ghost', onclick: () => markSeen(m, true) }, icon('eye'), t('common.seenIt')) : null,
       votesControl(m),
       m.letterboxd_url ? h('a', { class: 'btn btn--ghost', href: m.letterboxd_url, target: '_blank', rel: 'noopener' }, 'Letterboxd', icon('external', 'icon--end')) : null),
-    m.seen_here ? h('p', { class: 'detail__seen' }, icon('check'), "You've seen this",
+    m.seen_here ? h('p', { class: 'detail__seen' }, icon('check'), t('detail.youveSeen'),
       h('button', { type: 'button', class: 'linkbtn', onclick: () => markSeen(m, false) }, UNMARK_LABEL)) : null,
     partOf(m.groups),
     m.tagline ? h('p', { class: 'detail__tagline', text: m.tagline }) : null,
     m.overview ? h('p', { class: 'detail__overview', text: m.overview }) : null,
-    m.reasons?.length ? section('Why it fits you', reasonList(m.reasons)) : null,
-    m.because?.length ? section('Because you watched', h('ul', { class: 'because' }, m.because.map(becauseItem))) : null,
+    m.reasons?.length ? section(t('detail.why'), reasonList(m.reasons)) : null,
+    m.because?.length ? section(t('detail.because'), h('ul', { class: 'because' }, m.because.map(becauseItem))) : null,
     facts.length ? h('dl', { class: 'facts' }, facts.map(([k, v]) => h('div', null, h('dt', { text: k }), h('dd', null, v)))) : null,
-    m.keywords?.length ? h('ul', { class: 'keywords', 'aria-label': 'Keywords' }, m.keywords.slice(0, 16).map((k) => h('li', { text: k }))) : null,
-    h('section', { class: 'detail__dismiss', 'aria-label': 'Hide this film' },
+    m.keywords?.length ? h('ul', { class: 'keywords', 'aria-label': t('detail.keywords') }, m.keywords.slice(0, 16).map((k) => h('li', { text: k }))) : null,
+    h('section', { class: 'detail__dismiss', 'aria-label': t('detail.hideFilm') },
       hidden
         ? [h('p', { class: 'detail__hidden' }, icon('eyeoff'), hidden),
-          h('button', { type: 'button', class: 'btn btn--ghost', onclick: () => setDismissed(m, null) }, 'Show it again')]
-        : [h('button', { type: 'button', class: 'btn btn--ghost', onclick: () => setDismissed(m, 30) }, icon('eyeoff'), 'Hide for 30 days'),
-          h('button', { type: 'button', class: 'btn btn--danger', onclick: () => setDismissed(m, 0) }, 'Never suggest it')]));
+          h('button', { type: 'button', class: 'btn btn--ghost', onclick: () => setDismissed(m, null) }, t('detail.showAgain'))]
+        : [h('button', { type: 'button', class: 'btn btn--ghost', onclick: () => setDismissed(m, 30) }, icon('eyeoff'), t('detail.hide30')),
+          h('button', { type: 'button', class: 'btn btn--danger', onclick: () => setDismissed(m, 0) }, t('detail.never'))]));
 }
 
 // ---- films by TMDB id (Complete): the same sheet, with how the film was seen in place of the library's own
@@ -233,7 +234,7 @@ async function loadFilm(tmdbId) {
 function notInLibrary(f) {
   if (f.request === 'none') {
     return h('button', {
-      type: 'button', class: 'btn btn--primary', 'data-act': 'request', title: 'Ask Seerr to get this film',
+      type: 'button', class: 'btn btn--primary', 'data-act': 'request', title: t('detail.request.title'),
       onclick: async (e) => {
         const btn = e.currentTarget;
         btn.disabled = true;
@@ -241,10 +242,10 @@ function notInLibrary(f) {
         if (state && currentId === `tmdb:${f.tmdb_id}`) load({ quiet: true, focus: '[data-act="seen"], .votes__btn' });
         else btn.disabled = false;
       },
-    }, icon('download'), 'Request');
+    }, icon('download'), t('detail.request'));
   }
   if (f.request && CHIP[f.request]) return stateChip(f.request);
-  return h('button', { type: 'button', class: 'btn btn--primary', disabled: true }, icon('play'), 'Not in your library');
+  return h('button', { type: 'button', class: 'btn btn--primary', disabled: true }, icon('play'), t('detail.notInLibrary'));
 }
 
 let filmBusy = false;
@@ -254,7 +255,7 @@ async function saveFilm(f, seen, vote, focus) {
   try {
     await api.filmSeen(f.tmdb_id, seen, vote);
   } catch (err) {
-    toast(err.detail || 'Could not save that. Try again.');
+    toast(err.detail || t('error.save'));
     return;
   } finally {
     filmBusy = false;
@@ -262,7 +263,7 @@ async function saveFilm(f, seen, vote, focus) {
   if (f.movie_id) rememberSeen(f.movie_id, seen, vote); // the library film's cached state follows the mark
   window.dispatchEvent(new CustomEvent('movienight:seen', { detail: { id: `tmdb:${f.tmdb_id}`, tmdb_id: f.tmdb_id, seen, source: 'film' } }));
   const message = !seen ? unseenMsg(f) : !f.seen ? (vote ? seenVoteMsg(f, vote) : seenMsg(f)) : vote ? voteMsg(f, vote) : seenMsg(f);
-  const undo = { label: 'Undo', run: () => undoFilm(f) };
+  const undo = { label: t('common.undo'), run: () => undoFilm(f) };
   if (marked({ id: `tmdb:${f.tmdb_id}`, tmdb_id: f.tmdb_id, seen }, message, undo)) return;
   if (!seen) toast(message);
   else if (!f.seen) toast(message);
@@ -276,7 +277,7 @@ async function undoFilm(f) {
   try {
     await api.filmSeen(f.tmdb_id, seen, vote);
   } catch (err) {
-    toast(err.detail || 'Could not undo that. Try again.');
+    toast(err.detail || t('error.undo'));
     return;
   }
   if (f.movie_id) rememberSeen(f.movie_id, seen, vote);
@@ -289,7 +290,7 @@ async function undoFilm(f) {
 function filmVotes(f) {
   const chosen = outcomeOf(f);
   const byKey = Object.fromEntries(OUTCOMES.map((o) => [o.key, o]));
-  return h('div', { class: 'votes', role: 'group', 'aria-label': `${f.title}: seen it?` },
+  return h('div', { class: 'votes', role: 'group', 'aria-label': t('detail.seenAsk', { title: f.title }) },
     ['up', 'love', 'down'].map((key) => {
       const o = byKey[key];
       const on = chosen?.key === key;
@@ -303,14 +304,14 @@ function filmVotes(f) {
 function filmSeenLine(f) {
   const server = serverName();
   if (f.can_unmark) {
-    return h('p', { class: 'detail__seen' }, icon('check'), 'You marked this seen',
+    return h('p', { class: 'detail__seen' }, icon('check'), t('detail.youMarked'),
       h('button', {
-        type: 'button', class: 'linkbtn', 'data-act': 'unmark', title: f.pushed ? `Also sets it back to unplayed on ${server}` : null,
+        type: 'button', class: 'linkbtn', 'data-act': 'unmark', title: f.pushed ? t('detail.unplayed', { server }) : null,
         onclick: () => saveFilm(f, false, 0, '[data-act="seen"]'),
       }, UNMARK_LABEL));
   }
   const where = f.seen_via.includes('letterboxd') ? 'Letterboxd' : server;
-  return h('p', { class: 'detail__seen', title: `Seen on ${where}, so it can only be unmarked there` }, icon('check'), `Seen on ${where}`);
+  return h('p', { class: 'detail__seen', title: t('detail.seenOn.title', { where }) }, icon('check'), t('detail.seenOn', { where }));
 }
 
 function renderFilm(f) {
@@ -319,20 +320,20 @@ function renderFilm(f) {
     : h('div', { class: 'detail__backdrop detail__backdrop--gen', 'aria-hidden': 'true' });
   const markable = !f.seen || f.can_unmark;
   const facts = [
-    ['Directed by', f.directors?.join(', ')],
-    ['Starring', f.cast?.slice(0, 8).join(', ')],
-    ['Language', languageName(f.language)],
-    ['Countries', f.countries?.join(', ')],
-    ['TMDB rating', f.tmdb_rating ? `${f.tmdb_rating.toFixed(1)} / 10${f.tmdb_votes ? ` from ${num(f.tmdb_votes)} votes` : ''}` : null],
-    ['Your rating', f.my_rating != null ? [stars(f.my_rating), f.liked ? h('span', { class: 'liked', title: 'Liked' }, ' ', icon('heart')) : null] : null],
-    [`On ${serverName()}`, sourcesText(f.plex)],
+    [t('detail.directed'), f.directors?.join(', ')],
+    [t('detail.starring'), f.cast?.slice(0, 8).join(', ')],
+    [t('detail.language'), languageName(f.language)],
+    [t('detail.countries'), f.countries?.join(', ')],
+    [t('sort.rating'), f.tmdb_rating ? tmdbRating(f) : null],
+    [t('detail.yourRating'), f.my_rating != null ? [stars(f.my_rating), f.liked ? h('span', { class: 'liked', title: t('taste.liked') }, ' ', icon('heart')) : null] : null],
+    [t('detail.on', { server: serverName() }), sourcesText(f.plex)],
   ].filter(([, v]) => v);
 
   return h('article', { class: 'detail', style: { '--h': String(hueOf(f)) } },
     closeButton(),
     h('div', { class: 'detail__art' }, art),
     h('header', { class: 'detail__head' },
-      poster(f, { label: `Poster for ${f.title}`, eager: true, cls: 'detail__poster' }),
+      poster(f, { label: t('poster.aria', { title: f.title }), eager: true, cls: 'detail__poster' }),
       h('div', { class: 'detail__titles' },
         h('h2', { class: 'detail__title', id: 'detail-title', text: f.title }),
         f.original_title && f.original_title !== f.title ? h('p', { class: 'detail__original', lang: f.language || null, text: f.original_title }) : null,
@@ -343,7 +344,7 @@ function renderFilm(f) {
     h('div', { class: 'detail__actions' },
       f.in_library ? playControl(f) : notInLibrary(f),
       !f.seen ? h('button', { type: 'button', class: 'btn btn--ghost', 'data-act': 'seen', title: OUTCOMES[1].label,
-        onclick: () => saveFilm(f, true, 0, '.votes__btn--up') }, icon('eye'), 'Seen it') : null,
+        onclick: () => saveFilm(f, true, 0, '.votes__btn--up') }, icon('eye'), t('common.seenIt')) : null,
       markable ? filmVotes(f) : null,
       h('a', { class: 'btn btn--ghost', href: f.letterboxd_url, target: '_blank', rel: 'noopener' }, 'Letterboxd', icon('external', 'icon--end'))),
     f.seen ? filmSeenLine(f) : null,
@@ -357,15 +358,15 @@ function renderFilm(f) {
 // actor's films), best first, as the API sends them. Each line opens that group on Complete.
 export function partOf(groups, cls = '') {
   if (!groups?.length) return null;
-  const name = (g) => (g.kind === 'director' || g.kind === 'actor' ? `${g.name}'s films` : g.name);
-  return h('ul', { class: `detail__parts ${cls}`.trim(), 'aria-label': 'Part of' }, groups.map((g) => h('li', null,
+  const name = (g) => (g.kind === 'director' || g.kind === 'actor' ? t('detail.personFilms', { name: g.name }) : g.name);
+  return h('ul', { class: `detail__parts ${cls}`.trim(), 'aria-label': t('detail.partOf') }, groups.map((g) => h('li', null,
     h('a', {
       class: 'detail__part', href: href('complete', parse().filters, null, null, g.key),
       onclick: (e) => { if (e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; e.preventDefault(); showGroup(g.key); },
     },
     icon('trophy'),
-    h('span', { class: 'detail__part-text' }, 'Part of ', h('strong', { text: name(g) })),
-    h('span', { class: 'detail__part-n', text: `${g.seen} of ${g.total}` })))));
+    h('span', { class: 'detail__part-text' }, t('detail.partOfPre'), h('strong', { text: name(g) })),
+    h('span', { class: 'detail__part-n', text: t('complete.row.of', { seen: g.seen, total: g.total }) })))));
 }
 
 function sourcesText(plex) {
@@ -375,7 +376,13 @@ function sourcesText(plex) {
 
 function languageName(code) {
   if (!code) return null;
-  try { return new Intl.DisplayNames(['en'], { type: 'language' }).of(code); } catch { return code; }
+  try { return new Intl.DisplayNames([lang], { type: 'language' }).of(code); } catch { return code; }
+}
+
+// "7.6 / 10 from 1,234 votes"
+function tmdbRating(m) {
+  const score = `${fixed(m.tmdb_rating)} / 10`;
+  return m.tmdb_votes ? t('detail.tmdbVotes', { score, votes: num(m.tmdb_votes) }) : score;
 }
 
 function section(title, content) {
@@ -389,9 +396,9 @@ function becauseItem(b) {
       h('p', { class: 'because__title' }, b.title, b.year ? h('span', { class: 'because__year', text: ` ${b.year}` }) : null),
       h('p', { class: 'because__rating' },
         stars(b.my_rating),
-        b.liked ? h('span', { class: 'liked', title: 'Liked' }, icon('heart'), h('span', { class: 'sr-only', text: 'Liked' })) : null,
-        b.my_vote === 2 ? h('span', { class: 'because__vote' }, h('span', { class: 'liked' }, icon('heart')), 'You loved it') : null,
-        b.my_vote === 1 ? h('span', { class: 'because__vote' }, icon('thumbup'), 'You liked it') : null),
+        b.liked ? h('span', { class: 'liked', title: t('taste.liked') }, icon('heart'), h('span', { class: 'sr-only', text: t('taste.liked') })) : null,
+        b.my_vote === 2 ? h('span', { class: 'because__vote' }, h('span', { class: 'liked' }, icon('heart')), t('detail.loved')) : null,
+        b.my_vote === 1 ? h('span', { class: 'because__vote' }, icon('thumbup'), t('detail.liked')) : null),
       b.why ? h('p', { class: 'because__why', text: b.why }) : null));
 }
 

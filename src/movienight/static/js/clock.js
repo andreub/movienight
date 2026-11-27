@@ -1,7 +1,8 @@
 // Everything that depends on the wall clock: "ends at 23:47" labels and finish-time options.
 import { h, runtime } from './dom.js';
+import { t, lang } from './i18n.js';
 
-const fmt = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+const fmt = new Intl.DateTimeFormat(lang === 'en' ? 'en-GB' : lang, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 export const clockText = (date) => fmt.format(date);
 
 const MIN = 60000;
@@ -12,9 +13,9 @@ export function minutesUntil(end, now = new Date()) {
 }
 
 // A small "Ends at 23:47" label that keeps itself current while the page stays open.
-export function endsAt(min, { prefix = 'Ends at ', cls = 'ends' } = {}) {
+export function endsAt(min, { prefix = t('clock.endsAt'), cls = 'ends' } = {}) {
   if (!min) return null;
-  const el = h('span', { class: cls, 'data-ends': String(min), 'data-prefix': prefix, title: 'If you press play now' });
+  const el = h('span', { class: cls, 'data-ends': String(min), 'data-prefix': prefix, title: t('clock.ifNow') });
   el.textContent = prefix + clockText(new Date(Date.now() + min * MIN));
   return el;
 }
@@ -42,11 +43,11 @@ export function endOptions(now = new Date()) {
     kind: 'end',
     endAt: endAt.getTime(),
     rt: minutesUntil(endAt, now),
-    label: endAt.getHours() === 0 && endAt.getMinutes() === 0 ? 'Midnight' : clockText(endAt),
+    label: endAt.getHours() === 0 && endAt.getMinutes() === 0 ? t('clock.midnight') : clockText(endAt),
   }));
 }
 
-export const fitsText = (rt) => `fits films up to ${runtime(rt)}`;
+export const fitsText = (rt) => t('clock.fits', { rt: runtime(rt) });
 
 // Weeknights (Sun to Thu) after 21:30: suggest finishing 2 h 15 from now, but not past 00:30.
 export function weeknightDefault(now = new Date()) {

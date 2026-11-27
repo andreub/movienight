@@ -1229,10 +1229,10 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
 
         @app.middleware("http")
         async def revalidate_static_code(request, call_next):
-            # JS and CSS have no version strings in their URLs, so make the browser revalidate (ETag) on every
+            # JS, CSS and the UI catalogues have no version strings in their URLs, so make the browser revalidate (ETag) on every
             # load instead of reusing a heuristically cached copy after a deploy. Images keep default caching.
             resp = await call_next(request)
-            if request.url.path.startswith(("/static/js/", "/static/css/")) and resp.status_code < 400:
+            if request.url.path.startswith(("/static/js/", "/static/css/", "/static/i18n/")) and resp.status_code < 400:
                 resp.headers["Cache-Control"] = "no-cache"
             return resp
 

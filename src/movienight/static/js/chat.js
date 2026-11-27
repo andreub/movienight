@@ -1,6 +1,7 @@
 // Conversation state for the Ask view. Lives at module level so a stream keeps running (and the
 // thread survives) while the user opens a film or switches tab. Mirrored into sessionStorage.
 import { chatStream } from './api.js';
+import { t } from './i18n.js';
 
 const KEY = 'mn.chat';
 const MAX_MESSAGES = 40;
@@ -35,7 +36,7 @@ export function stripShownNote(text) { return String(text || '').replace(NOTE_RE
 export function shownNote(movies) {
   const items = (Array.isArray(movies) ? movies : []).filter((f) => f && f.id != null && f.title).slice(0, MAX_NOTE_FILMS);
   if (!items.length) return '';
-  const clean = (t) => String(t).replace(/[\[\]\n;]+/g, ' ').trim().slice(0, 80);
+  const clean = (s) => String(s).replace(/[\[\]\n;]+/g, ' ').trim().slice(0, 80);
   const list = items.map((f, i) => `${i + 1}. ${clean(f.title)}${f.year ? ` (${f.year})` : ''} #${f.id}`).join('; ');
   return `[Films shown to the user: ${list}]`;
 }
@@ -100,19 +101,19 @@ export async function sendChat(text) {
         reply.text += data.delta || '';
         emit('text');
       } else if (event === 'tool') {
-        chat.tool = data.label || 'Working on it…';
+        chat.tool = data.label || t('ask.working');
         emit('tool');
       } else if (event === 'movies') {
         reply.movies = Array.isArray(data.items) ? data.items : []; // a second set replaces the first
         emit('movies');
       } else if (event === 'error') {
-        reply.error = data.detail || 'Something went wrong while answering.';
+        reply.error = data.detail || t('ask.error');
       } else if (event === 'done') {
         break;
       }
     }
   } catch (err) {
-    if (err.name !== 'AbortError') reply.error = err.detail || err.message || 'Something went wrong while answering.';
+    if (err.name !== 'AbortError') reply.error = err.detail || err.message || t('ask.error');
   } finally {
     chat.busy = false;
     chat.tool = null;

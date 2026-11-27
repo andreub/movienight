@@ -1,3 +1,5 @@
+import { t, lang } from './i18n.js';
+
 // Small DOM toolkit. All dynamic text goes through text nodes; innerHTML is only
 // ever used for the constant SVG icon strings below.
 
@@ -88,30 +90,33 @@ export function runtime(min) {
 export function stars(rating) {
   if (rating == null) return null;
   const full = Math.floor(rating), half = rating - full >= 0.5;
-  return h('span', { class: 'stars', 'aria-label': `${rating} out of 5 stars`, role: 'img' },
+  return h('span', { class: 'stars', 'aria-label': t('stars.aria', { rating: num(rating) }), role: 'img' },
     '★'.repeat(full) + (half ? '½' : ''));
 }
 
-const nf = new Intl.NumberFormat('en');
+const nf = new Intl.NumberFormat(lang);
 export const num = (n) => (n == null ? '–' : nf.format(n));
+// Fixed decimals ("4.3", "4,3" in Spanish) and whole percentages ("45%", "45 %"), per locale.
+export const fixed = (n, digits = 1) => new Intl.NumberFormat(lang, { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(n);
+export const percent = (x) => new Intl.NumberFormat(lang, { style: 'percent', maximumFractionDigits: 0 }).format(x);
 
-const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+const rtf = new Intl.RelativeTimeFormat(lang, { numeric: 'auto' });
 export function ago(iso) {
-  if (!iso) return 'never';
+  if (!iso) return t('ago.never');
   const secs = (new Date(iso).getTime() - Date.now()) / 1000;
-  if (Number.isNaN(secs)) return 'unknown';
+  if (Number.isNaN(secs)) return t('ago.unknown');
   const steps = [[60, 'second'], [3600, 'minute'], [86400, 'hour'], [604800, 'day'], [2629800, 'week'], [31557600, 'month'], [Infinity, 'year']];
   const divs = { second: 1, minute: 60, hour: 3600, day: 86400, week: 604800, month: 2629800, year: 31557600 };
-  if (Math.abs(secs) < 45) return 'just now';
+  if (Math.abs(secs) < 45) return t('ago.now');
   const [, unit] = steps.find(([limit]) => Math.abs(secs) < limit);
   return rtf.format(Math.round(secs / divs[unit]), unit);
 }
 
 export function matchGrade(match) {
-  if (match >= 85) return 'Made for you';
-  if (match >= 70) return 'Strong match';
-  if (match >= 50) return 'Worth a look';
-  return 'Wildcard';
+  if (match >= 85) return t('grade.made');
+  if (match >= 70) return t('grade.strong');
+  if (match >= 50) return t('grade.worth');
+  return t('grade.wildcard');
 }
 
 // ---- posters ----
@@ -124,7 +129,7 @@ function hash(str) {
 
 // Typographic stand-in poster, coloured from the title so each film keeps its look.
 export function genPoster(movie, label) {
-  const title = movie.title || 'Untitled';
+  const title = movie.title || t('film.untitled');
   const n = hash(`${title}${movie.year ?? ''}`);
   const len = title.length <= 10 ? 's' : title.length <= 22 ? 'm' : 'l';
   return h('div', {
@@ -158,7 +163,7 @@ export function hueOf(movie) {
 
 export function matchStub(match, { size = 'lg' } = {}) {
   const m = Math.max(0, Math.min(100, Math.round(match ?? 0)));
-  return h('div', { class: `stub stub--${size}`, role: 'img', 'aria-label': `${m}% match, ${matchGrade(m)}` },
+  return h('div', { class: `stub stub--${size}`, role: 'img', 'aria-label': t('match.aria', { n: m, grade: matchGrade(m) }) },
     h('span', { class: 'stub__num' }, String(m), h('span', { class: 'stub__pct', text: '%' })),
     size === 'lg' ? h('span', { class: 'stub__grade', text: matchGrade(m) }) : null);
 }
@@ -172,9 +177,9 @@ export function reasonList(reasons = [], cls = '') {
 export function errorBox(err, onRetry) {
   return h('div', { class: 'state state--error', role: 'alert' },
     icon('alert', 'state__icon'),
-    h('p', { class: 'state__title', text: 'Something went wrong' }),
-    h('p', { class: 'state__text', text: err?.detail || err?.message || 'Unknown error' }),
-    onRetry ? h('button', { class: 'btn btn--ghost', type: 'button', onclick: onRetry }, 'Try again') : null);
+    h('p', { class: 'state__title', text: t('error.title') }),
+    h('p', { class: 'state__text', text: err?.detail || err?.message || t('error.unknown') }),
+    onRetry ? h('button', { class: 'btn btn--ghost', type: 'button', onclick: onRetry }, t('common.tryAgain')) : null);
 }
 
 export function announce(text) {
@@ -185,8 +190,8 @@ export function announce(text) {
 
 // A film title in curly quotes for messages, capped so toast buttons stay on screen on a phone.
 export function quoted(m, max = 40) {
-  const t = String(m.title || 'this film');
-  return `“${t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t}”`;
+  const s = String(m.title || t('film.this'));
+  return t('quote', { s: s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s });
 }
 
 // `extra(remove)` may return a node (e.g. quick buttons); the toast then wraps onto two rows.
@@ -195,7 +200,7 @@ export function toast(message, { action = null, timeout = 6000, extra = null } =
   const remove = () => { el.classList.add('is-leaving'); setTimeout(() => el.remove(), 200); };
   const text = h('span', { class: 'toast__text', text: message });
   const actionBtn = action ? h('button', { class: 'toast__action', type: 'button', onclick: () => { remove(); action.run(); } }, action.label) : null;
-  const close = h('button', { class: 'toast__close', type: 'button', 'aria-label': 'Dismiss message', onclick: remove }, icon('close'));
+  const close = h('button', { class: 'toast__close', type: 'button', 'aria-label': t('toast.dismiss'), onclick: remove }, icon('close'));
   const extras = extra ? extra(remove) : null;
   const el = extras
     ? h('div', { class: 'toast toast--rich' }, text, close, extras, actionBtn)
@@ -205,6 +210,6 @@ export function toast(message, { action = null, timeout = 6000, extra = null } =
 }
 
 export function isTyping(e) {
-  const t = e.target;
-  return t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName);
+  const el = e.target;
+  return el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName);
 }

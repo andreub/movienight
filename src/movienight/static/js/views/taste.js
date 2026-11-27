@@ -1,8 +1,9 @@
 import { api } from '../api.js';
-import { h, fill, icon, poster, stars, errorBox, num, ago } from '../dom.js';
+import { h, fill, icon, poster, stars, errorBox, num, ago, fixed, percent } from '../dom.js';
+import { t } from '../i18n.js';
 import { serverName } from '../status.js';
 
-export const title = 'Taste';
+export const title = t('tab.taste');
 
 export function mount(root) {
   const page = h('div', { class: 'taste' });
@@ -10,7 +11,7 @@ export function mount(root) {
   let alive = true;
 
   async function load() {
-    fill(page, h('h1', { class: 'page-title', text: 'Your taste' }),
+    fill(page, h('h1', { class: 'page-title', text: t('taste.h1') }),
       h('div', { class: 'skel skel--title' }), h('div', { class: 'skel skel--block' }));
     try {
       const p = await api.profile();
@@ -21,7 +22,7 @@ export function mount(root) {
         .then((fb) => { if (alive) fill(knows, ...knowsYou(fb, p.model)); })
         .catch((err) => { if (alive) fill(knows, ...(p.model?.films ? knowsYou(null, p.model) : [errorBox(err, load)])); });
     } catch (err) {
-      if (alive) fill(page, h('h1', { class: 'page-title', text: 'Your taste' }), errorBox(err, load));
+      if (alive) fill(page, h('h1', { class: 'page-title', text: t('taste.h1') }), errorBox(err, load));
     }
   }
   load();
@@ -32,27 +33,26 @@ export function mount(root) {
 function render(p, knows) {
   const s = p.stats || {};
   return [
-    h('h1', { class: 'page-title', text: 'Your taste' }),
+    h('h1', { class: 'page-title', text: t('taste.h1') }),
     h('p', { class: 'taste__lede' },
-      `${num(s.watched)} films watched`,
-      s.hours ? `, ${num(s.hours)} hours in the dark.` : '.'),
+      s.hours ? t('taste.lede.hours', { n: s.watched, num: num(s.watched), hours: num(s.hours) }) : t('taste.lede', { n: s.watched, num: num(s.watched) })),
     h('dl', { class: 'stats' },
-      stat('Rated', num(s.rated)),
-      stat('Average rating', s.mean_rating != null ? h('span', null, s.mean_rating.toFixed(1), ' ', stars(Math.round(s.mean_rating * 2) / 2)) : '–'),
-      stat('Liked', num(s.liked)),
-      stat(`Unwatched on ${serverName()}`, num(s.library_unwatched)),
-      stat(`Watchlist films on ${serverName()}`, num(s.watchlist_on_plex))),
-    block('How well does it know you?', knows),
-    p.rating_histogram?.length ? block('How you rate', histogram(p.rating_histogram, s.mean_rating)) : null,
-    h('p', { class: 'taste__note', text: 'Bars to the right mean you rate films with that trait above your average; to the left, below it.' }),
+      stat(t('taste.rated'), num(s.rated)),
+      stat(t('taste.avgRating'), s.mean_rating != null ? h('span', null, fixed(s.mean_rating), ' ', stars(Math.round(s.mean_rating * 2) / 2)) : '–'),
+      stat(t('taste.liked'), num(s.liked)),
+      stat(t('taste.unwatched', { server: serverName() }), num(s.library_unwatched)),
+      stat(t('taste.watchlistOn', { server: serverName() }), num(s.watchlist_on_plex))),
+    block(t('taste.knows'), knows),
+    p.rating_histogram?.length ? block(t('taste.howRate'), histogram(p.rating_histogram, s.mean_rating)) : null,
+    h('p', { class: 'taste__note', text: t('taste.barsNote') }),
     h('div', { class: 'taste__cols' },
-      affinityBlock('Genres', p.genres, 12),
-      affinityBlock('Decades', [...(p.decades || [])].sort((a, b) => a.decade - b.decade).map((d) => ({ ...d, name: `${d.decade}s` })), 12),
-      affinityBlock('Directors', p.directors, 8),
-      affinityBlock('Actors', p.cast, 8),
-      affinityBlock('Themes', p.keywords, 10)),
-    p.tags?.length ? block('Your Letterboxd tags', tagList(p.tags)) : null,
-    p.top_rated?.length ? block('Your highest rated', h('ul', { class: 'top-rated' }, p.top_rated.map((m) => h('li', null,
+      affinityBlock(t('taste.genres'), p.genres, 12),
+      affinityBlock(t('taste.decades'), [...(p.decades || [])].sort((a, b) => a.decade - b.decade).map((d) => ({ ...d, name: t('taste.decade', { d: d.decade }) })), 12),
+      affinityBlock(t('taste.directors'), p.directors, 8),
+      affinityBlock(t('taste.actors'), p.cast, 8),
+      affinityBlock(t('taste.themes'), p.keywords, 10)),
+    p.tags?.length ? block(t('taste.tags'), tagList(p.tags)) : null,
+    p.top_rated?.length ? block(t('taste.top'), h('ul', { class: 'top-rated' }, p.top_rated.map((m) => h('li', null,
       poster(m, { label: `${m.title}${m.year ? ` (${m.year})` : ''}` }),
       h('span', { class: 'top-rated__title', text: m.title }),
       stars(m.my_rating))))) : null,
@@ -62,8 +62,8 @@ function render(p, knows) {
 // One line per tag family, its editions (newest first) indented under it when there is more than one tag.
 function tagList(families) {
   const line = (g) => [
-    `${num(g.films)} film${g.films === 1 ? '' : 's'}`,
-    g.mean_rating != null ? `avg ${g.mean_rating.toFixed(1)}★` : null,
+    t('count.films', { n: g.films, num: num(g.films) }),
+    g.mean_rating != null ? t('taste.avgStars', { r: fixed(g.mean_rating) }) : null,
     g.top_genres?.length ? g.top_genres.join(', ') : null,
   ].filter(Boolean).join(' · ');
   return h('ul', { class: 'tags' }, families.map((f) => h('li', { class: 'tags__family' },
@@ -87,10 +87,10 @@ function histogram(bins, mean) {
   const max = Math.max(1, ...bins.map((b) => b.count));
   return h('div', { class: 'histo' },
     h('ol', { class: 'histo__bars' }, bins.map((b) => h('li', { class: 'histo__bin' },
-      h('span', { class: 'histo__bar', style: { '--v': String(b.count / max) }, title: `${b.count} films` }),
+      h('span', { class: 'histo__bar', style: { '--v': String(b.count / max) }, title: t('count.films', { n: b.count, num: num(b.count) }) }),
       h('span', { class: 'histo__label', 'aria-hidden': 'true', text: Number.isInteger(b.rating) ? `${b.rating}★` : '' }),
-      h('span', { class: 'sr-only', text: `${b.rating} stars: ${b.count} films` })))),
-    mean != null ? h('p', { class: 'histo__mean', text: `You average ${mean.toFixed(1)} out of 5.` }) : null);
+      h('span', { class: 'sr-only', text: t('taste.histoBin', { r: num(b.rating), films: t('count.films', { n: b.count, num: num(b.count) }) }) })))),
+    mean != null ? h('p', { class: 'histo__mean', text: t('taste.average', { r: fixed(mean) }) }) : null);
 }
 
 function affinityBlock(title, rows, limit) {
@@ -104,23 +104,23 @@ function affinityBlock(title, rows, limit) {
       h('span', { class: `aff__track ${a < 0 ? 'is-neg' : ''}`, 'aria-hidden': 'true' },
         h('span', { class: 'aff__bar', style: { '--v': String(Math.abs(a) / max) } })),
       h('span', { class: 'aff__meta' },
-        `${num(r.count)} film${r.count === 1 ? '' : 's'}`,
-        r.mean_rating != null ? `, avg ${r.mean_rating.toFixed(1)}` : ''),
-      h('span', { class: 'sr-only', text: `, affinity ${a > 0 ? '+' : ''}${a.toFixed(2)}` }));
+        t('count.films', { n: r.count, num: num(r.count) }),
+        r.mean_rating != null ? t('taste.avgSuffix', { r: fixed(r.mean_rating) }) : ''),
+      h('span', { class: 'sr-only', text: t('taste.affinity', { a: `${a > 0 ? '+' : ''}${fixed(a, 2)}` }) }));
   })));
 }
 
 // ---- "How well does it know you?" ----
 
-const pct = (x) => `${Math.round(x * 100)}%`;
-const VERDICTS = { hit: 'Hit', miss: 'Miss', ok: 'Close', pending: 'Not rated yet' };
+const pct = percent;
+const VERDICTS = { hit: t('verdict.hit'), miss: t('verdict.miss'), ok: t('verdict.ok'), pending: t('verdict.pending') };
 
 function signalWords(rho) {
   if (rho == null) return null;
-  if (rho < 0.1) return 'barely better than a guess';
-  if (rho < 0.25) return 'a weak signal';
-  if (rho < 0.4) return 'a useful signal';
-  return 'a strong signal';
+  if (rho < 0.1) return t('signal.guess');
+  if (rho < 0.25) return t('signal.weak');
+  if (rho < 0.4) return t('signal.useful');
+  return t('signal.strong');
 }
 
 function knowsYou(fb, fallbackModel) {
@@ -136,74 +136,74 @@ function knowsYou(fb, fallbackModel) {
 function tuning(bt) {
   if (!bt?.films) return '';
   return bt.tuned
-    ? `Its scoring weights were tuned automatically to fit your history${bt.computed_at ? `, last checked ${ago(bt.computed_at)}` : ''}.`
-    : `It is using the standard scoring weights${bt.computed_at ? ` (last checked ${ago(bt.computed_at)})` : ''}. They tune themselves once the check finds a better fit.`;
+    ? (bt.computed_at ? t('taste.tuned.at', { ago: ago(bt.computed_at) }) : t('taste.tuned'))
+    : (bt.computed_at ? t('taste.standard.at', { ago: ago(bt.computed_at) }) : t('taste.standard'));
 }
 
 function backtestView(bt) {
   if (!bt?.films) {
-    return h('p', { class: 'knows__empty', text: 'No accuracy check yet. It runs after a sync, once you have enough rated films to test against.' });
+    return h('p', { class: 'knows__empty', text: t('taste.noCheck') });
   }
   const hit = bt.top_quintile_hit_rate;
   const base = bt.base_rate;
-  const rows = [['MovieNight’s top fifth', hit, true], ['Picking at random', base, false]].filter(([, v]) => v != null);
+  const rows = [[t('taste.topFifth'), hit, true], [t('taste.random'), base, false]].filter(([, v]) => v != null);
   const signal = signalWords(bt.spearman);
   return h('div', { class: 'knows__test' },
     hit != null && base != null
-      ? h('p', { class: 'knows__lede', text: `Of the films it would have ranked in its top fifth, you rated ${pct(hit)} among your favourites. Picking at random would give ${pct(base)}.` })
+      ? h('p', { class: 'knows__lede', text: t('taste.hitLede', { hit: pct(hit), base: pct(base) }) })
       : null,
     h('ul', { class: 'bars', 'aria-hidden': 'true' }, rows.map(([name, v, strong]) => h('li', { class: `bars__row ${strong ? 'is-strong' : ''}` },
       h('span', { class: 'bars__name', text: name }),
       h('span', { class: 'bars__track' }, h('span', { class: 'bars__fill', style: { '--v': String(Math.min(1, v)) } })),
       h('span', { class: 'bars__val', text: pct(v) })))),
     chanceWords(hit, base) ? h('p', { class: 'help', text: chanceWords(hit, base) }) : null,
-    h('p', { class: 'help', text: `Checked against ${num(bt.films)} films you have already seen.${signal ? ` Across all of them its ranking agrees with yours at ${bt.spearman.toFixed(2)}, ${signal}. Zero would be pure chance; one would be a perfect match.` : ''}` }),
+    h('p', { class: 'help', text: `${t('taste.checked', { n: bt.films, num: num(bt.films) })}${signal ? ` ${t('taste.spearman', { rho: fixed(bt.spearman, 2), signal })}` : ''}` }),
     changedWeights(bt));
 }
 
 function chanceWords(hit, base) {
   if (hit == null || !base) return '';
   const r = hit / base;
-  if (r >= 1.6) return 'That is clearly better than chance.';
-  if (r >= 1.15) return 'That is better than chance, though not by a huge margin. It should sharpen as you rate more films.';
-  return 'That is about what chance would give, so treat its picks as suggestions for now. It should improve as you rate more films.';
+  if (r >= 1.6) return t('chance.clear');
+  if (r >= 1.15) return t('chance.better');
+  return t('chance.same');
 }
 
 function changedWeights(bt) {
   const entries = Object.entries(bt.weights || {}).filter(([k, v]) => bt.default_weights?.[k] != null && bt.default_weights[k] !== v);
   if (!bt.tuned || !entries.length) return null;
-  return h('ul', { class: 'keywords knows__weights', 'aria-label': 'Tuned weights' },
-    entries.map(([k, v]) => h('li', { text: `${k} ${bt.default_weights[k]} to ${v}` })));
+  return h('ul', { class: 'keywords knows__weights', 'aria-label': t('taste.weights') },
+    entries.map(([k, v]) => h('li', { text: t('taste.weight', { k, from: bt.default_weights[k], to: v }) })));
 }
 
 function votesLine(v) {
   if (!v) return null;
   const total = (v.up || 0) + (v.down || 0) + (v.love || 0);
-  const loves = v.love ? `, ${num(v.love)} ${v.love === 1 ? 'favourite' : 'favourites'}` : '';
+  const loves = v.love ? t('taste.loves', { n: v.love, num: num(v.love) }) : '';
   return h('p', { class: 'knows__votes' },
     total
-      ? `You have given ${num(v.up || 0)} thumbs up${loves} and ${num(v.down || 0)} thumbs down. Each one nudges what it suggests next; a favourite counts most.`
-      : 'No thumbs yet. Use the thumbs on a pick to tell it what to show more or less of.');
+      ? t('taste.votes', { up: num(v.up || 0), loves, down: num(v.down || 0) })
+      : t('taste.noVotes'));
 }
 
 function outcomesView(fb) {
   const list = fb?.outcomes || [];
   if (!list.length) {
     return h('div', { class: 'knows__outcomes' },
-      h('h3', { class: 'detail__h', text: 'Its picks, after you watched' }),
-      h('p', { class: 'help', text: 'Nothing to compare yet. Watch something it suggested and rate it on Letterboxd; it shows up here.' }));
+      h('h3', { class: 'detail__h', text: t('taste.outcomes') }),
+      h('p', { class: 'help', text: t('taste.noOutcomes') }));
   }
   const s = fb.summary || {};
   return h('div', { class: 'knows__outcomes' },
-    h('h3', { class: 'detail__h', text: 'Its picks, after you watched' }),
-    s.rated ? h('p', { class: 'help', text: `Of ${num(s.count)} films it suggested that you watched, you rated ${num(s.rated)}: ${num(s.hits)} landed${s.misses ? `, ${num(s.misses)} missed` : ''}.${s.mean_rating_of_picks != null && s.user_mean_rating != null ? ` You gave its picks ${s.mean_rating_of_picks.toFixed(1)} on average, against ${s.user_mean_rating.toFixed(1)} for everything else.` : ''}` }) : null,
+    h('h3', { class: 'detail__h', text: t('taste.outcomes') }),
+    s.rated ? h('p', { class: 'help', text: `${t(s.misses ? 'taste.summary.misses' : 'taste.summary', { n: s.count, num: num(s.count), rated: num(s.rated), hits: num(s.hits), misses: num(s.misses) })}${s.mean_rating_of_picks != null && s.user_mean_rating != null ? ` ${t('taste.summary.mean', { picks: fixed(s.mean_rating_of_picks), all: fixed(s.user_mean_rating) })}` : ''}` }) : null,
     h('ul', { class: 'outcomes' }, list.map((o) => h('li', { class: `outcome outcome--${o.verdict}` },
       poster(o, { cls: 'outcome__poster' }),
       h('div', { class: 'outcome__body' },
         h('p', { class: 'outcome__title' }, o.title, o.year ? h('span', { class: 'because__year', text: ` ${o.year}` }) : null),
         h('p', { class: 'outcome__line' },
-          `Predicted ${Math.round(o.predicted)}`,
-          o.my_rating != null ? [' → you gave ', stars(o.my_rating)] : ' and you have not rated it yet',
-          o.liked ? h('span', { class: 'liked', title: 'Liked' }, ' ', icon('heart'), h('span', { class: 'sr-only', text: 'Liked' })) : null)),
+          t('taste.predicted', { n: Math.round(o.predicted) }),
+          o.my_rating != null ? [t('taste.gave'), stars(o.my_rating)] : t('taste.notRated'),
+          o.liked ? h('span', { class: 'liked', title: t('taste.liked') }, ' ', icon('heart'), h('span', { class: 'sr-only', text: t('taste.liked') })) : null)),
       h('span', { class: 'verdict', text: VERDICTS[o.verdict] || VERDICTS.pending })))));
 }

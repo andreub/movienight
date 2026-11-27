@@ -5,6 +5,7 @@ import { h, runtime } from './dom.js';
 import { dropdown } from './dropdown.js';
 import { RUNTIMES, setFilters } from './state.js';
 import { endOptions, clockText, fitsText, minutesUntil, weeknightDefault } from './clock.js';
+import { t } from './i18n.js';
 
 const KEY = 'mn.time';
 let memory = null;
@@ -55,11 +56,11 @@ export function timeControl() {
     const ends = endOptions();
     const savedEndOn = saved?.kind === 'end' && saved.rt === rt;
     return h('ul', null,
-      h('li', { class: 'menu__label', text: 'Done by' }),
-      ends.map((o) => item(o, o.label, `up to ${runtime(o.rt)}`, savedEndOn && saved.endAt === o.endAt)),
-      h('li', { class: 'menu__label', text: 'Or cap the length' }),
+      h('li', { class: 'menu__label', text: t('time.doneBy') }),
+      ends.map((o) => item(o, o.label, t('time.upTo', { rt: runtime(o.rt) }), savedEndOn && saved.endAt === o.endAt)),
+      h('li', { class: 'menu__label', text: t('time.cap') }),
       RUNTIMES.filter(([v]) => v).map(([v, text]) => item({ kind: 'cap', rt: v }, text, null, !savedEndOn && rt === v)),
-      item({ kind: 'none', rt: null }, 'No rush', 'any length', rt == null));
+      item({ kind: 'none', rt: null }, t('time.noRush'), t('time.anyLength'), rt == null));
   }
 
   const dd = dropdown({ iconName: 'clock', build });
@@ -71,15 +72,15 @@ export function timeControl() {
     const saved = getChoice();
     const asEnd = rt != null && saved?.kind === 'end' && saved.rt === rt;
     const capLabel = RUNTIMES.find(([v]) => v === rt)?.[1];
-    label.textContent = rt == null ? 'No rush' : asEnd ? `Done by ${clockText(new Date(saved.endAt))}` : capLabel || `Up to ${runtime(rt)}`;
+    label.textContent = rt == null ? t('time.noRush') : asEnd ? t('time.doneByAt', { time: clockText(new Date(saved.endAt)) }) : capLabel || t('time.upToCap', { rt: runtime(rt) });
     button.classList.toggle('is-active', rt != null);
 
     note.replaceChildren();
     note.hidden = rt == null;
     if (rt != null) {
       const auto = asEnd && saved.auto;
-      note.append(auto ? `Suggested for a weeknight: ${fitsText(rt)}. ` : `${fitsText(rt)[0].toUpperCase()}${fitsText(rt).slice(1)}. `);
-      if (auto) note.append(h('button', { type: 'button', class: 'linkbtn linkbtn--inline', onclick: () => { pick({ kind: 'none', rt: null }); button.focus(); } }, 'Remove'));
+      note.append(auto ? `${t('time.weeknight', { fits: fitsText(rt) })} ` : `${fitsText(rt)[0].toUpperCase()}${fitsText(rt).slice(1)}. `);
+      if (auto) note.append(h('button', { type: 'button', class: 'linkbtn linkbtn--inline', onclick: () => { pick({ kind: 'none', rt: null }); button.focus(); } }, t('common.remove')));
     }
   }
 

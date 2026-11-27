@@ -10,6 +10,7 @@ import { setSeen, setSeenVote, isSeen } from '../seen.js';
 import { partOf } from './detail.js';
 import { serverName } from '../status.js';
 import { seenMsg, seenAskMsg, seenVoteMsg, unseenMsg, voteMsg, hideMsg } from '../messages.js';
+import { t } from '../i18n.js';
 
 const HINT_KEY = 'movienight.seenHintDismissed';
 const HINT_BELOW = 20;
@@ -18,14 +19,14 @@ function hintDismissed() {
   try { return localStorage.getItem(HINT_KEY) === '1'; } catch { return false; }
 }
 
-export const title = 'Tonight';
+export const title = t('tab.tonight');
 
 export function mount(root, route) {
   const bar = filterBar({ time: true, saga: true });
   const stage = h('div', { class: 'tonight__stage' });
   const hint = h('div', { class: 'tonight__hint' });
   root.append(
-    h('h1', { class: 'sr-only', text: "Tonight's pick" }),
+    h('h1', { class: 'sr-only', text: t('tonight.h1') }),
     h('div', { class: 'tonight' }, hint, stage, h('div', { class: 'tonight__filters' }, bar.el)),
   );
 
@@ -44,12 +45,12 @@ export function mount(root, route) {
   if (!hintDismissed()) {
     api.profile().then((p) => {
       if (!alive || hintDismissed() || (p?.stats?.seen_here ?? 0) >= HINT_BELOW) return;
-      fill(hint, h('div', { class: 'note note--hint', role: 'region', 'aria-label': 'Tip' },
+      fill(hint, h('div', { class: 'note note--hint', role: 'region', 'aria-label': t('tonight.tip') },
         icon('eye'),
-        h('span', { class: 'note__text', text: 'Your history starts in 2021, so classics you saw long ago can show up. Mark the ones you have seen and they stop coming back.' }),
-        h('a', { class: 'btn btn--ghost btn--sm', href: '#/seen' }, 'Seen these?'),
+        h('span', { class: 'note__text', text: t('tonight.hint') }),
+        h('a', { class: 'btn btn--ghost btn--sm', href: '#/seen' }, t('seen.title')),
         h('button', {
-          type: 'button', class: 'iconbtn note__close', 'aria-label': 'Dismiss tip',
+          type: 'button', class: 'iconbtn note__close', 'aria-label': t('tonight.tipDismiss'),
           onclick: () => { try { localStorage.setItem(HINT_KEY, '1'); } catch { /* private mode */ } fill(hint); },
         }, icon('close'))));
     }).catch(() => {});
@@ -70,7 +71,7 @@ export function mount(root, route) {
     } catch (err) {
       if (token !== req) return;
       if (err.status === 404 && seen.length) {
-        toast("You've seen every match for these filters, so we're starting over.");
+        toast(t('tonight.startOver'));
         load('fresh');
         return;
       }
@@ -88,7 +89,7 @@ export function mount(root, route) {
       const smooth = !matchMedia('(prefers-reduced-motion: reduce)').matches;
       stage.scrollIntoView({ block: 'start', behavior: smooth ? 'smooth' : 'auto' });
     }
-    announce(`Tonight's pick: ${pick.title}, ${Math.round(pick.match ?? 0)}% match.`);
+    announce(t('tonight.announce', { title: pick.title, n: Math.round(pick.match ?? 0) }));
   }
 
   function hero(m, mode) {
@@ -98,13 +99,13 @@ export function mount(root, route) {
     if (art.tagName === 'IMG') art.addEventListener('error', () => art.replaceWith(h('div', { class: 'pick__backdrop pick__backdrop--gen', 'aria-hidden': 'true' })), { once: true });
 
     const shuffleBtn = h('button', { type: 'button', class: 'btn btn--ghost', onclick: shuffle, 'aria-keyshortcuts': 'S' },
-      icon('shuffle'), 'Shuffle');
+      icon('shuffle'), t('tonight.shuffle'));
     const seenBtn = h('button', { type: 'button', class: 'btn btn--ghost', onclick: () => { seenBtn.disabled = true; markSeen(m).finally(() => { seenBtn.disabled = false; }); } },
-      icon('eye'), 'Seen it');
+      icon('eye'), t('common.seenIt'));
     return h('article', { class: `pick ${mode === 'shuffle' ? 'is-shuffled' : ''}`, style: { '--h': String(hueOf(m)) }, 'aria-labelledby': 'pick-title' },
       h('div', { class: 'pick__art' }, art),
       h('div', { class: 'pick__inner' },
-        poster(m, { label: `Poster for ${m.title}`, eager: true, cls: 'pick__poster' }),
+        poster(m, { label: t('poster.aria', { title: m.title }), eager: true, cls: 'pick__poster' }),
         h('div', { class: 'pick__info' },
           h('div', { class: 'pick__head' },
             h('h2', { class: 'pick__title', id: 'pick-title', text: m.title }),
@@ -116,9 +117,9 @@ export function mount(root, route) {
           h('div', { class: 'pick__actions' },
             playControl(m, 'pick__play'),
             shuffleBtn,
-            h('button', { type: 'button', class: 'btn btn--ghost', onclick: () => notTonight(m) }, icon('eyeoff'), 'Not tonight'),
+            h('button', { type: 'button', class: 'btn btn--ghost', onclick: () => notTonight(m) }, icon('eyeoff'), t('tonight.notTonight')),
             h('div', { class: 'pick__tail' },
-              h('button', { type: 'button', class: 'btn btn--quiet', onclick: () => go({ movie: m.id }) }, icon('info'), 'Details'),
+              h('button', { type: 'button', class: 'btn btn--quiet', onclick: () => go({ movie: m.id }) }, icon('info'), t('tonight.details')),
               seenBtn,
               voteButtons(m, { save: voteAndSeen }))))));
   }
@@ -129,20 +130,20 @@ export function mount(root, route) {
       runtime(m.runtime) ? h('span', { text: runtime(m.runtime) }) : null,
       endsAt(m.runtime),
       m.genres?.length ? h('span', { text: m.genres.slice(0, 3).join(', ') }) : null,
-      m.on_watchlist ? h('span', { class: 'meta__flag' }, icon('watchlist'), 'On your watchlist') : null);
+      m.on_watchlist ? h('span', { class: 'meta__flag' }, icon('watchlist'), t('film.onWatchlist')) : null);
   }
 
   function alternativesList(list) {
     if (!list.length) return null;
     return h('section', { class: 'alts', 'aria-labelledby': 'alts-title' },
-      h('h2', { class: 'alts__title', id: 'alts-title', text: 'Also good tonight' }),
+      h('h2', { class: 'alts__title', id: 'alts-title', text: t('tonight.alts') }),
       h('ul', { class: 'alts__list' }, list.map((m) => h('li', null,
         // A card, not a button: its "Part of" line is a link of its own. The title's button stretches over the card.
         h('div', { class: 'alt' },
           poster(m, { cls: 'alt__poster' }),
           h('span', { class: 'alt__body' },
             h('button', { type: 'button', class: 'alt__title', onclick: () => go({ movie: m.id }), text: m.title }),
-            h('span', { class: 'alt__meta' }, [m.year, runtime(m.runtime)].filter(Boolean).join(', '), m.runtime ? ', ' : '', endsAt(m.runtime, { prefix: 'ends ' })),
+            h('span', { class: 'alt__meta' }, [m.year, runtime(m.runtime)].filter(Boolean).join(', '), m.runtime ? ', ' : '', endsAt(m.runtime, { prefix: t('clock.ends') })),
             altWhy(m),
             altPart(m)),
           matchStub(m.match, { size: 'sm' }))))));
@@ -177,7 +178,7 @@ export function mount(root, route) {
     const previous = data;
     toast(hideMsg(m), {
       action: {
-        label: 'Undo',
+        label: t('common.undo'),
         run: async () => {
           try {
             await api.undismiss(m.id);
@@ -204,8 +205,8 @@ export function mount(root, route) {
   }
 
   function seenToast(m, replacementId, undo, { vote, previousVote } = {}) {
-    const quick = (close) => h('div', { class: 'toast__votes', role: 'group', 'aria-label': 'Did you like it?' },
-      [[1, 'thumbup', 'I liked it'], [2, 'heart', 'A favourite'], [-1, 'thumbdown', "I didn't like it"]].map(([vote, name, label]) =>
+    const quick = (close) => h('div', { class: 'toast__votes', role: 'group', 'aria-label': t('msg.likedAsk') },
+      [[1, 'thumbup', t('toast.liked')], [2, 'heart', t('vote.love')], [-1, 'thumbdown', t('toast.disliked')]].map(([vote, name, label]) =>
         h('button', {
           type: 'button', class: 'toast__vote', title: label, 'aria-label': label,
           onclick: async () => {
@@ -221,7 +222,7 @@ export function mount(root, route) {
       timeout: rated ? 6000 : 8000,
       extra: rated ? null : quick,
       action: {
-        label: 'Undo',
+        label: t('common.undo'),
         run: async () => {
           // Restore both the seen mark and the vote it was saved with, whatever it was before (possibly none).
           const ok = previousVote === undefined ? await setSeen(m, false, 'undo') : await setSeenVote(m, false, previousVote, 'undo');
@@ -294,18 +295,18 @@ export function mount(root, route) {
   function empty() {
     const filtered = hasQuickFilters(filters) || filters.saga;
     return h('div', { class: 'state' },
-      h('div', { class: 'state__art', 'aria-hidden': 'true' }, genPoster({ title: 'Nothing playing', year: null })),
-      h('p', { class: 'state__title', text: filtered ? 'Nothing matches these filters' : 'No picks yet' }),
+      h('div', { class: 'state__art', 'aria-hidden': 'true' }, genPoster({ title: t('tonight.nothingPlaying'), year: null })),
+      h('p', { class: 'state__title', text: filtered ? t('tonight.empty.filtered') : t('tonight.empty.title') }),
       h('p', { class: 'state__text', text: filtered
-        ? 'Every film that fits is watched or hidden. Loosen a filter to see more.'
-        : `Your ${serverName()} library may still be syncing. Check progress in Setup.` }),
+        ? t('tonight.empty.filteredText')
+        : t('tonight.empty.text', { server: serverName() }) }),
       filtered
-        ? h('button', { type: 'button', class: 'btn btn--primary', onclick: () => { rememberRuntime(null); setFilters(CLEAR_QUICK); } }, 'Clear filters')
-        : h('a', { class: 'btn btn--primary', href: '#/setup' }, 'Open Setup'));
+        ? h('button', { type: 'button', class: 'btn btn--primary', onclick: () => { rememberRuntime(null); setFilters(CLEAR_QUICK); } }, t('common.clearFilters'))
+        : h('a', { class: 'btn btn--primary', href: '#/setup' }, t('common.openSetup')));
   }
 
   function skeleton() {
-    return h('div', { class: 'pick pick--skeleton', 'aria-busy': 'true', 'aria-label': 'Finding a film' },
+    return h('div', { class: 'pick pick--skeleton', 'aria-busy': 'true', 'aria-label': t('tonight.finding') },
       h('div', { class: 'pick__art skel' }),
       h('div', { class: 'pick__inner' },
         h('div', { class: 'pick__poster skel' }),

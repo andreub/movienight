@@ -1,3 +1,4 @@
+import { t, translateDom } from './i18n.js';
 import { hydrateIcons } from './dom.js';
 import { initTvNav } from './tvnav.js';
 import { onRoute, start, go, href, parse } from './state.js';
@@ -22,6 +23,7 @@ const pillText = pill.querySelector('.sync-pill__text');
 let current = { name: null, instance: null };
 let status = null;
 
+translateDom();
 hydrateIcons();
 initTvNav();
 seerrReturn(); // back from connecting Seerr through Plex (?seerr=connected|failed)
@@ -84,7 +86,7 @@ subscribe((s) => {
   pill.hidden = !running;
   if (running) {
     const pct = syncPercent(s.sync);
-    pillText.textContent = pct != null ? `Syncing ${pct}%` : 'Syncing';
+    pillText.textContent = pct != null ? t('sync.pillPct', { pct }) : t('sync.pill');
   }
   // Before the first render, start() below takes care of it.
   if (current.name && wasReady !== s.ready) render(parse());
