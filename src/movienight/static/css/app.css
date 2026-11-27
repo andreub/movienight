@@ -216,9 +216,10 @@ main > .tonight { max-width: none; }
 .chip[aria-pressed="true"] .chip__count { color: var(--ink-3); }
 /* on narrow phones the watchlist toggle keeps only its icon (label stays for screen readers) */
 @media (max-width: 479px) {
-  .filters .seg { flex: 1; }
-  .filters .seg__item { flex: 1; }
+  .filters .seg { flex: 1 1 auto; }
+  .filters .seg__item { flex: 1; min-width: 0; }
   .filters .seg__item span { justify-content: center; width: 100%; padding: 0 8px; }
+  .filters .seg__item span { display: block; overflow: hidden; text-overflow: ellipsis; line-height: 38px; text-align: center; }
   .filters .chip--toggle { padding: 0; width: 46px; justify-content: center; }
   .filters .chip--toggle .chip__label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   /* keep Play within reach on a phone; every reason is in the detail sheet */
@@ -439,10 +440,13 @@ main > .tonight { max-width: none; }
 
 /* ---------- Browse ---------- */
 
-.browse { display: grid; gap: 14px; padding: 0 var(--gutter) 40px; }
+.browse { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 0 var(--gutter) 40px; }
 .browse__top { display: grid; gap: 4px; }
 .browse__tools { display: flex; gap: 10px; }
 .browse__tools .field--search { min-width: 0; }
+/* the select is as wide as its longest option: on a phone it gives way to the search box and ellipsizes */
+.browse__tools .field--sort { min-width: 0; flex: 0 1 auto; }
+.browse__tools .field--sort .input { max-width: 100%; text-overflow: ellipsis; }
 .field--sort .field__label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .browse__count { color: var(--muted); font-size: .9375rem; margin-bottom: 10px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 22px 14px; }
@@ -663,10 +667,14 @@ main > .tonight { max-width: none; }
 
 /* ---------- Done-by control (Tonight) ---------- */
 
-.timectl { flex: none; }
+/* sized to its own label + chevron; when the row is short of room the label ellipsizes inside the pill (the
+   chevron always stays in it), and a control that does not fit wraps to the next line instead of overlapping */
+.timectl { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.timectl > .chip { max-width: 100%; }
 .chip--time { gap: 10px; }
 .chip--time.is-active { border-color: var(--bulb); color: var(--bulb); }
-.chip--time .icon { width: 1.2em; height: 1.2em; }
+.chip--time .icon { width: 1.2em; height: 1.2em; flex: none; }
+.chip--time .chip__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .menu--down { top: calc(100% + 8px); bottom: auto; }
 .menu--time { min-width: min(280px, calc(100vw - 2 * var(--gutter))); }
 .menu__label { padding: 10px 12px 2px; color: var(--muted); font-size: .8125rem; font-weight: 700; }
@@ -679,8 +687,8 @@ button.menu__item { width: 100%; background: none; border: 0; text-align: left; 
 .ends { color: var(--paper); }
 .alt__meta .ends { color: inherit; }
 @media (max-width: 479px) {
-  .filters .timectl { flex: 1 1 0; min-width: 0; }
-  .filters .timectl > .chip { width: 100%; }
+  .filters .timectl { flex: 1 1 auto; }
+  .filters .timectl > .chip { width: 100%; padding: 0 14px; gap: 8px; }
   .chip--time .icon--end { margin-left: auto; }
 }
 
