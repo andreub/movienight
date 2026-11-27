@@ -185,6 +185,7 @@ function plexStep() {
   const body = h('div');
   s.content.append(body, pinArea);
 
+  let alive = true;
   function stopPolling() { clearTimeout(poll); poll = null; }
 
   async function startPin() {
@@ -212,6 +213,7 @@ function plexStep() {
     const check = async () => {
       try {
         const r = await api.plexPinCheck(pin.id);
+        if (!alive) return;
         if (r.authorized) {
           stopPolling();
           authWindow?.close();
@@ -222,6 +224,7 @@ function plexStep() {
           return;
         }
       } catch (err) {
+        if (!alive) return;
         if (err.status && err.status < 500) {
           stopPolling();
           connect.disabled = false;
@@ -301,7 +304,7 @@ function plexStep() {
           : h('p', { class: 'help', text: 'No servers found on this Plex account yet.' }),
         h('button', { class: 'linkbtn', type: 'button', onclick: logout }, 'Sign out of Plex'));
     },
-    destroy: stopPolling,
+    destroy() { alive = false; stopPolling(); },
   };
 }
 

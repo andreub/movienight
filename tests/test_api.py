@@ -146,6 +146,13 @@ def test_server_toggle_and_logout(client):
     assert s["plex"]["movies"] == 0 and not s["ready"]
 
 
+def test_logout_purges_image_cache(client):
+    client.cfg.image_dir.mkdir(parents=True, exist_ok=True)
+    (client.cfg.image_dir / "1_poster.img").write_bytes(b"old")
+    assert client.post("/api/plex/logout").json() == {"ok": True}
+    assert not list(client.cfg.image_dir.glob("*.img"))
+
+
 def test_import_zip_endpoint(client):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:

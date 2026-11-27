@@ -61,6 +61,8 @@ export function mount(root, route) {
     offset = 0;
     total = 0;
     more.hidden = true;
+    more.disabled = false;
+    more.textContent = 'Load more';
     grid.replaceChildren(...Array.from({ length: 8 }, () => h('li', { class: 'card card--skeleton', 'aria-hidden': 'true' }, h('div', { class: 'poster skel' }), h('div', { class: 'skel skel--line' }))));
     count.textContent = 'Loading films…';
     loading = true;

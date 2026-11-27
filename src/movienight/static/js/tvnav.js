@@ -32,11 +32,20 @@ function onKey(e) {
 }
 
 // Single-line fields and radio groups keep Left/Right (caret, choice); Up/Down leave them. Checkboxes and plain
-// buttons-as-inputs leave on every arrow. Textareas, selects and sliders keep every arrow.
+// buttons-as-inputs leave on every arrow. Selects leave on Up/Down; textareas when the caret is on the first/last line; sliders keep every arrow.
 function leavesField(el, dir) {
+  if (el.tagName === 'SELECT') return dir === 'up' || dir === 'down'; // OK still opens the list
+  if (el.tagName === 'TEXTAREA') return atEdge(el, dir);
   if (el.tagName !== 'INPUT') return false;
   if (el.type === 'checkbox' || el.type === 'file') return true;
   return (TEXT_TYPES.has(el.type) || el.type === 'radio') && (dir === 'up' || dir === 'down');
+}
+
+function atEdge(el, dir) {
+  if (dir !== 'up' && dir !== 'down') return false;
+  if (el.selectionStart !== el.selectionEnd) return false;
+  const before = el.value.slice(0, el.selectionStart);
+  return dir === 'up' ? !before.includes('\n') : !el.value.slice(el.selectionStart).includes('\n');
 }
 
 // An open modal dialog traps focus; an open menu keeps it among its items.

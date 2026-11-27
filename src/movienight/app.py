@@ -535,6 +535,8 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                 for t in ("media_items", "movies", "media_servers", "dismissals"):
                     c.execute(f"DELETE FROM {t}")           # fixed table names
                 db.set_meta(c, "plex_last_sync", None)
+            for f in cfg.image_dir.glob("*.img"):     # cached by movie id, and the ids start over
+                f.unlink(missing_ok=True)
             engine().invalidate()
             return {"ok": True}
 
