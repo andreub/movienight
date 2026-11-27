@@ -25,6 +25,7 @@ function onKey(e) {
   const scope = scopeOf(from);
   const items = candidates(scope).filter((el) => el !== from);
   const next = isItem(from, scope) ? nearest(from.getBoundingClientRect(), items, dir) : firstVisible(items);
+  if (scope === document.body && scrollStep(next, dir)) { e.preventDefault(); return; }
   if (!next) return; // nothing that way: let the WebView scroll the page
   e.preventDefault();
   next.focus({ preventScroll: true });
@@ -36,9 +37,28 @@ function onKey(e) {
 function leavesField(el, dir) {
   if (el.tagName === 'SELECT') return dir === 'up' || dir === 'down'; // OK still opens the list
   if (el.tagName === 'TEXTAREA') return atEdge(el, dir);
+  if (el.readOnly && (el.tagName === 'TEXTAREA' || TEXT_TYPES.has(el.type))) return true; // no caret to move
   if (el.tagName !== 'INPUT') return false;
   if (el.type === 'checkbox' || el.type === 'file') return true;
   return (TEXT_TYPES.has(el.type) || el.type === 'radio') && (dir === 'up' || dir === 'down');
+}
+
+// Pages that opt in with data-tv-scroll (the Ask thread, mostly plain text): Up/Down scroll the page a step while
+// there is more to read, rather than jumping to a control off screen or to one pinned to the bottom edge
+// (data-tv-end, the chat composer), which is reached only once the page is scrolled to its end.
+export function scrollStep(next, dir) {
+  if ((dir !== 'up' && dir !== 'down') || !document.querySelector('[data-tv-scroll]')) return false;
+  const down = dir === 'down';
+  const max = document.documentElement.scrollHeight - window.innerHeight;
+  if (down ? window.scrollY >= max - 2 : window.scrollY <= 2) return false;
+  if (next && !next.closest('[data-tv-end]')) {
+    const r = next.getBoundingClientRect();
+    const end = document.querySelector('[data-tv-end]:not([hidden])');
+    const bottom = end ? Math.min(window.innerHeight, end.getBoundingClientRect().top) : window.innerHeight;
+    if (r.top >= 0 && r.bottom <= bottom) return false; // in view: just move to it
+  }
+  window.scrollBy({ top: (down ? 1 : -1) * Math.round(window.innerHeight * 0.6), behavior: 'smooth' });
+  return true;
 }
 
 function atEdge(el, dir) {

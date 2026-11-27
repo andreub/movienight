@@ -8,6 +8,7 @@ import { go } from '../state.js';
 import { serverName } from '../status.js';
 import { t, lang } from '../i18n.js';
 import { errorText } from '../labels.js';
+import { TV } from '../tvnav.js';
 
 export const title = t('tab.ask');
 
@@ -55,7 +56,7 @@ export function mount(root) {
   let stick = true; // follow the stream unless the user scrolled up
   let live = null; // refs for the assistant message currently streaming
 
-  const newChat = h('button', { type: 'button', class: 'btn btn--ghost btn--sm', onclick: () => { clearChat(); input.focus(); } }, icon('plus'), t('ask.new'));
+  const newChat = h('button', { type: 'button', class: 'btn btn--ghost btn--sm', onclick: () => { clearChat(); if (!TV) input.focus(); } }, icon('plus'), t('ask.new'));
   const usageLine = h('p', { class: 'ask__usage', hidden: true });
   const lede = h('div', { class: 'ask__empty' });
   const thread = h('div', { class: 'thread', role: 'log', 'aria-label': t('ask.thread'), 'aria-live': 'polite' });
@@ -65,9 +66,9 @@ export function mount(root) {
   });
   const sendBtn = h('button', { type: 'submit', class: 'composer__btn', 'aria-label': t('ask.send') }, icon('send'));
   const stopBtn = h('button', { type: 'button', class: 'composer__btn composer__btn--stop', 'aria-label': t('ask.stop'), hidden: true, onclick: stopChat }, icon('stop'));
-  const composer = h('form', { class: 'composer', hidden: true },
+  const composer = h('form', { class: 'composer', hidden: true, 'data-tv-end': '' },
     h('div', { class: 'composer__inner' }, input, sendBtn, stopBtn));
-  const page = h('div', { class: 'ask' },
+  const page = h('div', { class: 'ask', 'data-tv-scroll': '' },
     h('div', { class: 'ask__top' }, h('h1', { class: 'page-title', text: t('tab.ask') }), newChat),
     usageLine, lede, thread, composer);
   root.append(page);
@@ -79,8 +80,28 @@ export function mount(root) {
   }
   input.addEventListener('input', grow);
   input.addEventListener('keydown', (e) => {
+    if (TV && input.readOnly) {
+      if (e.key === 'Enter') { e.preventDefault(); edit(); }
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); composer.requestSubmit(); }
   });
+  // TV: the field stays read-only (no on-screen keyboard) while the D-pad passes over it; OK opens the keyboard,
+  // and leaving the field or closing the keyboard with Back makes it read-only again, so Up/Down scroll the thread.
+  let refocusing = false;
+  function edit() {
+    if (!input.readOnly || input.disabled) return;
+    input.readOnly = false;
+    refocusing = true; // blur and focus again: the WebView shows the keyboard for a field that gains focus editable
+    input.blur();
+    input.focus();
+    refocusing = false;
+  }
+  if (TV) {
+    input.readOnly = true;
+    input.addEventListener('click', edit);
+    input.addEventListener('blur', () => { if (!refocusing) input.readOnly = true; });
+  }
   composer.addEventListener('submit', (e) => {
     e.preventDefault();
     send(input.value);
@@ -89,6 +110,7 @@ export function mount(root) {
     if (!text.trim() || chat.busy) return;
     input.value = '';
     grow();
+    if (TV) input.blur(); // close the keyboard so the D-pad scrolls the reply
     stick = true;
     sendChat(text);
   }
@@ -100,6 +122,7 @@ export function mount(root) {
   const vv = window.visualViewport;
   function onViewport() {
     const kb = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+    if (TV && kb <= 80 && document.documentElement.classList.contains('kb-open')) input.readOnly = true; // Back closed it
     document.documentElement.style.setProperty('--kb', `${kb}px`);
     document.documentElement.classList.toggle('kb-open', kb > 80);
     if (kb > 80 && stick) scrollDown();
