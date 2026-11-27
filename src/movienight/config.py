@@ -1,6 +1,7 @@
 """Environment-driven configuration."""
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -100,6 +101,8 @@ class Config:
         try:
             hours = float(env.get("MOVIENIGHT_SYNC_HOURS", "6") or 6)
         except ValueError:
+            hours = 6.0
+        if not math.isfinite(hours):        # nan passes any clamp, inf never syncs again
             hours = 6.0
         media = (env.get("MOVIENIGHT_MEDIA_SERVER") or "plex").strip().lower()
         push = env.get("MOVIENIGHT_PUSH_SEEN")

@@ -343,14 +343,43 @@ def test_quota_blocks_new_question_without_api_call(chat_client, monkeypatch, cl
     assert chat_client.get("/api/chat/status").json()["usage"]["exhausted"] is True
 
 
-def test_inflight_question_finishes_loop(chat_client, monkeypatch, clock):
+def test_budget_rechecked_before_every_turn(chat_client, monkeypatch, clock):
+    # a question that spends the budget stops at its next turn (parallel questions cannot each run 8 more turns)
     monkeypatch.setenv("MOVIENIGHT_AI_MONTHLY_BUDGET_USD", "0.01")
     fake = script(monkeypatch, [
         {"tools": [("get_taste_profile", {})], "usage": U_(0, 100_000)},
         {"text": ["done"], "usage": U_(0, 1)},
     ])
     _, ev = post(chat_client, U)
+    assert len(fake.calls) == 1
+    assert names(ev)[-2:] == ["error", "done"] and "budget for this month" in ev[-2][1]["detail"]
+
+
+def test_budget_allows_further_turns_while_under(chat_client, monkeypatch, clock):
+    monkeypatch.setenv("MOVIENIGHT_AI_MONTHLY_BUDGET_USD", "100")
+    fake = script(monkeypatch, [
+        {"tools": [("get_taste_profile", {})], "usage": U_(0, 1000)},
+        {"text": ["done"], "usage": U_(0, 1)},
+    ])
+    _, ev = post(chat_client, U)
     assert len(fake.calls) == 2 and "error" not in names(ev)
+
+
+def test_failed_turn_still_counted(chat_client, monkeypatch, clock):
+    import anthropic
+    import httpx
+
+    class Boom(FakeStream):
+        async def __aenter__(self):
+            req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+            raise anthropic.InternalServerError("boom", response=httpx.Response(500, request=req), body=None)
+
+    fake = FakeClient([{}])
+    fake.beta = NS(messages=NS(stream=lambda **kw: Boom({})))
+    monkeypatch.setattr(chat, "make_client", lambda: fake)
+    _, ev = post(chat_client, U)
+    assert names(ev) == ["error", "done"]
+    assert [(r["requests"], r["questions"]) for r in rows(chat_client)] == [(1, 1)]
 
 
 def test_budget_zero_disables_limit(chat_client, monkeypatch, clock):

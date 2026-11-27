@@ -13,15 +13,16 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Path as PathParam
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
 from . import auth, cast, chat, completion, db, letterboxd as lb, library, plex, queries, seenpush, seerr, servers, tags as lbtags, version
 from .config import Config
@@ -56,7 +57,16 @@ class DismissBody(BaseModel):
     days: int = Field(default=30, ge=0, le=3650)
 
 
-Vote = Literal[2, 1, -1, 0]      # 2 love (a favourite), 1 thumb up, -1 thumb down, 0 clears the vote
+def _int_vote(v):
+    if type(v) is not int:      # JSON true / 1.0 / "1" equal 1, so a Literal alone (even strict) takes them
+        raise ValueError("a vote is 2, 1, -1 or 0")
+    return v
+
+
+# 2 love (a favourite), 1 thumb up, -1 thumb down, 0 clears the vote
+Vote = Annotated[Literal[2, 1, -1, 0], BeforeValidator(_int_vote)]
+# a path id that fits SQLite's INTEGER (a bigger one raised OverflowError: 500); 422 outside it
+Id = Annotated[int, PathParam(ge=1, le=2**63 - 1)]
 
 
 class VoteBody(BaseModel):
@@ -64,6 +74,7 @@ class VoteBody(BaseModel):
 
 
 class SeenBody(BaseModel):
+    model_config = ConfigDict(strict=True)      # "seen": 1 or "yes" is not a boolean
     seen: bool
     vote: Vote | None = None    # also set (or with 0, clear) the vote in the same transaction
 
@@ -124,7 +135,9 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                     key = secrets.token_hex(32)
                     db.set_meta(c, "session_key", key)
                 cid = db.client_id(c)
-            app.state.sessions = auth.Sessions(bytes.fromhex(key), cfg.public_url.startswith("https://"))
+                epoch, revoked = _session_state(c)
+            app.state.sessions = auth.Sessions(bytes.fromhex(key), cfg.public_url.startswith("https://"),
+                                               epoch, revoked, _save_session_state)
             if "oidc" in methods:
                 app.state.oidc = auth.OIDC(cfg.oidc_issuer, cfg.oidc_client_id, cfg.public_url,
                                            cfg.oidc_allowed_subs, http)
@@ -147,6 +160,20 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             await http.aclose()
             if seerr_http:
                 await seerr_http.aclose()
+
+    def _session_state(c) -> tuple[int, dict[str, float]]:
+        """The session epoch and the revoked session ids, as kept in meta (see auth.Sessions)."""
+        try:
+            epoch = int(db.get_meta(c, "session_epoch") or 0)
+            revoked = json.loads(db.get_meta(c, "revoked_sessions") or "{}")
+            return epoch, {str(k): float(v) for k, v in revoked.items()}
+        except (ValueError, TypeError, AttributeError):
+            return 0, {}
+
+    def _save_session_state(epoch: int, revoked: dict[str, float]) -> None:
+        with db.session(cfg.db_path) as c:
+            db.set_meta(c, "session_epoch", str(epoch))
+            db.set_meta(c, "revoked_sessions", json.dumps(revoked))
 
     app = FastAPI(title="MovieNight", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.cfg = cfg      # read by routers mounted from other modules (the chat's list_completions tool)
@@ -366,6 +393,8 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             allowed = not stored          # nobody yet: the first sign-in becomes the owner
         if not allowed:
             raise auth.LoginError("This MovieNight belongs to another Plex account")
+        if owner_id and account["id"] != owner_id:      # a new owner: the old owner's sessions end here
+            st.sessions.revoke_all()
         with db.session(cfg.db_path) as c:
             db.set_meta(c, "plex_owner_id", account["id"])
             if not stored:
@@ -386,7 +415,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         if st.plex_login is None:
             return JSONResponse({"detail": "Plex sign-in is off"}, status_code=404)
         try:
-            started = await st.plex_login.start_code(next)
+            started = await st.plex_login.start_code(next, request.client.host if request.client else "")
         except auth.TooManyCodes as e:
             return JSONResponse({"detail": str(e)}, status_code=429)
         except Exception as e:  # noqa: BLE001
@@ -431,6 +460,8 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         target = "/logged-out"
         sessions = getattr(st, "sessions", None)
         session = sessions.check(request.cookies.get(auth.SESSION_COOKIE)) if sessions else None
+        if session:
+            sessions.revoke(session)              # a copy of the cookie must not stay signed in
         if session and session.sub.startswith("oidc:") and _oidc_ready(st):
             target = await st.oidc.logout_url("/logged-out")
         res = RedirectResponse(target, status_code=303)
@@ -509,7 +540,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                 raise HTTPException(502, f"Could not reach plex.tv ({safe_error(e)})") from None
 
         @app.get("/api/plex/pin/{pin_id}")
-        async def plex_pin_check(pin_id: int):
+        async def plex_pin_check(pin_id: Id):
             with db.session(cfg.db_path) as c:
                 cid = db.client_id(c)
             try:
@@ -560,10 +591,15 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         data = await file.read(MAX_UPLOAD + 1)
         if len(data) > MAX_UPLOAD:
             raise HTTPException(413, "File too large")
-        try:
+
+        def run() -> dict:          # parsing up to 20 MB: off the event loop
             with db.session(cfg.db_path) as c:
                 counts = lb.import_zip(c, data)
                 library.record_outcomes(c)
+            return counts
+
+        try:
+            counts = await asyncio.to_thread(run)
         except lb.ExportError as e:
             raise HTTPException(400, str(e)) from None
         engine().invalidate()
@@ -581,7 +617,9 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
     def filters(mood, genre, max_runtime, min_year, max_year, watchlist_only, include_watched,
                 include_dismissed, server, q, era=None) -> queries.Filters:
         if mood in ("recent", "classic"):    # legacy moods, now eras
-            mood, era = None, era or mood
+            if era:
+                raise HTTPException(400, f"mood={mood} is an era now: give either it or era, not both")
+            mood, era = None, mood
         if mood and mood not in queries.MOOD_BY_ID:
             raise HTTPException(400, "Unknown mood")
         if era and queries.parse_era(era) is None:
@@ -855,7 +893,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             return {"statuses": {str(i): got.get(i, seerr.NONE) for i in dict.fromkeys(ids) if i > 0}}
 
         @app.post("/api/seerr/request/{tmdb_id}")
-        async def seerr_request(request: Request, tmdb_id: int):
+        async def seerr_request(request: Request, tmdb_id: Id):
             """Request a film as this user's Seerr account: {"status": "requested" | "available"}. Already
             requested counts as requested; 403 when the account may not request, 409 when it must reconnect."""
             if tmdb_id < 1:
@@ -921,7 +959,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         return out
 
     @app.get("/api/movies/{movie_id}")
-    def movie(movie_id: int):
+    def movie(movie_id: Id):
         st, dismissed = engine().get(), dismissed_now()
         c = st.by_id.get(movie_id)
         if c is None:
@@ -932,7 +970,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         return out
 
     @app.post("/api/movies/{movie_id}/dismiss")
-    def dismiss(movie_id: int, body: DismissBody | None = None):
+    def dismiss(movie_id: Id, body: DismissBody | None = None):
         days = body.days if body else 30
         until = None if days == 0 else (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
         with db.session(cfg.db_path) as c:
@@ -943,13 +981,13 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         return {"ok": True}
 
     @app.delete("/api/movies/{movie_id}/dismiss")
-    def undismiss(movie_id: int):
+    def undismiss(movie_id: Id):
         with db.session(cfg.db_path) as c:
             c.execute("DELETE FROM dismissals WHERE movie_id=?", (movie_id,))
         return {"ok": True}
 
     @app.post("/api/movies/{movie_id}/feedback")
-    def feedback(movie_id: int, body: VoteBody):
+    def feedback(movie_id: Id, body: VoteBody):
         with db.session(cfg.db_path) as c:
             row = c.execute("SELECT tmdb_id, dkey FROM movies WHERE id=?", (movie_id,)).fetchone()
             if row is None:
@@ -966,7 +1004,11 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                       " DO UPDATE SET vote=excluded.vote, updated_at=excluded.updated_at", (key, vote, now_iso()))
 
     @app.post("/api/movies/{movie_id}/seen")
-    async def mark_seen(movie_id: int, body: SeenBody):
+    async def mark_seen(movie_id: Id, body: SeenBody):
+        return await _set_seen(await asyncio.to_thread(_movie_seen_key, movie_id, body), body)
+
+    def _movie_seen_key(movie_id: int, body: SeenBody) -> str:
+        """The seen key of a library film; 404/409 as mark_seen answers. Blocking (the engine may rebuild)."""
         with db.session(cfg.db_path) as c:
             row = c.execute("SELECT tmdb_id, dkey FROM movies WHERE id=?", (movie_id,)).fetchone()
             if row is None:
@@ -980,7 +1022,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                     cand = next((x for x in engine().get().cands if x.id == movie_id), None)
                     via = ["server"] if cand is not None and cand.plex_watched else []
                 _refuse_unmark(via)
-        return await _set_seen(key, body)
+        return key
 
     def _refuse_unmark(seen_via: list[str]) -> None:
         """409 when the film was seen on Letterboxd or played on the media server: it can only be unmarked there."""
@@ -1026,50 +1068,69 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             return None
         return next((f for g in completion.build(st, c) for f in g["films"] if f["tmdb_id"] == tmdb_id), None)
 
-    @app.get("/api/films/{tmdb_id}")
-    async def film(tmdb_id: int):
-        """A light detail view: library info, else the cached TMDB details (fetched once on demand), else what a
-        group knows; plus how the film was seen and whether that mark can be undone here."""
-        if tmdb_id < 1:
-            raise HTTPException(404, "Film not found")
+    def _film_known(c, tmdb_id: int, base: dict | None) -> bool:
+        """A film the app has a reason to show: in the library, on Letterboxd, listed by a group, or marked here.
+        Only these get TMDB details fetched on demand and can be marked seen (not any TMDB id at all)."""
+        key = f"tmdb:{tmdb_id}"
+        return base is not None or c.execute(
+            "SELECT 1 FROM movies WHERE tmdb_id=? UNION ALL SELECT 1 FROM lb_films WHERE tmdb_id=?"
+            " UNION ALL SELECT 1 FROM seen WHERE key=? UNION ALL SELECT 1 FROM votes WHERE key=? LIMIT 1",
+            (tmdb_id, tmdb_id, key, key)).fetchone() is not None
+
+    def _film_view(tmdb_id: int, det: dict | None = None) -> tuple:
+        """(film_json or None, whether to fetch its TMDB details). Blocking: the engine may rebuild and the
+        completion groups be built. `det` (TMDB details just fetched) is cached first."""
         st = engine().get()
         c = conn()
         try:
+            if det:
+                c.execute("INSERT OR REPLACE INTO tmdb_details(tmdb_id,json,fetched_at) VALUES(?,?,?)",
+                          (tmdb_id, json.dumps(det), now_iso()))
+                c.commit()
             base = _listed_film(st, c, tmdb_id)
             out = library.film_json(c, st, tmdb_id, base)
-            if (out is None or not out["details"]) and sync_mgr().tmdb.configured:
-                try:
-                    det = await sync_mgr().tmdb.details(tmdb_id)
-                except Exception as e:  # noqa: BLE001 - what is cached is still shown
-                    log.warning("TMDB details for a film outside the library failed: %s", safe_error(e))
-                    det = None
-                if det:
-                    c.execute("INSERT OR REPLACE INTO tmdb_details(tmdb_id,json,fetched_at) VALUES(?,?,?)",
-                              (tmdb_id, json.dumps(det), now_iso()))
-                    c.commit()
-                    out = library.film_json(c, st, tmdb_id, base)
+            fetch = not det and (out is None or not out["details"]) and _film_known(c, tmdb_id, base)
         finally:
             c.close()
+        if out is not None:
+            out.pop("details", None)
+            if cfg.completionist:
+                out["groups"] = film_groups(st, tmdb_id)
+        return out, fetch
+
+    @app.get("/api/films/{tmdb_id}")
+    async def film(tmdb_id: Id):
+        """A light detail view: library info, else the cached TMDB details (fetched once on demand, only for a film
+        the app knows of: see _film_known), else what a group knows; plus how the film was seen and whether that
+        mark can be undone here."""
+        out, fetch = await asyncio.to_thread(_film_view, tmdb_id)
+        if fetch and sync_mgr().tmdb.configured:
+            try:
+                det = await sync_mgr().tmdb.details(tmdb_id)
+            except Exception as e:  # noqa: BLE001 - what is cached is still shown
+                log.warning("TMDB details for a film outside the library failed: %s", safe_error(e))
+                det = None
+            if det:
+                out, _ = await asyncio.to_thread(_film_view, tmdb_id, det)
         if out is None:
             raise HTTPException(404, "Film not found")
-        out.pop("details", None)
-        if cfg.completionist:
-            out["groups"] = film_groups(st, tmdb_id)
         return out
 
     @app.post("/api/films/{tmdb_id}/seen")
-    async def film_seen(tmdb_id: int, body: SeenBody):
+    async def film_seen(tmdb_id: Id, body: SeenBody):
         """Mark a film seen (with an optional verdict) by TMDB id, whether it is in the library or not. The mark is
         stored as `tmdb:<id>`, so a library film with that TMDB id added later is seen, and the vote counts, from
         then on. Unmarking undoes the app's own push to the media server (MOVIENIGHT_PUSH_SEEN), at once. A film
         seen on Letterboxd, or played on the media server itself, cannot be unmarked here (409)."""
+        await asyncio.to_thread(_check_film_seen, tmdb_id, body)
+        return await _set_seen(f"tmdb:{tmdb_id}", body)
+
+    def _check_film_seen(tmdb_id: int, body: SeenBody) -> None:
+        """404 for a film the app does not know of, 409 for an unmark it cannot do. Blocking."""
         st = engine().get()
         c = conn()
         try:
-            known = (c.execute("SELECT 1 FROM movies WHERE tmdb_id=? UNION SELECT 1 FROM tmdb_details WHERE tmdb_id=?"
-                               " AND json != '{}'", (tmdb_id, tmdb_id)).fetchone() is not None
-                     or _listed_film(st, c, tmdb_id) is not None)
-            if not known:
+            if not _film_known(c, tmdb_id, _listed_film(st, c, tmdb_id)):
                 raise HTTPException(404, "Film not found")
             if not body.seen:
                 f = library.film_json(c, st, tmdb_id, {"title": "?"})
@@ -1077,7 +1138,6 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                     _refuse_unmark(f["seen_via"])
         finally:
             c.close()
-        return await _set_seen(f"tmdb:{tmdb_id}", body)
 
     @app.get("/api/seen-candidates")
     def seen_candidates(limit: int = Query(60, ge=1, le=200), offset: int = Query(0, ge=0)):
@@ -1117,22 +1177,15 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
 
     # ---- images
     @app.get("/api/image/{movie_id}/{kind}")
-    async def image(movie_id: int, kind: Literal["poster", "art"]):
+    async def image(movie_id: Id, kind: Literal["poster", "art"]):
         cache = cfg.image_dir / f"{movie_id}_{kind}.img"
         headers = {"Cache-Control": "public, max-age=604800"}
-        if cache.is_file():
-            data = cache.read_bytes()
-            return Response(data, media_type=_sniff(data), headers=headers)
+        cached, rows = await asyncio.to_thread(_image_sources, cache, movie_id)
+        if cached is not None:
+            return Response(cached, media_type=_sniff(cached), headers=headers)
         field = "thumb" if kind == "poster" else "art"
-        with db.session(cfg.db_path) as c:
-            row = c.execute(
-                "SELECT i.json, s.base_url, s.access_token, db_cid.value cid FROM media_items i"
-                " JOIN media_servers s ON s.id=i.server_id LEFT JOIN meta db_cid ON db_cid.key='plex_client_id'"
-                " WHERE i.movie_id=? AND s.enabled=1 AND s.base_url IS NOT NULL ORDER BY s.owned DESC", (movie_id,)
-            ).fetchall()
-        import json as _json
-        for r in row:
-            path = _json.loads(r["json"]).get(field)
+        for r in rows:
+            path = json.loads(r["json"]).get(field)
             if not path:
                 continue
             w, h = (500, 750) if kind == "poster" else (1280, 720)
@@ -1140,15 +1193,29 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                                           path, w, h)
             if got:
                 data, _ = got
-                try:
-                    cfg.image_dir.mkdir(parents=True, exist_ok=True)
-                    tmp = cache.with_suffix(".tmp")
-                    tmp.write_bytes(data)
-                    tmp.replace(cache)
-                except OSError:
-                    pass
+                await asyncio.to_thread(_cache_image, cache, data)
                 return Response(data, media_type=_sniff(data), headers=headers)
         raise HTTPException(404, "No image available")
+
+    def _image_sources(cache: Path, movie_id: int) -> tuple[bytes | None, list]:
+        """(the cached image, or None and the media items to fetch it from). Blocking file and DB I/O."""
+        if cache.is_file():
+            return cache.read_bytes(), []
+        with db.session(cfg.db_path) as c:
+            return None, c.execute(
+                "SELECT i.json, s.base_url, s.access_token, db_cid.value cid FROM media_items i"
+                " JOIN media_servers s ON s.id=i.server_id LEFT JOIN meta db_cid ON db_cid.key='plex_client_id'"
+                " WHERE i.movie_id=? AND s.enabled=1 AND s.base_url IS NOT NULL ORDER BY s.owned DESC", (movie_id,)
+            ).fetchall()
+
+    def _cache_image(cache: Path, data: bytes) -> None:
+        try:
+            cfg.image_dir.mkdir(parents=True, exist_ok=True)
+            tmp = cache.with_suffix(".tmp")
+            tmp.write_bytes(data)
+            tmp.replace(cache)
+        except OSError:
+            pass
 
     # ---- optional AI chat (off without Anthropic credentials)
     app.include_router(chat.router)

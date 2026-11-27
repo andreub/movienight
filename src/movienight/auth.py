@@ -6,7 +6,9 @@ session. If OIDC is the only method and its client id is missing, the app answer
 never runs open by accident.
 
 The session is an HMAC-signed cookie. Its key lives in the database, so a restart or a
-redeploy does not sign everyone out.
+redeploy does not sign everyone out. Each cookie carries a session id (revoked on logout,
+so a copied cookie stops working too) and the session epoch (raised when the owner changes,
+which voids every session signed before).
 """
 from __future__ import annotations
 
@@ -35,6 +37,8 @@ CODE_COOKIE = "movienight_code"         # binds a TV code to the browser that as
 CODE_SECONDS = 600                      # a TV code lives at most this long (plex.tv may say less)
 CODE_POLL_SECONDS = 1.5                 # plex.tv is asked about a code at most this often
 CODE_STARTS_PER_MINUTE = 20             # new TV codes per minute, all clients together
+CODE_STARTS_PER_CLIENT = 5              # ... and per client address, so one client cannot use them all up
+MAX_REVOKED = 1000                      # revoked session ids kept (until their cookie expires anyway)
 
 
 class LoginError(Exception):
@@ -64,20 +68,28 @@ def safe_next(path: str | None) -> str:
 class Session:
     sub: str            # "plex:<account id>" or "oidc:<sub claim>"
     name: str
+    sid: str = ""       # this sign-in (cookies signed before session ids existed have none)
+    exp: float = 0.0
 
 
 class Sessions:
-    """Signs and checks the session cookie."""
+    """Signs and checks the session cookie. `epoch` and `revoked` ({session id: expiry}) are kept by the caller
+    (in the database): `persist(epoch, revoked)` is called whenever they change."""
 
-    def __init__(self, key: bytes, secure: bool):
+    def __init__(self, key: bytes, secure: bool, epoch: int = 0, revoked: dict[str, float] | None = None,
+                 persist=None):
         self.key = key
         self.secure = secure
+        self.epoch = epoch
+        self.revoked = dict(revoked or {})
+        self._persist = persist
 
     def _mac(self, payload: str) -> str:
         return _b64(hmac.new(self.key, payload.encode(), hashlib.sha256).digest())
 
     def sign(self, sub: str, name: str = "") -> str:
-        data = {"sub": sub, "name": name, "exp": int(time.time()) + SESSION_DAYS * 86400}
+        data = {"sub": sub, "name": name, "exp": int(time.time()) + SESSION_DAYS * 86400,
+                "sid": secrets.token_urlsafe(12), "ep": self.epoch}
         payload = _b64(json.dumps(data).encode())
         return f"{payload}.{self._mac(payload)}"
 
@@ -87,11 +99,37 @@ class Sessions:
             if not hmac.compare_digest(mac, self._mac(payload)):
                 return None
             data = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
-            if data["exp"] <= time.time():
+            if data["exp"] <= time.time() or data.get("ep", 0) != self.epoch:
                 return None
-            return Session(str(data["sub"]), data.get("name", ""))
+            sid = str(data.get("sid") or "")
+            if sid and sid in self.revoked:
+                return None
+            return Session(str(data["sub"]), data.get("name", ""), sid, float(data["exp"]))
         except Exception:  # noqa: BLE001
             return None
+
+    def revoke(self, session: Session) -> None:
+        """Sign out this session for good: its cookie, even a copy of it, is refused from now on."""
+        if not session.sid:          # an old cookie without an id: only a new epoch can void it
+            self.revoke_all()
+            return
+        now = time.time()
+        live = {k: v for k, v in self.revoked.items() if v > now}
+        while len(live) >= MAX_REVOKED:                      # drop the one that expires first
+            live.pop(min(live, key=live.get))
+        live[session.sid] = session.exp
+        self.revoked = live
+        self._save()
+
+    def revoke_all(self) -> None:
+        """Void every session signed so far (e.g. the owner changed)."""
+        self.epoch += 1
+        self.revoked = {}
+        self._save()
+
+    def _save(self) -> None:
+        if self._persist:
+            self._persist(self.epoch, self.revoked)
 
     def cookie_kwargs(self) -> dict:
         return {"httponly": True, "secure": self.secure, "samesite": "lax", "path": "/"}
@@ -221,6 +259,7 @@ class PlexLogin:
         self._pending = Pending()                            # pin id, next
         self._codes: dict[str, dict] = {}                    # TV codes: handle -> pin, nonce, next, expires
         self._code_starts: list[float] = []
+        self._client_starts: dict[str, list[float]] = {}     # the same, per client address
 
     async def login_url(self, next_path: str | None) -> str:
         pin = await self.plex.create_pin(self.http, self.client_id)
@@ -240,13 +279,18 @@ class PlexLogin:
         return account, token, next_path
 
     # --- TV-style sign-in: a 4-character code typed at plex.tv/link on a signed-in phone ---------
-    async def start_code(self, next_path: str | None) -> dict:
-        """{"id": opaque handle, "code", "expires_at", "nonce"}; the nonce goes in a cookie, never to plex.tv."""
+    async def start_code(self, next_path: str | None, client: str = "") -> dict:
+        """{"id": opaque handle, "code", "expires_at", "nonce"}; the nonce goes in a cookie, never to plex.tv.
+        `client`: the caller's address; each gets its own share of the per-minute quota."""
         now = time.time()
         self._code_starts = [t for t in self._code_starts if t > now - 60]
-        if len(self._code_starts) >= CODE_STARTS_PER_MINUTE:
+        self._client_starts = {k: kept for k, v in self._client_starts.items()
+                               if (kept := [t for t in v if t > now - 60])}
+        mine = self._client_starts.get(client, [])
+        if len(mine) >= CODE_STARTS_PER_CLIENT or len(self._code_starts) >= CODE_STARTS_PER_MINUTE:
             raise TooManyCodes("Too many sign-in codes right now. Wait a minute and try again.")
         self._code_starts.append(now)
+        self._client_starts[client] = mine + [now]
         pin = await self.plex.create_pin(self.http, self.client_id, strong=False)
         ttl = min(int(pin.get("expires_in") or CODE_SECONDS), CODE_SECONDS)
         live = {k: v for k, v in self._codes.items() if v["expires"] > now}
