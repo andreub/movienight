@@ -478,7 +478,8 @@ TOOLS_COMPLETIONIST: list[dict] = TOOLS[:-1] + [LIST_COMPLETIONS] + TOOLS[-1:]
 
 LANGUAGE_NOTE = {
     "es-ES": ("\n\nLanguage: the user's app is in Spanish (Spain). Always answer in Spanish from Spain, using "
-              "informal \"tú\", whatever language the tools' data is in. Name films by the titles the tools return."),
+              "informal \"tú\", whatever language the tools' data is in, with Spanish punctuation (¿? ¡! and «» "
+              "quotes). Name films by the titles the tools return."),
 }
 
 

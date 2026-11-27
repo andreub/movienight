@@ -783,7 +783,7 @@ export async function* chatStream(messages, signal) {
   const ask = (messages[messages.length - 1]?.content || '').toLowerCase();
   await sleep(500, signal);
   if (ask.includes('error')) {
-    yield { event: 'text', data: { delta: ES ? 'Déjame mirar' : 'Let me look' } };
+    yield { event: 'text', data: { delta: ES ? 'Déjame ver' : 'Let me look' } };
     yield { event: 'error', data: { detail: 'The AI service had a problem. Try again shortly.', code: 'ai.problem', params: {} } };
     yield { event: 'done', data: {} };
     return;
@@ -805,7 +805,7 @@ export async function* chatStream(messages, signal) {
     ? `Esto es lo que pondría esta noche.\n\n**${picks[0].title}** es la apuesta más segura: está muy bien hecha y cabe en el tiempo que tienes.\n\nOtras dos que merecen la pena:\n- **${picks[1].title}** si te apetece otro ritmo\n- **${picks[2].title}** si quieres que te sorprendan\n\nDime si prefieres algo más corto, más antiguo o más ligero.`
     : `Here is what I would put on tonight.\n\n**${picks[0].title}** is the safest bet: ${picks[0].genres[0].toLowerCase()} done with real confidence, and it fits the time you have.\n\nTwo more worth a look:\n- **${picks[1].title}** if you want something with a different pace\n- **${picks[2].title}** if you are in the mood to be surprised\n\nTell me if you would like something shorter, older or lighter.`;
   const PITCHES = ES
-    ? ['Una peli limpia y segura que premia tu gusto por las tramas bien atadas.', 'Más lenta y más rara, con un final del que querrás hablar.', 'Un comodín que se sale un poco de tus gustos de siempre.']
+    ? ['Una peli redonda y segura, ideal para tu debilidad por las tramas bien atadas.', 'Más lenta y más rara, con un final del que querrás hablar.', 'Un comodín que se sale un poco de tus gustos de siempre.']
     : ['A clean, confident watch that rewards your love of tight plots.', 'Slower and stranger, with an ending you will want to talk about.', 'A wildcard that sits just outside your usual taste.'];
   for (const word of intro.match(/\S+\s*|\n+/g)) {
     yield { event: 'text', data: { delta: word } };
