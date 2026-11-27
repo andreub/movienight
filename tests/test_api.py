@@ -196,3 +196,15 @@ def test_tv_client_assets_are_served(client):
     assert "const playHref = (s) => (TV_APP ? tvHref(s) : href(s));" in play       # other clients: unchanged href
     assert "initTvNav" in client.get("/static/js/main.js").text
 
+
+
+def test_tv_ask_tab_scrolls_with_the_dpad(client):
+    # Issue #90: on TV the chat input stays read-only (no on-screen keyboard) until OK; Up/Down scroll the thread.
+    nav = client.get("/static/js/tvnav.js").text
+    assert "scope === document.body && scrollStep(next, dir)" in nav
+    assert "[data-tv-scroll]" in nav and "[data-tv-end]" in nav
+    ask = client.get("/static/js/views/ask.js").text
+    assert "import { TV } from '../tvnav.js';" in ask
+    assert "'data-tv-scroll': ''" in ask and "'data-tv-end': ''" in ask
+    assert "if (TV) {\n    input.readOnly = true;" in ask
+    assert "if (!TV) input.focus();" in ask   # other clients: "New chat" still focuses the input
