@@ -149,6 +149,7 @@ class SyncManager:
                     self._fail(f"plex ({s['name']})", e)
                     continue
                 library.store_server_items(conn, s["id"], items)
+                library.assign_movies(conn)     # per server: no window where its films have no movie_id
                 conn.execute("UPDATE media_servers SET last_sync=? WHERE id=?", (now_iso(), s["id"]))
                 conn.commit()
             library.assign_movies(conn)
@@ -400,17 +401,20 @@ class SyncManager:
             return
         conn = connect(self.cfg.db_path)
         try:
-            await self._resolve(conn)
-            await self._details(conn)
+            # any failure in one phase (TMDB error, 5xx HTTPStatusError, ...) must not skip the later ones, _recs
+            # included: progress is saved per item, so the next sync resumes
+            phases = [self._resolve, self._details]
             if self.cfg.completionist:          # MOVIENIGHT_COMPLETIONIST=0: no collection/search/keyword/person lookups
-                # a TMDB failure here (e.g. 429 retries exhausted) must not skip _recs: progress is saved per item
-                for stage in (self._collections, self._people):
-                    try:
-                        await stage(conn)
-                    except TmdbError as e:
-                        log.warning("tmdb %s stage stopped early, will resume next sync: %s", stage.__name__.strip("_"),
-                                    safe_error(e))
-            await self._recs(conn)
+                phases += [self._collections, self._people]
+            phases.append(self._recs)
+            for stage in phases:
+                try:
+                    await stage(conn)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    log.warning("tmdb %s stage stopped early, will resume next sync: %s", stage.__name__.strip("_"),
+                                safe_error(e))
         finally:
             conn.close()
         self.engine.invalidate()

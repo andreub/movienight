@@ -284,7 +284,8 @@ async def unpush(conn: sqlite3.Connection, http: httpx.AsyncClient, client_id: s
     for r, res in zip(todo, await _run(todo, call)):
         if isinstance(res, asyncio.CancelledError):
             raise res
-        if isinstance(res, BaseException):
+        gone = isinstance(res, httpx.HTTPStatusError) and res.response.status_code == 404
+        if isinstance(res, BaseException) and not gone:     # 404: deleted on the server, nothing left to unmark
             counts["failed"] += 1
             log.warning("could not mark %s unplayed on %s server %s: %s", r["key"], be.label, r["sname"], safe_error(res))
             continue
