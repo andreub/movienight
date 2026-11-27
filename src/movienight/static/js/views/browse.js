@@ -7,6 +7,7 @@ import { seenToggle } from '../seen.js';
 import { serverName } from '../status.js';
 import { go, apiFilters, setFilters, hasAnyFilters, SORTS, EMPTY_FILTERS } from '../state.js';
 import { t } from '../i18n.js';
+import { genreName } from '../labels.js';
 
 export const title = t('tab.browse');
 const PAGE = 24;
@@ -122,7 +123,7 @@ export function mount(root, route) {
       return h('button', {
         type: 'button', class: 'chip chip--small', 'aria-pressed': String(on),
         onclick: () => setFilters({ genres: on ? filters.genres.filter((x) => x !== g.name) : [...filters.genres, g.name] }),
-      }, g.name, h('span', { class: 'chip__count', text: num(g.count) }));
+      }, genreName(g.name), h('span', { class: 'chip__count', text: num(g.count) }));
     }));
   }
 

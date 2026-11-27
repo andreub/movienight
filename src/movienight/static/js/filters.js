@@ -6,6 +6,7 @@ import { RUNTIMES, EMPTY_FILTERS, apiFilters, setFilters, hasQuickFilters, CLEAR
 import { dropdown } from './dropdown.js';
 import { timeControl, rememberRuntime } from './timecontrol.js';
 import { t } from './i18n.js';
+import { moodLabel, moodDesc, eraLabel as eraName } from './labels.js';
 
 let uid = 0;
 
@@ -22,7 +23,7 @@ export function filterBar({ time = false, saga = false } = {}) {
     return [input, h('label', { class: 'seg__item' }, input, h('span', { text: label }))];
   });
   const watchlist = h('button', {
-    type: 'button', class: 'chip chip--toggle', 'aria-pressed': 'false',
+    type: 'button', class: 'chip chip--toggle', 'aria-pressed': 'false', title: t('filters.watchlist'),
     onclick: () => setFilters({ wl: watchlist.getAttribute('aria-pressed') !== 'true' }),
   }, icon('watchlist'), h('span', { class: 'chip__label', text: t('filters.watchlist') }));
   // The next film of each saga the user has started, in the library. Hidden until Tonight learns there is one.
@@ -43,7 +44,7 @@ export function filterBar({ time = false, saga = false } = {}) {
     iconName: 'calendar',
     build: () => h('ul', null,
       eraCtl.item(t('filters.anyEra'), null, !state?.era, () => setFilters({ era: null })),
-      eraOptions().map((e) => eraCtl.item(e.label, null, state?.era === e.id, () => setFilters({ era: e.id })))),
+      eraOptions().map((e) => eraCtl.item(eraName(e), null, state?.era === e.id, () => setFilters({ era: e.id })))),
   });
   eraCtl.chip.hidden = true;
   eraCtl.label.textContent = t('filters.anyEra');
@@ -69,9 +70,9 @@ export function filterBar({ time = false, saga = false } = {}) {
 
   Promise.all([getMoods(), getTags()]).then(([list, tags]) => {
     moodButtons = list.map((m) => h('button', {
-      type: 'button', class: 'chip', 'aria-pressed': 'false', title: m.description || null, 'data-id': m.id,
+      type: 'button', class: 'chip', 'aria-pressed': 'false', title: moodDesc(m) || null, 'data-id': m.id,
       onclick: () => setFilters({ mood: state?.mood === m.id ? null : m.id }),
-    }, m.emoji ? h('span', { class: 'chip__emoji', 'aria-hidden': 'true', text: m.emoji }) : null, m.label));
+    }, m.emoji ? h('span', { class: 'chip__emoji', 'aria-hidden': 'true', text: m.emoji }) : null, moodLabel(m)));
     families = tags;
     familyButtons = tags.map((fam) => h('button', {
       type: 'button', class: 'chip chip--tag', 'aria-pressed': 'false', 'data-family': fam.family,
@@ -85,8 +86,8 @@ export function filterBar({ time = false, saga = false } = {}) {
   // The list depends on the other filters and on what is still unseen: refetch on either change.
   // The selected era stays listed even when nothing is left in it, so it can be seen and cleared.
   const eraOptions = () => (state?.era && !eraList.some((e) => e.id === state.era)
-    ? [...eraList, { id: state.era, label: eraLabel(state.era) }] : eraList);
-  const eraLabel = (id) => eraList.find((e) => e.id === id)?.label || String(id);
+    ? [...eraList, { id: state.era }] : eraList);
+  const eraLabel = (id) => eraName(eraList.find((e) => e.id === id) || { id });
   let erasKey = null, erasSeq = 0, erasLoaded = false;
   function showEras() {
     eraCtl.chip.hidden = !(eraList.length || state?.era);

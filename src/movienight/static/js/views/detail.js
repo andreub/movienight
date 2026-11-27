@@ -11,6 +11,7 @@ import { TV } from '../tvnav.js';
 import { seerrEnabled, seerrState, requestFilm, stateChip, CHIP } from '../seerr.js';
 import { seenMsg, seenVoteMsg, unseenMsg, voteMsg, hideMsg, neverMsg, unhideMsg, UNMARK_LABEL } from '../messages.js';
 import { t, lang } from '../i18n.js';
+import { genreList, becauseText } from '../labels.js';
 
 const dialog = document.getElementById('detail');
 const body = dialog.querySelector('.sheet__body');
@@ -170,7 +171,7 @@ function render(m) {
     [t('detail.directed'), m.directors?.join(', ')],
     [t('detail.starring'), m.cast?.slice(0, 8).join(', ')],
     [t('detail.language'), languageName(m.language)],
-    [t('detail.countries'), m.countries?.join(', ')],
+    [t('detail.countries'), countryNames(m.countries)],
     [t('sort.rating'), m.tmdb_rating != null ? tmdbRating(m) : null],
     [t('detail.yourRating'), m.my_rating != null ? stars(m.my_rating) : null],
     [t('detail.on', { server: serverName() }), sourcesText(m.plex)],
@@ -187,7 +188,7 @@ function render(m) {
         h('p', { class: 'meta' },
           m.year ? h('span', { text: String(m.year) }) : null,
           runtime(m.runtime) ? h('span', { text: runtime(m.runtime) }) : null,
-          m.genres?.length ? h('span', { text: m.genres.join(', ') }) : null)),
+          m.genres?.length ? h('span', { text: genreList(m.genres) }) : null)),
       matchStub(m.match)),
     h('div', { class: 'detail__actions' },
       playControl(m),
@@ -323,7 +324,7 @@ function renderFilm(f) {
     [t('detail.directed'), f.directors?.join(', ')],
     [t('detail.starring'), f.cast?.slice(0, 8).join(', ')],
     [t('detail.language'), languageName(f.language)],
-    [t('detail.countries'), f.countries?.join(', ')],
+    [t('detail.countries'), countryNames(f.countries)],
     [t('sort.rating'), f.tmdb_rating ? tmdbRating(f) : null],
     [t('detail.yourRating'), f.my_rating != null ? [stars(f.my_rating), f.liked ? h('span', { class: 'liked', title: t('taste.liked') }, ' ', icon('heart')) : null] : null],
     [t('detail.on', { server: serverName() }), sourcesText(f.plex)],
@@ -340,7 +341,7 @@ function renderFilm(f) {
         h('p', { class: 'meta' },
           f.year ? h('span', { text: String(f.year) }) : null,
           runtime(f.runtime) ? h('span', { text: runtime(f.runtime) }) : null,
-          f.genres?.length ? h('span', { text: f.genres.join(', ') }) : null))),
+          f.genres?.length ? h('span', { text: genreList(f.genres) }) : null))),
     h('div', { class: 'detail__actions' },
       f.in_library ? playControl(f) : notInLibrary(f),
       !f.seen ? h('button', { type: 'button', class: 'btn btn--ghost', 'data-act': 'seen', title: OUTCOMES[1].label,
@@ -374,6 +375,14 @@ function sourcesText(plex) {
   return plex.map((p) => p.server + (p.resolution ? ` (${p.resolution === '4k' ? '4K' : p.resolution === 'sd' ? 'SD' : `${p.resolution}p`})` : '')).join(', ');
 }
 
+// TMDB's ISO 3166 codes ("US") as the locale names them ("Estados Unidos")
+function countryNames(codes) {
+  if (!codes?.length) return null;
+  let names = null;
+  try { names = new Intl.DisplayNames([lang], { type: 'region' }); } catch { /* old browser: the codes */ }
+  return codes.map((c) => { try { return names?.of(c) || c; } catch { return c; } }).join(', ');
+}
+
 function languageName(code) {
   if (!code) return null;
   try { return new Intl.DisplayNames([lang], { type: 'language' }).of(code); } catch { return code; }
@@ -399,7 +408,7 @@ function becauseItem(b) {
         b.liked ? h('span', { class: 'liked', title: t('taste.liked') }, icon('heart'), h('span', { class: 'sr-only', text: t('taste.liked') })) : null,
         b.my_vote === 2 ? h('span', { class: 'because__vote' }, h('span', { class: 'liked' }, icon('heart')), t('detail.loved')) : null,
         b.my_vote === 1 ? h('span', { class: 'because__vote' }, icon('thumbup'), t('detail.liked')) : null),
-      b.why ? h('p', { class: 'because__why', text: b.why }) : null));
+      b.why ? h('p', { class: 'because__why', text: becauseText(b) }) : null));
 }
 
 function skeleton() {

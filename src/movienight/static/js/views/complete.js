@@ -18,6 +18,7 @@ import { TV } from '../tvnav.js';
 import { mountTv } from './completetv.js';
 import { seerrEnabled, requestBadges } from '../seerr.js';
 import { t } from '../i18n.js';
+import { groupReason } from '../labels.js';
 
 export const title = t('tab.complete');
 
@@ -290,7 +291,7 @@ function mountList(root, toggle, group = null) {
             h('span', { class: 'cgroup__kind', text: g.kind === 'director' ? t('complete.director') : t('complete.actor') }),
             h('h2', { class: 'cgroup__name', text: g.name }))
           : h('h2', { class: 'cgroup__name', text: g.name }),
-        g.reason ? h('span', { class: 'cgroup__why', text: g.reason, title: g.reason, 'aria-label': g.reason }) : null,
+        groupReason(g) ? h('span', { class: 'cgroup__why', text: groupReason(g), title: groupReason(g), 'aria-label': groupReason(g) }) : null,
         h('button', { type: 'button', class: 'cgroup__hide', 'aria-label': t('complete.hide.aria', { name: g.name }), title: t('complete.hide'), onclick: () => hide(g, li) }, icon('close'))),
       progress(g),
       grid,

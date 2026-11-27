@@ -3,6 +3,7 @@ import { h, fill, icon, num, ago, toast, errorBox } from '../dom.js';
 import { subscribe, refreshStatus, STAGES, syncPercent, serverName, serverStatus } from '../status.js';
 import { seerrAccountLine } from '../seerr.js';
 import { t, lang, LANGS, setLang } from '../i18n.js';
+import { errorText } from '../labels.js';
 
 export const title = t('tab.setup');
 
@@ -344,7 +345,7 @@ function jellyfinStep() {
             j.account ? [t('setup.signedInAsPre'), h('strong', { text: j.account }), t('setup.signedInAsPost')] : null,
             t('setup.jf.summary', { films: t('count.films', { n: j.movies, num: num(j.movies) }), ago: ago(j.last_sync) }))
           : null,
-        j.problem ? h('div', { class: 'note note--error', role: 'alert' }, icon('alert'), h('span', { text: j.problem })) : null,
+        j.problem ? h('div', { class: 'note note--error', role: 'alert' }, icon('alert'), h('span', { text: errorText({ code: j.problem_code, params: j.problem_params, detail: j.problem }) })) : null,
         j.configured
           ? (st.sync?.running ? null : h('button', { class: 'btn btn--ghost', type: 'button', onclick: syncNow }, t('setup.sync.now')))
           : h('p', { class: 'help' }, t('setup.jf.set'), h('code', { text: 'MOVIENIGHT_JELLYFIN_URL' }), ', ',

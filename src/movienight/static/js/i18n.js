@@ -19,6 +19,11 @@ function stored() {
 
 export const lang = stored() || pickLang(navigator.languages?.length ? [...navigator.languages] : [navigator.language]);
 
+// The server words TMDB data (titles, overviews) and its own pages in this language too: API calls send it as the
+// X-MovieNight-Lang header (api.js), and this cookie carries it to the server-rendered pages (sign-in), so the
+// app's own choice always wins over the browser's or the TV's system locale.
+try { document.cookie = `movienight_lang=${lang}; path=/; max-age=31536000; samesite=lax`; } catch { /* no cookies */ }
+
 async function load(id) {
   try {
     const res = await fetch(`/static/i18n/${id}.json`);
@@ -37,6 +42,11 @@ function lookup(cat, key, vars) {
   if (typeof v === 'string') return v;
   const n = Number(vars?.n);
   return v[rules.select(Number.isFinite(n) ? n : 0)] ?? v.other ?? null;
+}
+
+// Whether the catalogues word `key` (for labels the server sends as keys, with its English text as the fallback).
+export function has(key) {
+  return LOCAL?.[key] != null || EN?.[key] != null;
 }
 
 export function t(key, vars) {

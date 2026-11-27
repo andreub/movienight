@@ -1,4 +1,5 @@
-import { t } from './i18n.js';
+import { t, lang } from './i18n.js';
+import { errorText } from './labels.js';
 
 // HTTP layer. With ?mock=1 (or ?mock=fresh for a first-run setup) requests are
 // answered by /static/mock.js instead of the server.
@@ -58,6 +59,7 @@ function query(params = {}) {
 }
 
 function detailOf(data, status) {
+  if (data?.code) return errorText(data);
   const d = data?.detail;
   if (typeof d === 'string') return d;
   if (Array.isArray(d)) return d.map((x) => x.msg || JSON.stringify(x)).join('; ');
@@ -75,7 +77,7 @@ async function request(method, path, { params, json, form } = {}) {
   try {
     res = await fetch(path + query(params), {
       method,
-      headers: json ? { 'Content-Type': 'application/json' } : undefined,
+      headers: { ...(json ? { 'Content-Type': 'application/json' } : {}), 'X-MovieNight-Lang': lang },
       body: json ? JSON.stringify(json) : form,
     });
   } catch {
@@ -195,7 +197,7 @@ export async function* chatStream(messages, signal) {
   try {
     res = await fetch('/api/chat', {
       method: 'POST', signal,
-      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'X-MovieNight-Lang': lang },
       body: JSON.stringify({ messages }),
     });
   } catch (e) {

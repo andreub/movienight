@@ -1,7 +1,8 @@
 import { api } from '../api.js';
 import { h, fill, icon, poster, stars, errorBox, num, ago, fixed, percent } from '../dom.js';
-import { t } from '../i18n.js';
+import { t, has } from '../i18n.js';
 import { serverName } from '../status.js';
+import { genreName, genreList } from '../labels.js';
 
 export const title = t('tab.taste');
 
@@ -46,7 +47,7 @@ function render(p, knows) {
     p.rating_histogram?.length ? block(t('taste.howRate'), histogram(p.rating_histogram, s.mean_rating)) : null,
     h('p', { class: 'taste__note', text: t('taste.barsNote') }),
     h('div', { class: 'taste__cols' },
-      affinityBlock(t('taste.genres'), p.genres, 12),
+      affinityBlock(t('taste.genres'), (p.genres || []).map((g) => ({ ...g, name: genreName(g.name) })), 12),
       affinityBlock(t('taste.decades'), [...(p.decades || [])].sort((a, b) => a.decade - b.decade).map((d) => ({ ...d, name: t('taste.decade', { d: d.decade }) })), 12),
       affinityBlock(t('taste.directors'), p.directors, 8),
       affinityBlock(t('taste.actors'), p.cast, 8),
@@ -64,7 +65,7 @@ function tagList(families) {
   const line = (g) => [
     t('count.films', { n: g.films, num: num(g.films) }),
     g.mean_rating != null ? t('taste.avgStars', { r: fixed(g.mean_rating) }) : null,
-    g.top_genres?.length ? g.top_genres.join(', ') : null,
+    g.top_genres?.length ? genreList(g.top_genres) : null,
   ].filter(Boolean).join(' · ');
   return h('ul', { class: 'tags' }, families.map((f) => h('li', { class: 'tags__family' },
     h('p', { class: 'tags__row' }, h('span', { class: 'tags__name', text: f.label || f.family }), h('span', { class: 'tags__meta', text: line(f) })),
@@ -173,7 +174,7 @@ function changedWeights(bt) {
   const entries = Object.entries(bt.weights || {}).filter(([k, v]) => bt.default_weights?.[k] != null && bt.default_weights[k] !== v);
   if (!bt.tuned || !entries.length) return null;
   return h('ul', { class: 'keywords knows__weights', 'aria-label': t('taste.weights') },
-    entries.map(([k, v]) => h('li', { text: t('taste.weight', { k, from: bt.default_weights[k], to: v }) })));
+    entries.map(([k, v]) => h('li', { text: t('taste.weight', { k: has(`taste.part.${k}`) ? t(`taste.part.${k}`) : k, from: num(bt.default_weights[k]), to: num(v) }) })));
 }
 
 function votesLine(v) {

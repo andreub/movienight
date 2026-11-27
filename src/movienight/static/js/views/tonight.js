@@ -11,6 +11,10 @@ import { partOf } from './detail.js';
 import { serverName } from '../status.js';
 import { seenMsg, seenAskMsg, seenVoteMsg, unseenMsg, voteMsg, hideMsg } from '../messages.js';
 import { t } from '../i18n.js';
+import { reasonText, genreList } from '../labels.js';
+
+// The saga chip's "Next in X" reason (the API's `saga.next`; older servers only set kind `trophy`).
+const isSagaNext = (r) => r.key === 'saga.next' || (!r.key && r.kind === 'trophy');
 
 const HINT_KEY = 'movienight.seenHintDismissed';
 const HINT_BELOW = 20;
@@ -113,7 +117,7 @@ export function mount(root, route) {
           meta(m),
           // "Part of X · n of N" for a film in a group (the saga chip's "Next in X" reason says the same: one line only)
           partOf(m.groups?.length ? [m.groups.find((g) => g.key === m.saga?.key) || m.groups[0]] : null, 'pick__part'),
-          reasonList(m.groups?.length && m.saga ? m.reasons.filter((r) => !(r.kind === 'trophy' && r.text.startsWith('Next in '))) : m.reasons, 'pick__reasons'),
+          reasonList(m.groups?.length && m.saga ? m.reasons.filter((r) => !isSagaNext(r)) : m.reasons, 'pick__reasons'),
           h('div', { class: 'pick__actions' },
             playControl(m, 'pick__play'),
             shuffleBtn,
@@ -129,7 +133,7 @@ export function mount(root, route) {
       m.year ? h('span', { text: String(m.year) }) : null,
       runtime(m.runtime) ? h('span', { text: runtime(m.runtime) }) : null,
       endsAt(m.runtime),
-      m.genres?.length ? h('span', { text: m.genres.slice(0, 3).join(', ') }) : null,
+      m.genres?.length ? h('span', { text: genreList(m.genres, 3) }) : null,
       m.on_watchlist ? h('span', { class: 'meta__flag' }, icon('watchlist'), t('film.onWatchlist')) : null);
   }
 
@@ -151,8 +155,9 @@ export function mount(root, route) {
 
   // The first reason; the saga's "Next in X" says what the "Part of" line below does, so it gives way (as on the hero).
   function altWhy(m) {
-    const r = (m.groups?.length && m.saga ? m.reasons.filter((x) => !(x.kind === 'trophy' && x.text.startsWith('Next in '))) : m.reasons)?.[0];
-    return r ? h('span', { class: 'alt__why', text: r.text }) : null;
+    const r = (m.groups?.length && m.saga ? m.reasons.filter((x) => !isSagaNext(x)) : m.reasons)?.[0];
+    const text = r ? reasonText(r) : '';
+    return text ? h('span', { class: 'alt__why', text, title: text }) : null;
   }
 
   // "Part of X · n of N" under a card, one line; the same saga the hero names. Opens it on Complete, not the card.

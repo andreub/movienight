@@ -7,6 +7,7 @@ import { endsAt } from '../clock.js';
 import { go } from '../state.js';
 import { serverName } from '../status.js';
 import { t, lang } from '../i18n.js';
+import { errorText } from '../labels.js';
 
 export const title = t('tab.ask');
 
@@ -250,7 +251,7 @@ export function mount(root) {
           icon('info', 'state__icon state__icon--calm'),
           h('p', { class: 'state__title', text: t('ask.off') }),
           h('p', { class: 'state__text', text: t('ask.offText') }),
-          c.problem ? h('p', { class: 'state__text help', text: c.problem }) : null,
+          c.problem ? h('p', { class: 'state__text help', text: errorText({ code: c.problem_code, params: c.problem_params, detail: c.problem }) }) : null,
           h('a', { class: 'btn btn--ghost', href: '#/tonight' }, t('setup.seePick'))));
       return;
     }

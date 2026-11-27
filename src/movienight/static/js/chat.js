@@ -2,6 +2,7 @@
 // thread survives) while the user opens a film or switches tab. Mirrored into sessionStorage.
 import { chatStream } from './api.js';
 import { t } from './i18n.js';
+import { errorText, toolLabel } from './labels.js';
 
 const KEY = 'mn.chat';
 const MAX_MESSAGES = 40;
@@ -98,16 +99,16 @@ export async function sendChat(text) {
     for await (const { event, data } of chatStream(historyForServer(), chat.controller.signal)) {
       if (event === 'text') {
         chat.tool = null;
-        reply.text += data.delta || '';
+        reply.text += (data.code ? errorText({ ...data, detail: data.delta }) : data.delta) || '';
         emit('text');
       } else if (event === 'tool') {
-        chat.tool = data.label || t('ask.working');
+        chat.tool = toolLabel(data);
         emit('tool');
       } else if (event === 'movies') {
         reply.movies = Array.isArray(data.items) ? data.items : []; // a second set replaces the first
         emit('movies');
       } else if (event === 'error') {
-        reply.error = data.detail || t('ask.error');
+        reply.error = errorText(data) || t('ask.error');
       } else if (event === 'done') {
         break;
       }

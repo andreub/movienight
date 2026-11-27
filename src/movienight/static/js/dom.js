@@ -1,4 +1,5 @@
 import { t, lang } from './i18n.js';
+import { reasonText } from './labels.js';
 
 // Small DOM toolkit. All dynamic text goes through text nodes; innerHTML is only
 // ever used for the constant SVG icon strings below.
@@ -171,7 +172,7 @@ export function matchStub(match, { size = 'lg' } = {}) {
 export function reasonList(reasons = [], cls = '') {
   if (!reasons.length) return null;
   return h('ul', { class: `reasons ${cls}`.trim() },
-    reasons.map((r) => h('li', { class: 'reason' }, icon(r.kind), h('span', { text: r.text }))));
+    reasons.map((r) => h('li', { class: 'reason' }, icon(r.kind), h('span', { text: reasonText(r) }))));
 }
 
 export function errorBox(err, onRetry) {
