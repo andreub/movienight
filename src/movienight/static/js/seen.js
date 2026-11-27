@@ -4,13 +4,14 @@ import { api } from './api.js';
 import { h, icon, toast } from './dom.js';
 import { seenMsg, unseenMsg } from './messages.js';
 import { voteOf, announceVote, rememberVote, LOVE } from './vote.js';
+import { t } from './i18n.js';
 
 // The four "seen it" verdicts ("Seen these?", Complete's film panel): value = the vote stored with the mark.
 export const OUTCOMES = [
-  { key: 'down', vote: -1, icon: 'thumbdown', label: "Seen it, didn't like it", short: "Didn't like it" },
-  { key: 'seen', vote: 0, icon: 'check', label: 'Seen it, no opinion', short: 'Seen' },
-  { key: 'up', vote: 1, icon: 'thumbup', label: 'Seen it, liked it', short: 'Liked it' },
-  { key: 'love', vote: LOVE, icon: 'heart', label: 'Seen it, a favourite', short: 'A favourite' },
+  { key: 'down', vote: -1, icon: 'thumbdown', label: t('outcome.down'), short: t('outcome.down.short') },
+  { key: 'seen', vote: 0, icon: 'check', label: t('outcome.seen'), short: t('outcome.seen.short') },
+  { key: 'up', vote: 1, icon: 'thumbup', label: t('outcome.up'), short: t('outcome.up.short') },
+  { key: 'love', vote: LOVE, icon: 'heart', label: t('outcome.love'), short: t('outcome.love.short') },
 ];
 
 const states = new Map(); // last known state per film, so re-rendered controls agree with what the user just did
@@ -48,7 +49,7 @@ export async function setSeen(movie, seen, source = '') {
     return true;
   } catch (err) {
     announce(movie.id, before, source, seen);
-    toast(err.detail || 'Could not save that. Try again.');
+    toast(err.detail || t('error.save'));
     return false;
   }
 }
@@ -68,7 +69,7 @@ export async function setSeenVote(movie, seen, vote, source = '') {
   } catch (err) {
     announce(movie.id, before.seen, source, seen);
     announceVote(movie.id, before.vote);
-    toast(err.detail || 'Could not save that. Try again.');
+    toast(err.detail || t('error.save'));
     return false;
   }
 }
@@ -77,7 +78,7 @@ export async function setSeenVote(movie, seen, vote, source = '') {
 export function seenToggle(movie) {
   let seen = isSeen(movie);
   const btn = h('button', {
-    type: 'button', class: 'seenbtn', 'aria-label': `I've seen ${movie.title}`, title: seen ? 'Seen. Tap to undo' : 'Seen it',
+    type: 'button', class: 'seenbtn', 'aria-label': t('seen.aria', { title: movie.title }), title: seen ? t('seen.undoTip') : t('common.seenIt'),
     onclick: async (e) => {
       e.stopPropagation();
       const next = !seen;
@@ -85,13 +86,13 @@ export function seenToggle(movie) {
       // The card only dims, so say what happened (and offer the way back) instead of staying silent.
       toast(next ? seenMsg(movie) : unseenMsg(movie), {
         timeout: 4000,
-        action: { label: 'Undo', run: () => setSeen(movie, !next, 'undo') },
+        action: { label: t('common.undo'), run: () => setSeen(movie, !next, 'undo') },
       });
     },
   }, icon('eye'));
   const paint = () => {
     btn.setAttribute('aria-pressed', String(seen));
-    btn.title = seen ? 'Seen. Tap to undo' : 'Seen it';
+    btn.title = seen ? t('seen.undoTip') : t('common.seenIt');
   };
   function onEvent(e) {
     if (!btn.isConnected && !btn.dataset.fresh) { window.removeEventListener('movienight:seen', onEvent); return; }

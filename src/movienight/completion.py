@@ -510,6 +510,7 @@ def _list_groups(seen: set[int]) -> list[dict]:
                  for f in lst["films"] if f.get("tmdb_id")]
         if seen.intersection(f["tmdb_id"] for f in films):
             groups.append({"key": f"list-{slug(lst['key'])}", "kind": "list", "name": lst.get("name") or lst["key"],
+                           "_names": lst.get("names") or {},
                            "films": films, "ordered": bool(lst.get("ordered"))})
     return groups
 
@@ -720,8 +721,26 @@ def _stars(x: float) -> str:
     return "★" + f"{x:.1f}".rstrip("0").rstrip(".")
 
 
-def score(g: dict, ratings: dict[int, tuple[float, bool]], mu: float, today: date) -> tuple[float, str | None]:
-    """The group's rank score and a short "why" for the card. Recency weighs most, then taste, then a film in the
+# The card's short "why": `reason` is the English wording (chat, older clients); `reason_key` + `reason_params`
+# let the web UI word it (catalogue `creason.<key>`). The New/Recent title is localized when the group is served.
+REASON_EN = {
+    "new": "New {year}: {title}",
+    "recent": "Recent {year}: {title}",
+    "rated": "You rated {stars}",
+    "liked.people": "You liked their films",
+    "liked": "You liked these",
+    "library": "In your library",
+    "almost": "Almost done",
+}
+
+
+def reason_text(key: str | None, params: dict | None) -> str | None:
+    return REASON_EN[key].format(**(params or {})) if key else None
+
+
+def score_reason(g: dict, ratings: dict[int, tuple[float, bool]], mu: float,
+                 today: date) -> tuple[float, str | None, dict | None]:
+    """The group's rank score and its "why" (key, params). Recency weighs most, then taste, then a film in the
     library, then the share seen. A New/Recent reason names its film (see `build`, which exposes `reason_film`)."""
     rec, recent = recency(g["films"], today)
     rated = [ratings[f["tmdb_id"]] for f in g["films"] if f["state"] == "seen" and f["tmdb_id"] in ratings]
@@ -730,19 +749,28 @@ def score(g: dict, ratings: dict[int, tuple[float, bool]], mu: float, today: dat
     progress = g["seen"] / g["total"] if g["total"] else 0.0
     total = W_RECENT * rec + W_TASTE * t + W_LIBRARY * lib + W_PROGRESS * progress
     real = [r for r, is_real in rated if is_real]
+    key, params = None, None
     if recent is not None:
         fresh = (today - _date(recent["release_date"])).days <= RECENT_FULL_DAYS
-        reason = f"{'New' if fresh else 'Recent'} {recent['year'] or recent['release_date'][:4]}: {recent['title']}"
+        key = "new" if fresh else "recent"
+        params = {"year": recent["year"] or int(recent["release_date"][:4]), "title": recent["title"],
+                  "tmdb_id": recent["tmdb_id"]}
     elif t >= 0.25:
-        reason = (f"You rated {_stars(sum(real) / len(real))}" if real
-                  else "You liked their films" if g.get("kind") in PEOPLE_KINDS else "You liked these")
+        if real:
+            key, params = "rated", {"stars": _stars(sum(real) / len(real))}
+        else:
+            key = "liked.people" if g.get("kind") in PEOPLE_KINDS else "liked"
     elif lib:
-        reason = "In your library"
+        key = "library"
     elif progress >= 0.5:
-        reason = "Almost done"
-    else:
-        reason = None
-    return round(total, 3), reason
+        key = "almost"
+    return round(total, 3), key, params
+
+
+def score(g: dict, ratings: dict[int, tuple[float, bool]], mu: float, today: date) -> tuple[float, str | None]:
+    """The group's rank score and its English "why" (see `score_reason`)."""
+    total, key, params = score_reason(g, ratings, mu, today)
+    return total, reason_text(key, params)
 
 
 def genre_affinity(st):
@@ -778,9 +806,10 @@ def build(st, conn: sqlite3.Connection) -> list[dict]:
     out = []
     for g in raw:
         d = _decorate(g, seen, avail, backdrops, aff)
-        d["score"], d["reason"] = score(d, ratings, mu, today)
+        d["score"], d["reason_key"], d["reason_params"] = score_reason(d, ratings, mu, today)
+        d["reason"] = reason_text(d["reason_key"], d["reason_params"])
         d["reason_film"] = None
-        if d["reason"] and d["reason"].startswith(("New ", "Recent ")):
+        if d["reason_key"] in ("new", "recent"):
             # the card names this film, so it must be visible: first tile (unordered groups), or kept on show (sagas)
             film = recency(d["films"], today)[1]
             d["reason_film"] = film["tmdb_id"]
@@ -802,13 +831,53 @@ def hidden_keys(conn: sqlite3.Connection) -> set[str]:
     return {r[0] for r in conn.execute("SELECT group_key FROM completion_hidden")}
 
 
-def public(g: dict, hidden: set[str]) -> dict:
+def public(g: dict, hidden: set[str], texts=None) -> dict:
     out = {k: v for k, v in g.items() if not k.startswith("_")}
     out["hidden"] = g["key"] in hidden
+    return localize(out, texts, g.get("_names")) if texts is not None and texts.localized else out
+
+
+def group_name(g: dict, texts, names: dict | None = None) -> str:
+    """A group's name in the UI language: a TMDB collection's translated name, a list's own (`names` in its file);
+    franchises (a stem of English titles), series (a TMDB keyword) and people keep theirs."""
+    if texts is None or not texts.localized:
+        return g["name"]
+    if names and names.get(texts.lang):
+        return names[texts.lang]
+    if g.get("kind") == "collection" and str(g.get("key", "")).startswith("collection-"):
+        try:
+            return texts.collection(int(g["key"].split("-", 1)[1]), g["name"])
+        except ValueError:
+            return g["name"]
+    if g.get("kind") == "list":
+        lst = next((x for x in bundled_lists() if f"list-{slug(x['key'])}" == g.get("key")), None)
+        return ((lst or {}).get("names") or {}).get(texts.lang) or g["name"]
+    return g["name"]
+
+
+def localize(g: dict, texts, names: dict | None = None) -> dict:
+    """A served group (a copy: the cached one stays English) with its name and film titles in the UI language."""
+    out = dict(g)
+    out["name"] = group_name(g, texts, names)
+    by_id = {}
+    if "films" in g:
+        out["films"] = []
+        for f in g["films"]:
+            f = {**f, "title": texts.title(f["tmdb_id"], f["title"])}
+            by_id[f["tmdb_id"]] = f["title"]
+            out["films"].append(f)
+    if g.get("next"):
+        nxt = dict(g["next"])
+        tid = next((f["tmdb_id"] for f in g.get("films") or [] if f.get("movie_id") == nxt.get("movie_id")), None)
+        nxt["title"] = by_id.get(tid) or texts.title(tid, nxt["title"])
+        out["next"] = nxt
+    params = g.get("reason_params")
+    if params and params.get("tmdb_id"):
+        out["reason_params"] = {**params, "title": texts.title(params["tmdb_id"], params["title"])}
     return out
 
 
-def overview(st, conn: sqlite3.Connection, kind: str | None = None, show_hidden: bool = False) -> dict:
+def overview(st, conn: sqlite3.Connection, kind: str | None = None, show_hidden: bool = False, texts=None) -> dict:
     """Groups in progress, finished ones (shown collapsed) and, with `show_hidden`, the hidden ones. `kind=collection`
     (the Sagas chip) also takes the keyword series; `counts` (groups in progress, as the chips show) stays per raw kind."""
     groups = build(st, conn)
@@ -817,18 +886,18 @@ def overview(st, conn: sqlite3.Connection, kind: str | None = None, show_hidden:
     counts = {k: sum(g["kind"] == k and not g["complete"] for g in visible) for k in KINDS}  # what `groups` holds
     pick = (lambda g: g["kind"] in (("collection", "series") if kind == "collection" else (kind,))) if kind else (lambda g: True)
     return {
-        "groups": [public(g, hidden) for g in visible if pick(g) and not g["complete"]],
-        "completed": [public(g, hidden) for g in visible if pick(g) and g["complete"]],
-        "hidden": [public(g, hidden) for g in groups if g["key"] in hidden and pick(g)] if show_hidden else [],
+        "groups": [public(g, hidden, texts) for g in visible if pick(g) and not g["complete"]],
+        "completed": [public(g, hidden, texts) for g in visible if pick(g) and g["complete"]],
+        "hidden": [public(g, hidden, texts) for g in groups if g["key"] in hidden and pick(g)] if show_hidden else [],
         "hidden_count": sum(g["key"] in hidden for g in groups),
         "counts": counts,
     }
 
 
-def group(st, conn: sqlite3.Connection, key: str) -> dict | None:
+def group(st, conn: sqlite3.Connection, key: str, texts=None) -> dict | None:
     """One group with every film (release order) and its state."""
     g = next((g for g in build(st, conn) if g["key"] == key), None)
-    return public(g, hidden_keys(conn)) if g else None
+    return public(g, hidden_keys(conn), texts) if g else None
 
 
 # --------------------------------------------------------------------------- elsewhere in the app (detail, Tonight, chat)
@@ -840,8 +909,9 @@ CHAT_GROUPS_MAX = 20
 CHAT_NEXT = 3              # ...and the next films of each
 
 
-def summary(g: dict) -> dict:
-    return {"key": g["key"], "name": g["name"], "kind": g["kind"], "seen": g["seen"], "total": g["total"]}
+def summary(g: dict, texts=None) -> dict:
+    return {"key": g["key"], "name": group_name(g, texts, g.get("_names")), "kind": g["kind"], "seen": g["seen"],
+            "total": g["total"]}
 
 
 def _membership(st, conn: sqlite3.Connection) -> dict[int, list[dict]]:
@@ -858,7 +928,7 @@ def _membership(st, conn: sqlite3.Connection) -> dict[int, list[dict]]:
     return st.cache["completion_members"]
 
 
-def groups_of(st, conn: sqlite3.Connection, tmdb_id: int | None) -> list[dict]:
+def groups_of(st, conn: sqlite3.Connection, tmdb_id: int | None, texts=None) -> list[dict]:
     """The groups a film belongs to, for its detail ("Part of X · n of N"): [{key, name, kind, seen, total}], best
     first. At most FILM_GROUPS_MAX sagas and lists; a director's or actor's filmography only when the film is in none
     of those (at most FILM_PEOPLE_MAX). Hidden groups stay out."""
@@ -868,10 +938,10 @@ def groups_of(st, conn: sqlite3.Connection, tmdb_id: int | None) -> list[dict]:
     hidden = hidden_keys(conn)
     found = [g for g in found if g["key"] not in hidden]
     main = [g for g in found if g["kind"] not in PEOPLE_KINDS][:FILM_GROUPS_MAX]
-    return [summary(g) for g in (main or [g for g in found if g["kind"] in PEOPLE_KINDS][:FILM_PEOPLE_MAX])]
+    return [summary(g, texts) for g in (main or [g for g in found if g["kind"] in PEOPLE_KINDS][:FILM_PEOPLE_MAX])]
 
 
-def saga_next(st, conn: sqlite3.Connection) -> dict[int, dict]:
+def saga_next(st, conn: sqlite3.Connection, texts=None) -> dict[int, dict]:
     """Library movie id -> the started saga it continues (`summary`): for each visible saga in progress (collection,
     franchise or keyword series), its next film in the library (the earliest unseen one there). A film that continues
     two sagas counts for the better one. Tonight's "Complete a saga"."""
@@ -880,13 +950,15 @@ def saga_next(st, conn: sqlite3.Connection) -> dict[int, dict]:
     for g in build(st, conn):
         nxt = g.get("next")
         if g["kind"] in SAGA_KINDS and not g["complete"] and g["key"] not in hidden and nxt and nxt.get("movie_id"):
-            out.setdefault(nxt["movie_id"], summary(g))
+            out.setdefault(nxt["movie_id"], summary(g, texts))
     return out
 
 
 def saga_reason(g: dict) -> dict:
     """The quiet hint on a Tonight suggestion that continues a saga (shaped like the recommender's reasons)."""
-    return {"kind": "trophy", "text": f"Next in {g['name']} · {g['seen']} of {g['total']} seen"}
+    params = {"name": g["name"], "seen": g["seen"], "total": g["total"]}
+    return {"kind": "trophy", "key": "saga.next", "params": params,
+            "text": "Next in {name} · {seen} of {total} seen".format(**params)}
 
 
 def chat_overview(st, conn: sqlite3.Connection, kind: str | None = None, limit: int = CHAT_GROUPS,

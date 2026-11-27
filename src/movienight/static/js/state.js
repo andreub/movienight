@@ -4,11 +4,13 @@
 // saga", the next film of each started saga; group=collection-10 opens Complete on that group)
 // so a refresh (or a shared link) keeps the view, filters and open film.
 
+import { t } from './i18n.js';
+
 export const VIEWS = ['tonight', 'browse', 'complete', 'ask', 'taste', 'setup', 'seen'];
 export const SORTS = [
-  ['match', 'Best match'], ['rating', 'TMDB rating'], ['recent', 'Recently added'], ['year', 'Newest'], ['runtime', 'Shortest'],
+  ['match', t('sort.match')], ['rating', t('sort.rating')], ['recent', t('sort.recent')], ['year', t('sort.year')], ['runtime', t('sort.runtime')],
 ];
-export const RUNTIMES = [[90, 'Under 90 min'], [120, 'Under 2 h'], [null, 'Any length']];
+export const RUNTIMES = [[90, t('rt.90')], [120, t('rt.120')], [null, t('rt.any')]];
 
 const toInt = (v) => (v && /^\d+$/.test(v) ? Number(v) : null);
 

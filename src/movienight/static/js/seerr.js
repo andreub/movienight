@@ -7,6 +7,7 @@
 import { api } from './api.js';
 import { getStatus } from './status.js';
 import { h, icon, toast, quoted } from './dom.js';
+import { t } from './i18n.js';
 
 export const seerrEnabled = (s = getStatus()) => Boolean(s?.features?.seerr);
 
@@ -47,7 +48,7 @@ export async function connectSeerr() {
     const { url } = await api.seerrConnect();
     location.assign(url); // app.plex.tv, which sends the browser back to /api/seerr/callback
   } catch (err) {
-    toast(err.detail || 'Could not reach Plex. Try again.');
+    toast(err.detail || t('seerr.plexError'));
   }
 }
 
@@ -55,15 +56,15 @@ async function disconnectSeerr() {
   try {
     await api.seerrDisconnect();
   } catch (err) {
-    toast(err.detail || 'Could not disconnect Seerr. Try again.');
+    toast(err.detail || t('seerr.disconnectError'));
     return;
   }
   cache.clear();
   setAccount({ ...account, connected: false, expired: false, name: null });
-  toast('Seerr disconnected.', { timeout: 3000 });
+  toast(t('seerr.disconnected'), { timeout: 3000 });
 }
 
-const reconnect = { label: 'Reconnect', run: connectSeerr };
+const reconnect = { label: t('seerr.reconnect'), run: connectSeerr };
 
 // The Seerr line in Setup: "Connect Seerr", "<name> · Disconnect" or "Session expired · Reconnect Seerr".
 export function seerrAccountLine() {
@@ -72,9 +73,9 @@ export function seerrAccountLine() {
     el.replaceChildren();
     if (!a) { el.textContent = '…'; return; }
     const link = (text, onclick) => h('button', { type: 'button', class: 'linkbtn linkbtn--inline', onclick }, text);
-    if (a.connected) el.append(h('span', { text: a.name || 'Connected' }), ' · ', link('Disconnect', disconnectSeerr));
-    else if (a.expired) el.append(h('span', { text: 'Session expired' }), ' · ', link('Reconnect Seerr', connectSeerr));
-    else el.append(link('Connect Seerr', connectSeerr), h('span', { text: ' to request missing films' }));
+    if (a.connected) el.append(h('span', { text: a.name || t('setup.connected') }), ' · ', link(t('seerr.disconnect'), disconnectSeerr));
+    else if (a.expired) el.append(h('span', { text: t('seerr.expired') }), ' · ', link(t('seerr.reconnectSeerr'), connectSeerr));
+    else el.append(link(t('seerr.connect'), connectSeerr), h('span', { text: t('seerr.connectWhy') }));
   };
   listeners.add(paint);
   paint(account);
@@ -91,19 +92,19 @@ export function seerrReturn() {
   const qs = params.toString();
   history.replaceState(history.state, '', `${location.pathname}${qs ? `?${qs}` : ''}${location.hash}`);
   if (result === 'connected') {
-    loadSeerrAccount({ force: true }).then((a) => toast(a?.name ? `Seerr connected as ${a.name}.` : 'Seerr connected.', { timeout: 4000 }));
+    loadSeerrAccount({ force: true }).then((a) => toast(a?.name ? t('seerr.connectedAs', { name: a.name }) : t('seerr.connected'), { timeout: 4000 }));
   } else {
-    toast('Could not connect Seerr. Try again from Setup.', { action: reconnect });
+    toast(t('seerr.connectFailed'), { action: reconnect });
   }
 }
 
 // ---- states
 // The quiet chip in the panel, and the tiny badge on a Complete poster (none for `none`).
-export const CHIP = { requested: 'Requested', available: 'Available soon' };
-const BADGE = { requested: 'Requested', available: 'Soon' };
+export const CHIP = { requested: t('seerr.requested'), available: t('seerr.availableSoon') };
+const BADGE = { requested: t('seerr.requested'), available: t('seerr.soon') };
 const TITLE = {
-  requested: 'Requested in Seerr',
-  available: 'Available in Seerr: it shows up here after the next sync',
+  requested: t('seerr.requested.title'),
+  available: t('seerr.available.title'),
 };
 
 const TTL = 5 * 60e3;
@@ -151,15 +152,15 @@ export async function requestFilm(f) {
   } catch (err) {
     if (err.status === 409) {
       expired();
-      toast('Your Seerr session expired.', { action: reconnect });
+      toast(t('seerr.sessionExpired'), { action: reconnect });
     } else {
-      toast(err.detail || 'Could not request it. Try again.');
+      toast(err.detail || t('seerr.requestError'));
     }
     return null;
   }
   remember(f.tmdb_id, r.status);
   window.dispatchEvent(new CustomEvent(REQUESTED_EVENT, { detail: { tmdb_id: f.tmdb_id, status: r.status } }));
-  toast(r.status === 'available' ? `${quoted(f)} is already in Seerr.` : `Requested ${quoted(f)}.`, { timeout: 3000 });
+  toast(r.status === 'available' ? t('seerr.already', { title: quoted(f) }) : t('seerr.requestedFilm', { title: quoted(f) }), { timeout: 3000 });
   return r.status;
 }
 

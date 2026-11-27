@@ -9,11 +9,16 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from . import completion, jellyfin, letterboxd as lb, library, plex, plex_history, seenpush, servers
+from . import completion, i18n, jellyfin, letterboxd as lb, library, plex, plex_history, seenpush, servers
 from .config import Config
 from .db import client_id, connect, get_meta, set_meta
 from .tmdb import Tmdb, TmdbError
 from .util import norm_title, now_iso, safe_error
+
+# a cached collection or filmography stored before it carried the other UI languages' text (`i18n`) is stale
+def _i18n_fresh_sql() -> str:
+    return " AND json_type(json,'$.i18n') IS NOT NULL" if i18n.EXTRA else ""
+
 
 log = logging.getLogger("movienight.sync")
 CHUNK = 32
@@ -46,6 +51,8 @@ class SyncManager:
         self._followup: asyncio.Task | None = None
         self.followup_delay = FOLLOWUP_DELAY
         self.jellyfin_problem: str | None = None
+        # the same problem as a catalogue code + params, so the web UI can word it (apiError.<code>)
+        self.jellyfin_problem_code: tuple[str, dict] | None = None
 
     # ---- status / control
     @property
@@ -202,10 +209,11 @@ class SyncManager:
         if self.cfg.media_server != "jellyfin":
             return
         cfg = self.cfg
-        self.jellyfin_problem = None
+        self.jellyfin_problem = self.jellyfin_problem_code = None
         if not cfg.jellyfin_configured:
             self.jellyfin_problem = ("Jellyfin is selected but MOVIENIGHT_JELLYFIN_URL, MOVIENIGHT_JELLYFIN_USER"
                                      " or MOVIENIGHT_JELLYFIN_PASSWORD is not set")
+            self.jellyfin_problem_code = ("jellyfin.unset", {})
             raise RuntimeError(self.jellyfin_problem)
         base = cfg.jellyfin_url.rstrip("/")
         conn = connect(cfg.db_path)
@@ -224,6 +232,7 @@ class SyncManager:
                     conn.execute("UPDATE media_servers SET reachable=0 WHERE id=?", (row["id"],))
                     conn.commit()
                 self.jellyfin_problem = f"Jellyfin server not reachable ({safe_error(e)})"
+                self.jellyfin_problem_code = ("jellyfin.unreachable", {"error": safe_error(e)})
                 raise
 
             async def sign_in() -> None:
@@ -232,6 +241,7 @@ class SyncManager:
                     a = await jellyfin.authenticate(self.http, base, cid, cfg.jellyfin_user, cfg.jellyfin_password)
                 except jellyfin.AuthError as e:
                     self.jellyfin_problem = str(e)
+                    self.jellyfin_problem_code = ("jellyfin.auth", {})
                     raise
                 token, user_id = a["token"], a["user_id"]
                 server_id = jellyfin.server_key(a["server_id"] or info["id"])
@@ -256,14 +266,16 @@ class SyncManager:
             library.assign_movies(conn)
             set_meta(conn, "jellyfin_last_sync", now_iso())
             conn.commit()
-            self.jellyfin_problem = None
+            self.jellyfin_problem = self.jellyfin_problem_code = None
             if cfg.push_seen:
                 try:
                     await self.push_seen(conn, cid)
                 except Exception as e:  # noqa: BLE001 - the library itself is already stored
                     self._fail("jellyfin seen marks", e)
         except Exception as e:
-            self.jellyfin_problem = self.jellyfin_problem or f"Jellyfin sync failed ({safe_error(e)})"
+            if not self.jellyfin_problem:
+                self.jellyfin_problem = f"Jellyfin sync failed ({safe_error(e)})"
+                self.jellyfin_problem_code = ("jellyfin.failed", {"error": safe_error(e)})
             raise
         finally:
             conn.close()
@@ -497,6 +509,14 @@ class SyncManager:
             " WHERE d.json != '{}' AND json_extract(d.json,'$.release_date') IS NULL"
         ) if r[0] not in have]
         have = set(ids)
+        # backfill details stored before they carried the other UI languages' text (`i18n`, see i18n.py)
+        ids += [] if not i18n.EXTRA else [r[0] for r in conn.execute(
+            "SELECT m.tmdb_id FROM movies m JOIN tmdb_details d ON d.tmdb_id=m.tmdb_id"
+            " WHERE d.json != '{}' AND json_type(d.json,'$.i18n') IS NULL"
+            " UNION SELECT l.tmdb_id FROM lb_films l JOIN tmdb_details d ON d.tmdb_id=l.tmdb_id"
+            " WHERE (l.watched=1 OR l.liked=1) AND d.json != '{}' AND json_type(d.json,'$.i18n') IS NULL"
+            " ORDER BY 1") if r[0] not in have]
+        have = set(ids)
         # completionist: backfill details stored before `collection` / `keyword_ids` existed. json_type is NULL
         # only when the key is absent: a film with no saga stores JSON null and is never refetched.
         if self.cfg.completionist:
@@ -544,7 +564,7 @@ class SyncManager:
 
         fresh = {r[0] for r in conn.execute(
             "SELECT collection_id FROM tmdb_collections WHERE fetched_at IS NOT NULL AND fetched_at >= ?"
-            " AND NOT " + completion.STALE_PARTS_SQL, (cutoff(completion.COLLECTION_TTL_DAYS),))}
+            + _i18n_fresh_sql() + " AND NOT " + completion.STALE_PARTS_SQL, (cutoff(completion.COLLECTION_TTL_DAYS),))}
         ids = [c for c in completion.wanted_collections(conn, seen) if c not in fresh]
 
         def done(cid, coll):
@@ -628,13 +648,14 @@ class SyncManager:
                 return (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
             recent = (datetime.now(timezone.utc) - timedelta(days=completion.PERSON_ACTIVE_DAYS)).strftime("%Y-%m-%d")
             long_c, short_c = cutoff(completion.PERSON_TTL_DAYS), cutoff(completion.PERSON_ACTIVE_TTL_DAYS)
+            # (filmographies stored before they carried the other UI languages' titles, `i18n`, are stale)
             fresh = {r[0] for r in conn.execute(
-                "SELECT person_id FROM tmdb_person_credits WHERE fetched_at IS NOT NULL AND fetched_at >= ?",
-                (short_c,))}
+                "SELECT person_id FROM tmdb_person_credits WHERE fetched_at IS NOT NULL AND fetched_at >= ?"
+                + _i18n_fresh_sql(), (short_c,))}
             # between the two cutoffs a person stays fresh unless a film of theirs is recent or upcoming
             for pid, js in conn.execute(
                     "SELECT person_id, json FROM tmdb_person_credits WHERE fetched_at IS NOT NULL"
-                    " AND fetched_at >= ? AND fetched_at < ?", (long_c, short_c)):
+                    " AND fetched_at >= ? AND fetched_at < ?" + _i18n_fresh_sql(), (long_c, short_c)):
                 p = json.loads(js or "{}")
                 if not any((c.get("release_date") or "") >= recent for c in (p.get("directed") or []) + (p.get("acted") or [])):
                     fresh.add(pid)

@@ -20,6 +20,7 @@ with usage = {month, spent_usd, budget_usd (null = no limit), questions, tokens,
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -32,7 +33,7 @@ from typing import Any, AsyncIterator
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from . import completion, library, queries, tags as lbtags
+from . import completion, i18n, library, queries, tags as lbtags
 from .chat_backends import AnthropicBackend, OpenAIBackend, Usage
 
 log = logging.getLogger("movienight.chat")
@@ -55,6 +56,14 @@ def _load_context(request: Request) -> tuple[Any, dict]:
     except Exception:  # noqa: BLE001 - dismissals are a nicety
         dismissed = {}
     return st, dismissed
+
+
+def _texts(request: Request, st, lang: str):
+    """TMDB text in the UI language; English when the database can't be read (a nicety, like dismissals)."""
+    try:
+        return i18n.texts(st, request.app.state.engine._connect, lang)
+    except Exception:  # noqa: BLE001
+        return i18n.ENGLISH
 
 
 def _completions_connect(request: Request):
@@ -91,12 +100,16 @@ def _sort_cands(cands: list, sort: str) -> list:
     return queries.sort_cands(cands, sort)
 
 
+# TMDB text in the UI language of the question being answered (titles, overviews), set by run_tool
+_TEXTS: contextvars.ContextVar = contextvars.ContextVar("chat_texts", default=i18n.ENGLISH)
+
+
 def _movie_json(c, st, dismissed: dict) -> dict:
-    return library.movie_json(c, st, dismissed)
+    return library.movie_json(c, st, dismissed, texts=_TEXTS.get())
 
 
 def _movie_detail_json(c, st, dismissed: dict) -> dict:
-    return library.movie_detail_json(c, st, dismissed)
+    return library.movie_detail_json(c, st, dismissed, _TEXTS.get())
 
 
 def _profile_json(st) -> dict:
@@ -273,17 +286,31 @@ def openai_max_tokens() -> int:
     return v if 256 <= v <= 65536 else OPENAI_MAX_TOKENS
 
 
-def config_problem() -> str | None:
-    """Why the chat is off, as a hint for the owner (names of variables only, never values). None = ready."""
+def config_problem_code() -> tuple[str, dict] | None:
+    """Why the chat is off, as a hint for the owner (names of variables only, never values): (code, params) the
+    web UI words (apiError.<code>). None = ready."""
     p = provider()
     if p == "anthropic":
         if _env("ANTHROPIC_API_KEY") or _env("ANTHROPIC_AUTH_TOKEN"):
             return None
-        return "No API key is configured (ANTHROPIC_API_KEY)."
+        return "ai.noKey", {}
     if p == "openai":
         missing = [n for n in ("MOVIENIGHT_AI_BASE_URL", "MOVIENIGHT_AI_API_KEY", "MOVIENIGHT_AI_MODEL") if not _env(n)]
-        return f"Missing {', '.join(missing)}." if missing else None
-    return "MOVIENIGHT_AI_PROVIDER must be anthropic or openai."
+        return ("ai.missing", {"names": ", ".join(missing)}) if missing else None
+    return "ai.badProvider", {}
+
+
+CONFIG_PROBLEM_EN = {
+    "ai.noKey": "No API key is configured (ANTHROPIC_API_KEY).",
+    "ai.missing": "Missing {names}.",
+    "ai.badProvider": "MOVIENIGHT_AI_PROVIDER must be anthropic or openai.",
+}
+
+
+def config_problem() -> str | None:
+    """`config_problem_code` in English."""
+    found = config_problem_code()
+    return CONFIG_PROBLEM_EN[found[0]].format(**found[1]) if found else None
 
 
 def chat_enabled() -> bool:
@@ -449,6 +476,17 @@ LIST_COMPLETIONS = {
 TOOLS_COMPLETIONIST: list[dict] = TOOLS[:-1] + [LIST_COMPLETIONS] + TOOLS[-1:]
 
 
+LANGUAGE_NOTE = {
+    "es-ES": ("\n\nLanguage: the user's app is in Spanish (Spain). Always answer in Spanish from Spain, using "
+              "informal \"tú\", whatever language the tools' data is in. Name films by the titles the tools return."),
+}
+
+
+def system_prompt(lang: str = i18n.DEFAULT) -> str:
+    """The system prompt, told to answer in the UI language (English needs no note)."""
+    return SYSTEM_PROMPT + LANGUAGE_NOTE.get(lang, "")
+
+
 def tools_for(completionist: bool) -> list[dict]:
     return TOOLS_COMPLETIONIST if completionist else TOOLS
 
@@ -492,17 +530,18 @@ def _short(text: str | None, n: int) -> str:
 def _row(c) -> dict:
     m = c.meta
     return {
-        "id": c.id, "title": c.title, "year": c.year, "runtime": m.get("runtime"),
+        "id": c.id, "title": _TEXTS.get().title(c.tmdb_id, c.title), "year": c.year, "runtime": m.get("runtime"),
         "genres": (m.get("genres") or [])[:4], "directors": (m.get("directors") or [])[:2],
         "cast": (m.get("cast") or [])[:3], "match": c.match, "on_watchlist": c.on_watchlist,
         "watched": c.watched, "tmdb_rating": m.get("vote_average"),
-        "overview": _short(m.get("overview"), 140),
+        "overview": _short(_TEXTS.get().detail(c.tmdb_id, "overview", m.get("overview")), 140),
     }
 
 
 def _haystack(c) -> str:
     m = c.meta
-    parts = [c.title, m.get("original_title"), m.get("tagline")] + list(m.get("directors") or []) \
+    tx = _TEXTS.get()
+    parts = [c.title, tx.title(c.tmdb_id, None), m.get("original_title"), m.get("tagline")] + list(m.get("directors") or []) \
         + list(m.get("cast") or []) + list(m.get("keywords") or []) + list(m.get("genres") or [])
     return _fold(" ".join(p for p in parts if p))
 
@@ -641,9 +680,11 @@ _TOOL_FUNCS = {"search_library": tool_search_library, "get_movie": tool_get_movi
 _CONN_TOOLS = {"list_completions": tool_list_completions}
 
 
-def run_tool(name: str, args: Any, st, dismissed: dict, connect=None) -> Outcome:
+def run_tool(name: str, args: Any, st, dismissed: dict, connect=None, texts=None) -> Outcome:
     """Synchronous; run in a thread. Never raises. `connect`: a connection factory for the database tools
-    (list_completions); without it they are unknown, as when the completionist is off."""
+    (list_completions); without it they are unknown, as when the completionist is off. `texts`: TMDB text in the
+    UI language (i18n.Texts), for titles and overviews."""
+    _TEXTS.set(texts or i18n.ENGLISH)
     fn = _TOOL_FUNCS.get(name) or (_CONN_TOOLS.get(name) if connect else None)
     if fn is None:
         return Outcome(f"Unknown tool {name!r}.", True)
@@ -671,44 +712,50 @@ def run_tool(name: str, args: Any, st, dismissed: dict, connect=None) -> Outcome
 
 # =========================================================================== agent loop
 
-def _friendly(exc: Exception) -> str:
+def _friendly(exc: Exception) -> tuple[str, str]:
+    """(code, English message): the web UI words the code itself (catalogue `apiError.<code>`)."""
     import anthropic
     import openai
 
     if isinstance(exc, anthropic.AuthenticationError):
-        return "The AI assistant's credentials were rejected. Check the API key."
+        return "ai.auth", "The AI assistant's credentials were rejected. Check the API key."
     if isinstance(exc, anthropic.PermissionDeniedError):
-        return "The AI assistant's credentials are not allowed to use this model."
+        return "ai.permission", "The AI assistant's credentials are not allowed to use this model."
     if isinstance(exc, anthropic.NotFoundError):
-        return "The configured AI model was not found. Check MOVIENIGHT_AI_MODEL."
+        return "ai.model", "The configured AI model was not found. Check MOVIENIGHT_AI_MODEL."
     if isinstance(exc, anthropic.RateLimitError):
-        return "The AI service is busy right now. Try again in a minute."
+        return "ai.busy", "The AI service is busy right now. Try again in a minute."
     if isinstance(exc, (anthropic.APITimeoutError, openai.APITimeoutError, TimeoutError)):
-        return "The AI service took too long to answer. Try again."
+        return "ai.timeout", "The AI service took too long to answer. Try again."
     if isinstance(exc, anthropic.APIConnectionError):
-        return "Could not reach the AI service."
+        return "ai.unreachable", "Could not reach the AI service."
     if isinstance(exc, anthropic.BadRequestError):
-        return "The AI service rejected the request."
+        return "ai.rejected", "The AI service rejected the request."
     if isinstance(exc, anthropic.APIStatusError):
-        return "The AI service had a problem. Try again shortly."
+        return "ai.problem", "The AI service had a problem. Try again shortly."
     # OpenAI-compatible providers (MOVIENIGHT_AI_PROVIDER=openai)
     if isinstance(exc, openai.AuthenticationError):
-        return "The AI provider rejected the credentials. Check MOVIENIGHT_AI_API_KEY."
+        return "ai.auth.key", "The AI provider rejected the credentials. Check MOVIENIGHT_AI_API_KEY."
     if isinstance(exc, openai.PermissionDeniedError):
-        return "The AI provider does not allow this key to use the model. Check MOVIENIGHT_AI_MODEL."
+        return "ai.permission.model", "The AI provider does not allow this key to use the model. Check MOVIENIGHT_AI_MODEL."
     if isinstance(exc, openai.NotFoundError):
-        return "The AI provider did not find the model or endpoint. Check MOVIENIGHT_AI_MODEL and MOVIENIGHT_AI_BASE_URL."
+        return "ai.model.endpoint", "The AI provider did not find the model or endpoint. Check MOVIENIGHT_AI_MODEL and MOVIENIGHT_AI_BASE_URL."
     if isinstance(exc, openai.RateLimitError):
-        return "The AI provider's usage limit was reached (free tiers allow only a few requests a minute and a day). Try again later."
+        return "ai.limit", "The AI provider's usage limit was reached (free tiers allow only a few requests a minute and a day). Try again later."
     if isinstance(exc, openai.APIConnectionError):
-        return "Could not reach the AI provider. Check MOVIENIGHT_AI_BASE_URL."
+        return "ai.unreachable.url", "Could not reach the AI provider. Check MOVIENIGHT_AI_BASE_URL."
     if isinstance(exc, openai.BadRequestError):
-        return "The AI provider rejected the request. The model may not support tool calling."
+        return "ai.rejected.tools", "The AI provider rejected the request. The model may not support tool calling."
     if isinstance(exc, openai.APIStatusError):
         if exc.status_code == 413:
-            return "The conversation is too long for the AI provider's limits. Start a new chat."
-        return "The AI provider had a problem. Try again shortly."
-    return "Something went wrong with the assistant."
+            return "ai.tooLong", "The conversation is too long for the AI provider's limits. Start a new chat."
+        return "ai.problem", "The AI provider had a problem. Try again shortly."
+    return "ai.generic", "Something went wrong with the assistant."
+
+
+def _error(code: str, detail: str, **params) -> dict:
+    """An error event: the English `detail` and a `code` + `params` the web UI words itself."""
+    return {"detail": detail, "code": code, "params": params}
 
 
 async def agent_events(request: Request, history: list[dict]) -> AsyncIterator[tuple[str, dict]]:
@@ -718,10 +765,10 @@ async def agent_events(request: Request, history: list[dict]) -> AsyncIterator[t
             async for ev in _loop(request, history):
                 yield ev
     except TimeoutError:
-        yield "error", {"detail": "The assistant took too long. Try again."}
+        yield "error", _error("chat.timeout", "The assistant took too long. Try again.")
     except Exception as e:  # noqa: BLE001
         log.warning("chat failed: %s", type(e).__name__)
-        yield "error", {"detail": _friendly(e)}
+        yield "error", _error(*_friendly(e))
     yield "done", {}
 
 
@@ -744,13 +791,15 @@ async def _loop(request: Request, history: list[dict]) -> AsyncIterator[tuple[st
     model = model_name()
     budget = monthly_budget()
     if await _budget_spent(request, budget):
-        yield "text", {"delta": budget_message(budget)}
+        yield "text", {"delta": budget_message(budget), "code": "chat.budget", "params": {"budget": budget}}
         return
     backend = make_backend(model)
     connect = _completions_connect(request)
-    backend.start(SYSTEM_PROMPT, tools_for(connect is not None), list(history))
+    lang = i18n.request_lang(request)
+    backend.start(system_prompt(lang), tools_for(connect is not None), list(history))
     counted = False
     st, dismissed = await asyncio.to_thread(_load_context, request)
+    texts = await asyncio.to_thread(_texts, request, st, lang)
     json_failures = 0
     try:
         turns = 0
@@ -768,7 +817,7 @@ async def _loop(request: Request, history: list[dict]) -> AsyncIterator[tuple[st
 
         while turns < MAX_TURNS:
             if turns and await _budget_spent(request, budget):
-                yield "error", {"detail": budget_message(budget)}
+                yield "error", _error("chat.budget", budget_message(budget), budget=budget)
                 return
             turns += 1
             turn = None
@@ -788,16 +837,16 @@ async def _loop(request: Request, history: list[dict]) -> AsyncIterator[tuple[st
                 # tool input JSON the SDK could not parse at all: re-issue the turn (bounded)
                 json_failures += 1
                 if json_failures > 2:
-                    yield "error", {"detail": "The assistant produced a malformed answer. Try again."}
+                    yield "error", _error("chat.malformed", "The assistant produced a malformed answer. Try again.")
                     return
                 turns -= 1
                 continue
 
             if turn.stop == "refusal":
-                yield "error", {"detail": "The assistant can't help with that request. Try rephrasing."}
+                yield "error", _error("chat.refusal", "The assistant can't help with that request. Try rephrasing.")
                 return
             if turn.stop == "length":
-                yield "error", {"detail": "The answer got cut off. Try asking again, a bit more simply."}
+                yield "error", _error("chat.cutoff", "The answer got cut off. Try asking again, a bit more simply.")
                 return
             if turn.stop == "pause":
                 continue
@@ -808,7 +857,7 @@ async def _loop(request: Request, history: list[dict]) -> AsyncIterator[tuple[st
             for c in calls:
                 yield "tool", {"name": c.name, "label": TOOL_LABELS.get(c.name, "Working…")}
             outcomes = await asyncio.gather(*(
-                asyncio.to_thread(run_tool, c.name, c.args, st, dismissed, connect) if c.args is not None
+                asyncio.to_thread(run_tool, c.name, c.args, st, dismissed, connect, texts) if c.args is not None
                 else asyncio.sleep(0, Outcome(BAD_ARGS, True)) for c in calls))
             results = []
             for c, o in zip(calls, outcomes):
@@ -816,7 +865,7 @@ async def _loop(request: Request, history: list[dict]) -> AsyncIterator[tuple[st
                     yield ev
                 results.append((c.id, o.content, o.is_error))
             backend.add_tool_results(results)
-        yield "error", {"detail": "I couldn't settle on a pick in time. Try a more specific request."}
+        yield "error", _error("chat.noPick", "I couldn't settle on a pick in time. Try a more specific request.")
     finally:
         try:
             await backend.close()
@@ -839,8 +888,9 @@ def chat_status(request: Request):
         usage = _db_call(request, month_usage)
     except Exception:  # noqa: BLE001
         usage = None
+    code, params = config_problem_code() or (None, {})
     return {"enabled": chat_enabled(), "provider": provider(), "model": model_name(), "problem": config_problem(),
-            "usage": usage}
+            "problem_code": code, "problem_params": params, "usage": usage}
 
 
 def _validate(body: Any) -> list[dict]:
@@ -872,7 +922,8 @@ def _validate(body: Any) -> list[dict]:
 @router.post("/api/chat")
 async def chat(request: Request):
     if not chat_enabled():
-        return JSONResponse({"detail": f"AI chat is not configured. {config_problem()}"}, status_code=503)
+        return JSONResponse({"detail": f"AI chat is not configured. {config_problem()}", "code": "chat.off",
+                             "params": {}}, status_code=503)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001

@@ -15,10 +15,13 @@ import { h, fill, icon, poster, hueOf, errorBox, announce, isTyping } from '../d
 import { GROUP_EVENT } from '../state.js';
 import { openSagaFilm, KINDS, storedKind, storeKind, chipKind, kindOfKey } from './complete.js';
 import { seerrEnabled, requestBadges } from '../seerr.js';
+import { t } from '../i18n.js';
+import { groupReason } from '../labels.js';
 
-const KIND_LABEL = { collection: 'Saga', franchise: 'Franchise', series: 'Saga', list: 'List', director: 'Director', actor: 'Actor' };
-const STATE_TEXT = { available: 'In your library · OK to open', seen: 'Seen · OK for details', missing: 'Not in your library · OK to mark seen' };
-const STATE_TEXT_WEB = { available: 'In your library · Enter to open', seen: 'Seen · Enter for details', missing: 'Not in your library · Enter to mark seen' };
+const KIND_LABEL = { collection: t('ctv.kind.saga'), franchise: t('ctv.kind.franchise'), series: t('ctv.kind.saga'), list: t('ctv.kind.list'), director: t('complete.director'), actor: t('complete.actor') };
+const STATE_NAME = { available: t('complete.state.available'), seen: t('complete.state.seen'), missing: t('complete.state.missing') };
+const STATE_TEXT = { available: t('ctv.state.available'), seen: t('ctv.state.seen'), missing: t('ctv.state.missing') };
+const STATE_TEXT_WEB = { available: t('ctv.stateWeb.available'), seen: t('ctv.stateWeb.seen'), missing: t('ctv.stateWeb.missing') };
 
 const DOTS = 9;
 const ARROWS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
@@ -41,16 +44,16 @@ export function mountTv(root, { web = false, toolbar = null, target = null } = {
     type: 'button', class: `ctv__step ctv__step--${dir > 0 ? 'next' : 'prev'}`, 'aria-label': label, title: label,
     onclick: () => step(dir),
   }, icon('chevron'));
-  const prevBtn = web ? navBtn(-1, 'Previous saga') : null;
-  const nextBtn = web ? navBtn(1, 'Next saga') : null;
+  const prevBtn = web ? navBtn(-1, t('ctv.prev')) : null;
+  const nextBtn = web ? navBtn(1, t('ctv.next')) : null;
   const nav = web ? h('div', { class: 'ctv__nav' }, prevBtn, dots, nextBtn) : dots;
   const chips = KINDS.map(([id, label]) => h('button', {
     type: 'button', class: 'chip chip--small', 'aria-pressed': String(id === kind), 'data-kind': id || '',
     onclick: () => pick(id),
   }, h('span', { text: label }), h('span', { class: 'chip__count' })));
-  const kinds = h('div', { class: 'chips ctv__kinds', role: 'group', 'aria-label': 'Kind of group' }, chips);
-  const el = h('section', { class: `ctv${web ? ' ctv--web' : ''}`, 'aria-roledescription': 'carousel', 'aria-label': 'Sagas you have started' },
-    h('h1', { class: 'sr-only', text: 'Complete' }), stage, nav, h('div', { class: 'ctv__toolbar' }, toolbar, kinds));
+  const kinds = h('div', { class: 'chips ctv__kinds', role: 'group', 'aria-label': t('complete.kinds') }, chips);
+  const el = h('section', { class: `ctv${web ? ' ctv--web' : ''}`, 'aria-roledescription': t('ctv.carousel'), 'aria-label': t('ctv.aria') },
+    h('h1', { class: 'sr-only', text: t('tab.complete') }), stage, nav, h('div', { class: 'ctv__toolbar' }, toolbar, kinds));
   root.append(el);
 
   const ofKind = (g) => !kind || chipKind(g.kind) === kind;
@@ -83,8 +86,8 @@ export function mountTv(root, { web = false, toolbar = null, target = null } = {
     if (prevBtn) nav.hidden = true;
     const label = KINDS.find(([id]) => id === kind)?.[1].toLowerCase();
     fill(stage, h('div', { class: 'state ctv__empty' },
-      h('p', { class: 'state__title', text: everything.length && kind ? `No ${label} in progress` : 'Nothing started yet' }),
-      h('p', { class: 'state__text', text: 'Watch one film of a saga, franchise or trilogy, or a few by the same director or actor, and it shows up here.' })));
+      h('p', { class: 'state__title', text: everything.length && kind ? t('ctv.noneOfKind', { label }) : t('complete.empty.none') }),
+      h('p', { class: 'state__text', text: t('ctv.emptyText') })));
   }
 
   const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -118,7 +121,7 @@ export function mountTv(root, { web = false, toolbar = null, target = null } = {
   }
 
   function tile(f, caption) {
-    const label = `${f.title}${f.year ? ` (${f.year})` : ''}, ${STATE_TEXT[f.state].split(' · ')[0].toLowerCase()}`;
+    const label = `${f.title}${f.year ? ` (${f.year})` : ''}, ${STATE_NAME[f.state]}`;
     const btn = h('button', {
       type: 'button', class: 'ctv__film', 'aria-label': label,
       onclick: () => { lastFilm = f.tmdb_id; openSagaFilm(f); },
@@ -134,39 +137,39 @@ export function mountTv(root, { web = false, toolbar = null, target = null } = {
     h('span', { class: 'ctv__art', 'data-seerr': f.state === 'missing' && seerrEnabled() ? String(f.tmdb_id) : null },
       poster(f, { eager: true }),
       f.state === 'seen' ? h('span', { class: 'cfilm__seen', 'aria-hidden': 'true' }, icon('check')) : null,
-      f.state === 'available' ? h('span', { class: 'cfilm__badge', text: 'In library' }) : null));
+      f.state === 'available' ? h('span', { class: 'cfilm__badge', text: t('complete.inLibrary') }) : null));
     return h('li', { class: `ctv__item cfilm--${f.state}` }, btn);
   }
 
   function build(g, i) {
     const caption = h('p', { class: 'ctv__caption', 'aria-hidden': 'true' });
-    const row = h('ul', { class: 'ctv__row', 'aria-label': g.ordered ? `${g.name}, in release order` : `${g.name}: still to watch, then seen` },
+    const row = h('ul', { class: 'ctv__row', 'aria-label': g.ordered ? t('complete.grid.ordered', { name: g.name }) : t('ctv.row.todo', { name: g.name }) },
       g.films.map((f) => tile(f, caption)));
     requestBadges(row);
     const pct = g.total ? Math.round((g.seen / g.total) * 100) : 0;
     const after = groups[i + 1];
     return h('article', {
       class: 'ctv__screen', style: { '--h': String(hueOf(nextFilm(g) || g)) },
-      'aria-roledescription': 'slide', 'aria-label': `${g.name}, ${i + 1} of ${groups.length}`, 'data-key': g.key,
+      'aria-roledescription': t('ctv.slide'), 'aria-label': `${g.name}, ${t('setup.sync.of', { done: i + 1, total: groups.length })}`, 'data-key': g.key,
     },
     h('div', { class: 'pick__art ctv__backdrop' }, backdrop(g)),
     h('div', { class: 'ctv__inner' },
       h('p', { class: 'ctv__kicker' },
-        h('span', { text: KIND_LABEL[g.kind] || 'Saga' }),
-        h('span', { text: `${i + 1} of ${groups.length}` })),
+        h('span', { text: KIND_LABEL[g.kind] || t('ctv.kind.saga') }),
+        h('span', { text: t('setup.sync.of', { done: i + 1, total: groups.length }) })),
       h('h2', { class: 'ctv__title', text: g.name }),
       h('div', { class: 'ctv__meta' },
         h('div', {
           class: 'cprog__bar ctv__bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': String(g.total),
-          'aria-valuenow': String(g.seen), 'aria-label': `${g.seen} of ${g.total} seen`,
+          'aria-valuenow': String(g.seen), 'aria-label': t('ctv.seenOf', { seen: g.seen, total: g.total }),
         }, h('span', { class: 'cprog__fill', style: { width: `${pct}%` } })),
-        h('span', { class: 'ctv__count' }, h('strong', { text: String(g.seen) }), ` of ${g.total} seen`,
-          g.available ? h('span', { class: 'cprog__avail', text: ` · ${g.available} in library` }) : null),
-        g.reason ? h('span', { class: 'ctv__why', text: g.reason, title: g.reason, 'aria-label': g.reason }) : null),
+        h('span', { class: 'ctv__count' }, h('strong', { text: String(g.seen) }), t('complete.progress.of', { total: g.total }),
+          g.available ? h('span', { class: 'cprog__avail', text: ` · ${t('complete.progress.avail', { n: g.available })}` }) : null),
+        groupReason(g) ? h('span', { class: 'ctv__why', text: groupReason(g), title: groupReason(g), 'aria-label': groupReason(g) }) : null),
       caption,
       row),
     h('p', { class: 'ctv__hint', 'aria-hidden': 'true' },
-      after ? [icon('chevron'), `Next: ${after.name}`] : null));
+      after ? [icon('chevron'), t('ctv.nextName', { name: after.name })] : null));
   }
 
   // At most DOTS dots: a window around the current saga, its outer two shrinking when more lie beyond.
@@ -220,7 +223,8 @@ export function mountTv(root, { web = false, toolbar = null, target = null } = {
     const start = focusKey != null ? g.films.findIndex((f) => f.tmdb_id === focusKey) : g.films.indexOf(nextFilm(g));
     if (focus) tiles[Math.max(0, start)]?.focus({ preventScroll: true });
     else lastFilm = g.films[Math.max(0, start)]?.tmdb_id ?? null;
-    announce(`${g.name}. ${g.seen} of ${g.total} seen.${g.reason ? ` ${g.reason}.` : ''}`);
+    const why = groupReason(g);
+    announce(`${t('complete.progress.aria', { name: g.name, seen: g.seen, total: g.total })}.${why ? ` ${why}.` : ''}`);
   }
 
   // In a browser the keys also work when focus is nowhere in particular (the page, the hero itself, or the arrows
@@ -365,8 +369,8 @@ export function mountTv(root, { web = false, toolbar = null, target = null } = {
           screen = null;
           if (prevBtn) nav.hidden = true;
           fill(stage, h('div', { class: 'state ctv__empty' },
-            h('p', { class: 'state__title', text: r.completed.length || r.hidden_count ? 'All caught up' : 'Nothing started yet' }),
-            h('p', { class: 'state__text', text: 'Watch one film of a saga, franchise or trilogy, or a few by the same director or actor, and it shows up here.' })));
+            h('p', { class: 'state__title', text: r.completed.length || r.hidden_count ? t('complete.empty.done') : t('complete.empty.none') }),
+            h('p', { class: 'state__text', text: t('ctv.emptyText') })));
         } else empty();
         return;
       }

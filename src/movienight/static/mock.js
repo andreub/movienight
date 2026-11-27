@@ -1,6 +1,86 @@
 // Fixture backend for ?mock=1 (ready library), ?mock=fresh (first-run setup) and ?mock=jellyfin (Jellyfin
 // as the media server, read-only card in Setup).
 // Posters/backdrops are null on purpose so the generated fallbacks get exercised.
+// With the UI in Spanish the fixtures answer as the API does then: TMDB's Spanish titles and overviews (made-up
+// films get Spanish names too), labels as keys + params (the UI words them); genre names stay TMDB's English ones.
+import { lang } from '/static/js/i18n.js';
+
+const ES = lang === 'es-ES';
+const ES_TITLES = {
+  Arrival: 'La llegada', Parasite: 'Parásitos', 'Mad Max: Fury Road': 'Mad Max: Furia en la carretera', 'Spirited Away': 'El viaje de Chihiro',
+  'The Thing': 'La cosa', Alien: 'Alien, el octavo pasajero', 'Before Sunrise': 'Antes del amanecer', 'Get Out': 'Déjame salir',
+  Inception: 'Origen', 'Knives Out': 'Puñales por la espalda', 'Portrait of a Lady on Fire': 'Retrato de una mujer en llamas',
+  'The Grand Budapest Hotel': 'El gran hotel Budapest', 'Rear Window': 'La ventana indiscreta', 'Seven Samurai': 'Los siete samuráis',
+  'Eternal Sunshine of the Spotless Mind': '¡Olvídate de mí!', Prisoners: 'Prisioneros', Annihilation: 'Aniquilación',
+  'In the Mood for Love': 'Deseando amar', 'Everything Everywhere All at Once': 'Todo a la vez en todas partes', 'Past Lives': 'Vidas pasadas',
+  'Some Like It Hot': 'Con faldas y a lo loco', 'The Long Quiet Weekend at the Lighthouse Keeper’s Cottage': 'El largo fin de semana en la casa del farero',
+  'Salt Line': 'Línea de sal',
+  // "Seen these?" classics
+  'The Matrix': 'Matrix', 'The Fellowship of the Ring': 'La comunidad del anillo', 'Jurassic Park': 'Parque Jurásico', Goodfellas: 'Uno de los nuestros',
+  'Back to the Future': 'Regreso al futuro', 'The Shining': 'El resplandor', 'The Silence of the Lambs': 'El silencio de los corderos',
+  'Die Hard': 'Jungla de cristal', Ghostbusters: 'Cazafantasmas', 'The Princess Bride': 'La princesa prometida', 'Léon: The Professional': 'León: El profesional',
+  Psycho: 'Psicosis', 'Star Wars': 'La guerra de las galaxias', 'Raiders of the Lost Ark': 'En busca del arca perdida', 'The Godfather': 'El padrino',
+  'Terminator 2': 'Terminator 2: El juicio final', 'The Truman Show': 'El show de Truman',
+  // history, taste and outcomes
+  'Memories of Murder': 'Crónica de un asesino en serie', Thief: 'Ladrón', 'The Handmaiden': 'La doncella', 'Children of Men': 'Hijos de los hombres',
+  // sagas and groups
+  'The Long Night Chronicles': 'Crónicas de la larga noche', 'The Long Night': 'La larga noche', 'Cornetto Trilogy': 'Trilogía del Cornetto',
+  'Shaun of the Dead': 'Zombies Party', 'Hot Fuzz': 'Arma fatal', 'The World’s End': 'Bienvenidos al fin del mundo', Before: 'Antes de…',
+  'Before Sunset': 'Antes del atardecer', 'Before Midnight': 'Antes del anochecer', 'The Matrix Reloaded': 'Matrix Reloaded',
+  'The Matrix Revolutions': 'Matrix Revolutions', 'The Matrix Resurrections': 'Matrix Resurrections', 'The Dark Knight': 'El caballero oscuro',
+  'The Dark Knight Rises': 'El caballero oscuro: La leyenda renace', 'Pirates of the Caribbean': 'Piratas del Caribe',
+  'The Curse of the Black Pearl': 'La maldición de la Perla Negra', 'Dead Man’s Chest': 'El cofre del hombre muerto', 'At World’s End': 'En el fin del mundo',
+  'Spider-Man: Into the Spider-Verse': 'Spider-Man: Un nuevo universo', 'Spider-Man: Far From Home': 'Spider-Man: Lejos de casa',
+  'Spider-Man: Across the Spider-Verse': 'Spider-Man: Cruzando el Multiverso', 'Spider-Man: Brand New Day': 'Spider-Man: Un nuevo día',
+  'Paper Lanterns': 'Farolillos de papel', 'The Cartographer': 'El cartógrafo', 'Low Tide': 'Marea baja', Northbound: 'Rumbo al norte',
+  'Salt and Iron': 'Sal y hierro', 'The Quiet Year': 'El año tranquilo', Glasshouse: 'Invernadero', 'First Light': 'Primera luz',
+  'Winter Orchard': 'Huerto de invierno', 'The Ferryman': 'El barquero', 'Harbour Lights': 'Luces del puerto', Undertow: 'Resaca',
+  'A Room in Lisbon': 'Una habitación en Lisboa', 'Night Market': 'Mercado nocturno', 'The Understudy': 'La suplente', 'Blue Hour': 'La hora azul',
+  'Silver Coast': 'Costa de plata', 'The Long Goodbye Club': 'El club del largo adiós', 'Fault Lines': 'Fallas', 'Ninety Days': 'Noventa días',
+  Caravan: 'Caravana', 'The Audition': 'La audición', 'Sea Glass': 'Vidrio de mar', Counterweight: 'Contrapeso', 'The Signal': 'La señal',
+  Overpass: 'Paso elevado', 'Monsoon Run': 'Huida en el monzón', 'Quiet Engines': 'Motores en silencio', Rooftops: 'Azoteas',
+  // servers, players, tags (the user's own names, as a Spanish user would have them)
+  Home: 'Casa', 'Lucía’s Library': 'La biblioteca de Lucía', 'Cabin NAS': 'NAS de la cabaña', 'Living Room TV': 'Tele del salón',
+  Fest: 'Festi', 'Date night': 'Noche de cita', Rewatch: 'Revisionado', 'movie-fan': 'cinefila',
+};
+const L = (s) => (ES && ES_TITLES[s]) || s;
+const ES_SAGA = ['Alba', 'Brasa', 'La larga noche', 'Ceniza', 'Corona de sal', 'Marea de hierro', 'El rey hueco', 'Lluvia de estrellas', 'Páramo del cuervo',
+  'El camino de cristal', 'Bosque de espinas', 'Fortaleza del invierno', 'La campana ahogada', 'Lanza del sol', 'Nueve veces', 'La puerta pálida',
+  'Aguaclara', 'Corteza de hierro', 'El último farol', 'Cuervo de tormenta', 'El mar en calma', 'Penumbra', 'El noveno estandarte', 'Caída de plata',
+  'Brasas del páramo', 'El castillo errante', 'Manto del ocaso', 'El segundo sol', 'Atalaya', 'El regreso'];
+const ES_OVERVIEWS = {
+  Drive: 'Un callado especialista de cine que de noche conduce para atracadores se ve metido en un robo que sale mal.',
+  Arrival: 'Una lingüista intenta hablar con unos visitantes cuyo idioma cambia su forma de vivir el tiempo.',
+  Parasite: 'Una familia sin recursos se cuela al servicio de una casa rica, hasta que un secreto en el sótano lo cambia todo.',
+  'Mad Max: Fury Road': 'En un desierto devastado, un guerrero de la carretera y una comandante rebelde huyen de un tirano en una persecución de dos horas.',
+  'Spirited Away': 'Una niña se pierde en unos baños para espíritus y tiene que trabajar allí para liberar a sus padres.',
+  'The Thing': 'Un equipo de investigación en la Antártida descubre un organismo capaz de imitar a cualquiera de ellos.',
+  Alien: 'La tripulación de un remolcador espacial responde a una señal de socorro y se trae algo a bordo.',
+  Heat: 'Un ladrón meticuloso y un detective obsesivo se persiguen por todo Los Ángeles.',
+  'Before Sunrise': 'Dos desconocidos se conocen en un tren y pasan una noche paseando y hablando por Viena.',
+  'Paddington 2': 'Un oso muy educado acepta trabajillos para comprar un libro desplegable y acaba acusado de robarlo.',
+  'Get Out': 'Una visita de fin de semana a los padres de su novia se vuelve más rara y siniestra a cada hora.',
+  Whiplash: 'Un joven batería de jazz llega al límite con un profesor de conservatorio implacable.',
+  Moonlight: 'Tres capítulos de la vida de un joven que crece en Miami.',
+  Hereditary: 'Tras la muerte de la abuela, la casa de su hija empieza a desmoronarse de forma aterradora.',
+  Inception: 'Un ladrón que roba secretos de los sueños recibe el encargo de plantar una idea.',
+  'Knives Out': 'Un famoso novelista de misterio muere tras su fiesta de cumpleaños, y todos sus parientes tienen un móvil.',
+  'Portrait of a Lady on Fire': 'En una isla de la Bretaña del siglo XVIII, una pintora recibe el encargo de retratar en secreto a una novia reacia.',
+  'The Grand Budapest Hotel': 'Un conserje legendario y su botones se ven envueltos en el robo de un cuadro de valor incalculable.',
+  Zodiac: 'Un dibujante se obsesiona con identificar a un asesino en serie que se burla de San Francisco.',
+  'Amélie': 'Una tímida camarera de París decide cambiar en silencio la vida de quienes la rodean.',
+  'Rear Window': 'Un fotógrafo en silla de ruedas empieza a sospechar que un vecino ha cometido un asesinato.',
+  'Seven Samurai': 'Un pueblo contrata a siete samuráis sin señor para defenderse de unos bandidos.',
+  'Eternal Sunshine of the Spotless Mind': 'Tras una ruptura dolorosa, un hombre se somete a un tratamiento para borrar a su ex de la memoria.',
+  'Lost in Translation': 'Dos estadounidenses que no pueden dormir entablan una amistad inesperada en un hotel de Tokio.',
+  Prisoners: 'Cuando su hija desaparece, un padre decide tomarse la justicia por su mano.',
+  Annihilation: 'Una bióloga se une a una expedición a una zona resplandeciente donde la naturaleza sigue otras reglas.',
+  'In the Mood for Love': 'Dos vecinos del Hong Kong de los sesenta descubren que sus parejas tienen una aventura.',
+  'Everything Everywhere All at Once': 'La dueña de una lavandería, en plena inspección de Hacienda, descubre que puede tomar prestadas habilidades de otros universos.',
+  'Past Lives': 'Dos amigos de la infancia se reencuentran en Nueva York décadas después de que uno de ellos emigrara.',
+  'Some Like It Hot': 'Dos músicos que han presenciado un ajuste de cuentas de la mafia se esconden en una orquesta femenina.',
+  'Salt Line': 'Un inspector del puerto encuentra un contenedor sellado que no debería existir y tiene una noche para decidir a quién contárselo.',
+};
 
 const FILMS = [
   ['Drive', 2011, 100, ['Crime', 'Drama'], 'Nicolas Winding Refn', ['Ryan Gosling', 'Carey Mulligan', 'Bryan Cranston'], 7.6, 'A quiet stunt driver who moonlights as a getaway driver gets pulled into a robbery that goes wrong.'],
@@ -72,9 +152,9 @@ function eras(p = {}) {
 
 // Letterboxd diary tags (GET /api/tags): a festival with editions, and a tag without a year.
 const TAGS = [
-  { family: 'fest', label: 'Fest', films: 21, matched: 21, editions: [
+  { family: 'fest', label: L('Fest'), films: 21, matched: 21, editions: [
     { tag: 'fest2025', edition: 2025, films: 8, matched: 8 }, { tag: 'fest2024', edition: 2024, films: 7, matched: 7 }, { tag: 'fest2023', edition: 2023, films: 6, matched: 6 }] },
-  { family: 'date night', label: 'Date night', films: 5, matched: 5, editions: [{ tag: 'date night', edition: null, films: 5, matched: 5 }] },
+  { family: 'date night', label: L('Date night'), films: 5, matched: 5, editions: [{ tag: 'date night', edition: null, films: 5, matched: 5 }] },
 ];
 const TAG_TESTS = {
   fest: (m) => hasAny(m, ['Horror', 'Mystery', 'Science Fiction', 'Thriller']),
@@ -84,13 +164,13 @@ const TAG_TESTS = {
   'date night': (m) => hasAny(m, ['Romance']),
 };
 const TAG_STATS = [
-  { family: 'fest', label: 'Fest', films: 21, matched: 21, mean_rating: 3.6, top_genres: ['Horror', 'Thriller', 'Science Fiction'], editions: [
+  { family: 'fest', label: L('Fest'), films: 21, matched: 21, mean_rating: 3.6, top_genres: ['Horror', 'Thriller', 'Science Fiction'], editions: [
     { tag: 'fest2025', edition: 2025, films: 8, matched: 8, mean_rating: 3.8, top_genres: ['Horror', 'Science Fiction', 'Drama'] },
     { tag: 'fest2024', edition: 2024, films: 7, matched: 7, mean_rating: 3.4, top_genres: ['Thriller', 'Mystery', 'Horror'] },
     { tag: 'fest2023', edition: 2023, films: 6, matched: 6, mean_rating: 3.5, top_genres: ['Horror', 'Comedy', 'Fantasy'] }] },
-  { family: 'date night', label: 'Date night', films: 5, matched: 5, mean_rating: 3.9, top_genres: ['Romance', 'Comedy', 'Drama'], editions: [
+  { family: 'date night', label: L('Date night'), films: 5, matched: 5, mean_rating: 3.9, top_genres: ['Romance', 'Comedy', 'Drama'], editions: [
     { tag: 'date night', edition: null, films: 5, matched: 5, mean_rating: 3.9, top_genres: ['Romance', 'Comedy', 'Drama'] }] },
-  { family: 'rewatch', label: 'Rewatch', films: 2, matched: 2, mean_rating: 4.5, top_genres: ['Drama'], editions: [
+  { family: 'rewatch', label: L('Rewatch'), films: 2, matched: 2, mean_rating: 4.5, top_genres: ['Drama'], editions: [
     { tag: 'rewatch', edition: null, films: 2, matched: 2, mean_rating: 4.5, top_genres: ['Drama'] }] },
 ];
 
@@ -114,7 +194,7 @@ const CLASSICS = ['The Matrix', 'Fargo', 'The Fellowship of the Ring', 'Pulp Fic
 const triage = Array.from({ length: 84 }, (_, i) => {
   const base = CLASSICS[i % CLASSICS.length];
   return {
-    id: 500 + i, title: i < CLASSICS.length ? base : `${base} ${['II', 'III', 'Returns', 'Redux'][i % 4]}`, year: 1975 + ((i * 7) % 48), runtime: 90 + (i % 5) * 12,
+    id: 500 + i, title: i < CLASSICS.length ? L(base) : `${L(base)} ${(ES ? ['II', 'III', 'IV', 'V'] : ['II', 'III', 'Returns', 'Redux'])[i % 4]}`, year: 1975 + ((i * 7) % 48), runtime: 90 + (i % 5) * 12,
     genres: ['Drama'], directors: [], cast: [], poster_url: null, backdrop_url: null, tmdb_votes: 90000 - i * 900, match: 60, reasons: [],
     on_watchlist: false, watched: false, my_rating: null, liked: false, dismissed_until: null, plex: [],
   };
@@ -123,15 +203,24 @@ const triage = Array.from({ length: 84 }, (_, i) => {
 if (!FRESH) triage.slice(40, 46).forEach((m, i) => { seenSet.add(m.id); seenAt.set(m.id, Date.now() - (i + 1) * 86400e3); });
 if (!FRESH) votes.set(triage[41].id, 1);
 
+// Reasons as the API sends them: a key + params the UI words, and the English text.
+const REASON_EN = {
+  watchlist: 'On your Letterboxd watchlist', 'director.rated': 'You rated {n} films by {name} {stars} on average',
+  'similar.rated': 'Fans of {title} (you gave it {stars}) also love this', 'cast.enjoyed': "You've enjoyed {n} films with {name}",
+  acclaimed: 'Acclaimed: {rating} on TMDB ({votes} votes)', 'genre.top': '{genre} is one of your top genres',
+  decade: 'You tend to enjoy films from the {decade}s', 'saga.next': 'Next in {name} · {seen} of {total} seen',
+};
+const reason = (kind, key, params = {}) => ({ kind, key, params, text: REASON_EN[key].replace(/\{(\w+)\}/g, (_, k) => params[k]) });
+
 function reasonsFor(m, i) {
   const r = [];
-  if (m.on_watchlist) r.push({ kind: 'watchlist', text: 'On your Letterboxd watchlist' });
-  if (i % 3 === 0) r.push({ kind: 'director', text: `You rate ${m.directors[0]}'s films 4.2 on average` });
-  if (i % 4 === 1) r.push({ kind: 'similar', text: 'Fans of Heat (you gave it ★★★★½) also love this' });
-  if (i % 2 === 0) r.push({ kind: 'cast', text: `Stars ${m.cast[0]}, one of your most-watched actors` });
-  if ((m.tmdb_rating || 0) >= 8.1) r.push({ kind: 'acclaimed', text: 'Widely acclaimed: one of the best-rated films on your servers' });
-  if (r.length < 2) r.push({ kind: 'genre', text: `${m.genres[0]} is among your favourite genres` });
-  if (m.year < 1980) r.push({ kind: 'decade', text: `You rate films from the ${Math.floor(m.year / 10) * 10}s highly` });
+  if (m.on_watchlist) r.push(reason('watchlist', 'watchlist'));
+  if (i % 3 === 0) r.push(reason('director', 'director.rated', { n: 4, name: m.directors[0], stars: '★★★★' }));
+  if (i % 4 === 1) r.push(reason('similar', 'similar.rated', { title: L('Heat'), stars: '★★★★½' }));
+  if (i % 2 === 0) r.push(reason('cast', 'cast.enjoyed', { n: 3, name: m.cast[0] }));
+  if ((m.tmdb_rating || 0) >= 8.1) r.push(reason('acclaimed', 'acclaimed', { rating: m.tmdb_rating, votes: m.tmdb_votes }));
+  if (r.length < 2) r.push(reason('genre', 'genre.top', { genre: m.genres[0] }));
+  if (m.year < 1980) r.push(reason('decade', 'decade', { decade: Math.floor(m.year / 10) * 10 }));
   return r.slice(0, 4);
 }
 
@@ -141,7 +230,9 @@ const JUST_ARRIVED = { 'Salt Line': 2, 'Arrival': 6, 'Heat': 11, 'Get Out': 19 }
 const movies = FILMS.map(([title, year, runtime, genres, director, cast, rating, overview, language = 'en', original, release_date = null], i) => {
   const id = 100 + i;
   const m = {
-    id, title, original_title: original || title, year, release_date, runtime, tagline: i % 5 === 0 ? 'Some nights call for exactly this.' : null, overview,
+    id, title: L(title), original_title: original || title, year, release_date, runtime,
+    tagline: i % 5 === 0 ? (ES ? 'Hay noches que piden justo esto.' : 'Some nights call for exactly this.') : null,
+    overview: (ES && ES_OVERVIEWS[title]) || overview,
     genres, directors: [director], cast, language, countries: [{ en: 'US', ja: 'JP', fr: 'FR', zh: 'HK' }[language]],
     poster_url: null, backdrop_url: null,
     tmdb_rating: rating, tmdb_votes: rating ? 4000 + ((i * 7919) % 30000) : null, tmdb_id: 1000 + i,
@@ -151,9 +242,9 @@ const movies = FILMS.map(([title, year, runtime, genres, director, cast, rating,
     added_at: new Date(Date.now() - (title in JUST_ARRIVED ? JUST_ARRIVED[title] : 40 + i * 3) * 86400000).toISOString(),
     plex: JELLYFIN
       ? [{ server: 'Den', server_id: 'jf:f00dcafe', resolution: i % 3 === 0 ? '4k' : '1080', url: `${JF_BASE}/web/#/details?id=item${id}&serverId=f00dcafe` }]
-      : [{ server: 'Home', server_id: 'home1', resolution: i % 3 === 0 ? '4k' : '1080', url: `https://app.plex.tv/desktop/#!/server/home1/details?key=%2Flibrary%2Fmetadata%2F${id}`, mobile_url: `https://watch.plex.tv/movie/mock-film-${id}` }],
+      : [{ server: L('Home'), server_id: 'home1', resolution: i % 3 === 0 ? '4k' : '1080', url: `https://app.plex.tv/desktop/#!/server/home1/details?key=%2Flibrary%2Fmetadata%2F${id}`, mobile_url: `https://watch.plex.tv/movie/mock-film-${id}` }],
   };
-  if (!JELLYFIN && i % 5 === 1) m.plex.push({ server: 'Lucía’s Library', server_id: 'shared2', resolution: '720', url: `https://app.plex.tv/desktop/#!/server/shared2/details?key=%2Flibrary%2Fmetadata%2F${id + 5000}`, mobile_url: `https://watch.plex.tv/movie/mock-film-${id}` });
+  if (!JELLYFIN && i % 5 === 1) m.plex.push({ server: L('Lucía’s Library'), server_id: 'shared2', resolution: '720', url: `https://app.plex.tv/desktop/#!/server/shared2/details?key=%2Flibrary%2Fmetadata%2F${id + 5000}`, mobile_url: `https://watch.plex.tv/movie/mock-film-${id}` });
   m.reasons = reasonsFor(m, i);
   return m;
 });
@@ -164,9 +255,9 @@ const lbState = FRESH ? { watched: 0, rated: 0, liked: 0, watchlist: 0, username
 let syncStarted = null;
 let synced = !FRESH;
 const servers = [
-  { id: 'home1', name: 'Home', owned: true, movies: 1184, enabled: true, reachable: true },
-  { id: 'shared2', name: 'Lucía’s Library', owned: false, movies: 512, enabled: true, reachable: true },
-  { id: 'cabin3', name: 'Cabin NAS', owned: true, movies: 88, enabled: false, reachable: false },
+  { id: 'home1', name: L('Home'), owned: true, movies: 1184, enabled: true, reachable: true },
+  { id: 'shared2', name: L('Lucía’s Library'), owned: false, movies: 512, enabled: true, reachable: true },
+  { id: 'cabin3', name: L('Cabin NAS'), owned: true, movies: 88, enabled: false, reachable: false },
 ];
 const SYNC_MS = 12000;
 
@@ -213,12 +304,15 @@ const SORTERS = {
   runtime: (a, b) => (a.runtime || 999) - (b.runtime || 999),
 };
 
+const BECAUSE_EN = { fans: 'Fans of this also love it', director: 'Same director ({name})', cast: 'Also stars {name}', themes: 'Similar themes: {keywords}' };
+const why = (key, params = {}) => ({ why_key: key, why_params: params,
+  why: BECAUSE_EN[key].replace(/\{(\w+)\}/g, (_, k) => [].concat(params[k]).join(', ')) });
 function because(m) {
   return [
-    { title: 'Heat', year: 1995, my_rating: 4.5, liked: true, poster_url: null, why: 'Similar crime drama you loved' },
-    { title: m.directors[0] === 'Denis Villeneuve' ? 'Sicario' : 'Collateral', year: 2004, my_rating: 4, liked: false, poster_url: null, why: m.directors[0] === 'Denis Villeneuve' ? 'Same director' : 'Same mood and pacing' },
-    { title: 'Memories of Murder', year: 2003, my_rating: 5, liked: true, poster_url: null, why: 'Fans of both overlap a lot' },
-    { title: 'Thief', year: 1981, my_rating: null, liked: false, my_vote: 2, poster_url: null, why: 'Same director (Michael Mann)' },
+    { title: L('Heat'), year: 1995, my_rating: 4.5, liked: true, poster_url: null, ...why('themes', { keywords: ['heist', 'neo-noir', 'los angeles'] }) },
+    { title: m.directors[0] === 'Denis Villeneuve' ? 'Sicario' : 'Collateral', year: 2004, my_rating: 4, liked: false, poster_url: null, ...(m.directors[0] === 'Denis Villeneuve' ? why('director', { name: 'Denis Villeneuve' }) : why('cast', { name: m.cast[0] })) },
+    { title: L('Memories of Murder'), year: 2003, my_rating: 5, liked: true, poster_url: null, ...why('fans') },
+    { title: L('Thief'), year: 1981, my_rating: null, liked: false, my_vote: 2, poster_url: null, ...why('director', { name: 'Michael Mann' }) },
   ];
 }
 
@@ -240,7 +334,7 @@ function profile() {
     keywords: [['heist', 9, 0.7], ['serial killer', 11, 0.6], ['time loop', 4, 0.55], ['neo-noir', 8, 0.5], ['dystopia', 12, 0.3], ['coming of age', 14, -0.15], ['superhero', 10, -0.6]]
       .map(([name, count, affinity]) => ({ name, count, affinity })),
     top_rated: ['Heat', 'Memories of Murder', 'Zodiac', 'Mulholland Drive', 'Sicario', 'The Handmaiden', 'Children of Men', 'Oldboy', 'Arrival', 'Prisoners', 'Spirited Away', 'Collateral']
-      .map((title, i) => ({ title, year: 1995 + i * 2, my_rating: i < 5 ? 5 : 4.5, liked: i < 3, poster_url: null })),
+      .map((title, i) => ({ title: L(title), year: 1995 + i * 2, my_rating: i < 5 ? 5 : 4.5, liked: i < 3, poster_url: null })),
     tags: TAG_STATS,
   };
 }
@@ -255,7 +349,7 @@ function feedback() {
     ['Zodiac', 2007, 91, 4, true, '2026-10-29', 'hit'],
     ['Knives Out', 2019, 68, 3.5, false, '2026-10-21', 'ok'],
     ['Moonlight', 2016, 63, null, false, null, 'pending'],
-  ].map(([title, year, predicted, my_rating, liked, watched_date, verdict]) => ({ title, year, poster_url: null, predicted, my_rating, liked, watched_date, verdict }));
+  ].map(([title, year, predicted, my_rating, liked, watched_date, verdict]) => ({ title: L(title), year, poster_url: null, predicted, my_rating, liked, watched_date, verdict }));
   return {
     outcomes,
     summary: NOFB ? { count: 0, rated: 0, hits: 0, misses: 0, mean_rating_of_picks: null, user_mean_rating: 3.4 }
@@ -276,7 +370,7 @@ const SAGA_TITLES = ['Dawn', 'Ember', 'The Long Night', 'Ashfall', 'Crown of Sal
 const SAGA_STATES = 'ssssssssssss' + 'm' + 'sssssss' + 'a' + 'sssss' + 'm' + 'a' + 'mm'; // 30: a few gaps late in the saga
 const COMPLETIONS = [
   { key: 'collection-9100', kind: 'collection', name: 'The Long Night Chronicles', score: 1.9, reason: 'You rated \u26054.4',
-    films: SAGA_TITLES.map((t, i) => [`The Long Night: ${t}`, 1988 + i, SAGA_STATES[i], 4000 + ((i * 3719) % 9000)]) },
+    films: SAGA_TITLES.map((t, i) => [ES ? `La larga noche: ${ES_SAGA[i]}` : `The Long Night: ${t}`, 1988 + i, SAGA_STATES[i], 4000 + ((i * 3719) % 9000)]) },
   { key: 'franchise-spider-man', kind: 'franchise', name: 'Spider-Man', score: 4.1, reason: 'New 2026', films: [
     ['Spider-Man', 2002, 's', 19000], ['Spider-Man 2', 2004, 'p', 15000], ['Spider-Man 3', 2007, 'a', 14000], ['The Amazing Spider-Man', 2012, 'm', 18000],
     ['The Amazing Spider-Man 2', 2014, 'm', 13000], ['Spider-Man: Homecoming', 2017, 'h', 21000], ['Spider-Man: Into the Spider-Verse', 2018, 's', 16000],
@@ -316,14 +410,21 @@ const LIST_W1 = ['Silent', 'Golden', 'Last', 'Broken', 'Distant', 'Crimson', 'Hi
 const LIST_W2 = ['River', 'Empire', 'Harvest', 'Letter', 'Garden', 'Frontier', 'Station', 'Season', 'Promise', 'Mirror', 'Voyage', 'Kingdom'];
 const POLL_W1 = ['Portrait', 'Song', 'Night', 'Memory', 'Chronicle', 'Story', 'Passion', 'Ballad', 'Journey', 'Shadow'];
 const POLL_W2 = ['a Stranger', 'the Sea', 'Two Rivers', 'Winter', 'the Valley', 'a Small Town', 'Lost Time', 'the Bridge', 'Smoke', 'the Moon'];
+// the same made-up titles in Spanish ("La cosecha dorada", "Retrato de un desconocido")
+const LIST_W1_ES = ['silenciosa', 'dorada', 'última', 'rota', 'lejana', 'carmesí', 'oculta', 'inquieta', 'ardiente', 'infinita', 'tranquila', 'salvaje'];
+const LIST_W2_ES = ['ribera', 'corona', 'cosecha', 'carta', 'huerta', 'frontera', 'estación', 'temporada', 'promesa', 'mirada', 'travesía', 'orilla'];
+const POLL_W1_ES = ['Retrato', 'Canción', 'Noche', 'Recuerdo', 'Crónica', 'Historia', 'Pasión', 'Balada', 'Viaje', 'Sombra'];
+const POLL_W2_ES = ['un desconocido', 'el mar', 'dos ríos', 'invierno', 'el valle', 'un pueblo pequeño', 'el tiempo perdido', 'el puente', 'humo', 'la luna'];
+const listTitle = (n) => (ES ? `La ${LIST_W2_ES[Math.floor(n / 12)]} ${LIST_W1_ES[n % 12]}` : `The ${LIST_W1[n % 12]} ${LIST_W2[Math.floor(n / 12)]}`);
+const pollTitle = (i) => (ES ? `${POLL_W1_ES[i % 10]} de ${POLL_W2_ES[Math.floor(i / 10)]}` : `${POLL_W1[i % 10]} of ${POLL_W2[Math.floor(i / 10)]}`);
 COMPLETIONS.push(
-  { key: 'list-oscars-best-picture', kind: 'list', name: 'Oscars \u00b7 Best Picture', score: 1.2, reason: 'Recent \u00b7 2025',
+  { key: 'list-oscars-best-picture', kind: 'list', name: ES ? 'Óscar \u00b7 Mejor película' : 'Oscars \u00b7 Best Picture', score: 1.2, reason: 'Recent 2025',
     films: Array.from({ length: 98 }, (_, i) => {
       const n = (i * 5) % 144;
-      return [`The ${LIST_W1[n % 12]} ${LIST_W2[Math.floor(n / 12)]}`, 1928 + i, i % 3 === 0 ? 's' : i % 11 === 5 ? 'a' : 'm', 400 + ((i * 2311) % 20000)];
+      return [listTitle(n), 1928 + i, i % 3 === 0 ? 's' : i % 11 === 5 ? 'a' : 'm', 400 + ((i * 2311) % 20000)];
     }) },
-  { key: 'list-sight-and-sound-2022', kind: 'list', name: 'Sight and Sound \u00b7 Greatest Films 2022', score: 0.7, reason: 'You rated \u26054.1',
-    films: Array.from({ length: 100 }, (_, i) => [`${POLL_W1[i % 10]} of ${POLL_W2[Math.floor(i / 10)]}`, 1924 + ((i * 37) % 98),
+  { key: 'list-sight-and-sound-2022', kind: 'list', name: ES ? 'Sight and Sound \u00b7 Las mejores películas de 2022' : 'Sight and Sound \u00b7 Greatest Films 2022', score: 0.7, reason: 'You rated \u26054.1',
+    films: Array.from({ length: 100 }, (_, i) => [pollTitle(i), 1924 + ((i * 37) % 98),
       i % 5 === 0 ? 's' : i % 13 === 4 ? 'a' : 'm', 200 + ((i * 1777) % 15000), i % 7 === 3 ? i : i + 1]) },
 );
 const PEOPLE_KINDS = new Set(['director', 'actor']);
@@ -332,8 +433,10 @@ const UNORDERED = new Set(['director', 'actor', 'list']);
 const blockOf = (kind) => (PEOPLE_KINDS.has(kind) ? 2 : kind === 'list' ? 1 : 0);
 // ?mock=1&sagas=N pads the list with generated trilogies up to N groups (long lists: the Screen layout's dots).
 for (let n = COMPLETIONS.length; n < Math.min(200, Number(params.get('sagas')) || 0); n += 1) {
-  COMPLETIONS.push({ key: `collection-${70000 + n}`, kind: 'collection', name: `Filler Saga ${n}`, score: 0.1, films: [
-    [`Filler ${n}: One`, 1990 + (n % 30), 's', 1000], [`Filler ${n}: Two`, 1992 + (n % 30), 'm', 800], [`Filler ${n}: Three`, 1994 + (n % 30), 'a', 600]] });
+  const [saga, one, two, three] = ES ? [`Saga de relleno ${n}`, 'Uno', 'Dos', 'Tres'] : [`Filler Saga ${n}`, 'One', 'Two', 'Three'];
+  const part = ES ? `Relleno ${n}` : `Filler ${n}`;
+  COMPLETIONS.push({ key: `collection-${70000 + n}`, kind: 'collection', name: saga, score: 0.1, films: [
+    [`${part}: ${one}`, 1990 + (n % 30), 's', 1000], [`${part}: ${two}`, 1992 + (n % 30), 'm', 800], [`${part}: ${three}`, 1994 + (n % 30), 'a', 600]] });
 }
 const hiddenGroups = new Set(FRESH ? [] : ['collection-295']);
 const completionMovies = [];
@@ -343,9 +446,11 @@ const localSeen = new Map();
 const sagaFilms = new Map(); // tmdb id -> [film, group]
 let nextSagaId = 800;
 for (const g of COMPLETIONS) {
-  g.films = g.films.map(([title, year, st, votes, rank], i) => {
+  g.name = L(g.name);
+  g.films = g.films.map(([en, year, st, votes, rank], i) => {
+    const title = L(en);
     const via = { s: 'letterboxd', p: 'server', h: 'here' }[st] || null;
-    const f = { tmdb_id: 90000 + nextSagaId, title, year, release_date: `${year}-06-01`, backdrop_url: null, state: via ? 'seen' : { a: 'available', m: 'missing' }[st], vote_count: votes, vote_average: 6.4 + ((i * 7) % 20) / 10, poster_url: null };
+    const f = { tmdb_id: 90000 + nextSagaId, title, en, year, release_date: `${year}-06-01`, backdrop_url: null, state: via ? 'seen' : { a: 'available', m: 'missing' }[st], vote_count: votes, vote_average: 6.4 + ((i * 7) % 20) / 10, poster_url: null };
     if (via) f.via = via;
     if (rank) f.rank = rank;
     if (via === 'here') localSeen.set(f.tmdb_id, 1);
@@ -353,7 +458,7 @@ for (const g of COMPLETIONS) {
     if (f.state === 'available') {
       f.movie_id = nextSagaId;
       completionMovies.push({ ...movies[1], id: nextSagaId, title, original_title: title, year, tmdb_id: f.tmdb_id, genres: ['Adventure'], directors: ['Saga Director'],
-        cast: ['Lead Actor'], overview: `Part of ${g.name}.`, tagline: null, match: 70 - (i % 5) * 4, on_watchlist: false, reasons: [] });
+        cast: ['Lead Actor'], overview: ES ? `Parte de ${g.name}.` : `Part of ${g.name}.`, tagline: null, match: 70 - (i % 5) * 4, on_watchlist: false, reasons: [] });
     }
     nextSagaId += 1;
     return f;
@@ -369,7 +474,7 @@ const seerrAccount = { connected: !seerrAuth, expired: seerrAuth === 'expired', 
 const seerrStates = new Map();
 for (const [title, state] of [['The Amazing Spider-Man', 'requested'], ['Spider-Man: Far From Home', 'requested'],
   ['The Matrix Resurrections', 'available'], ['Low Tide', 'requested']]) {
-  for (const [id, [f]] of sagaFilms) if (f.title === title) seerrStates.set(id, state);
+  for (const [id, [f]] of sagaFilms) if (f.en === title) seerrStates.set(id, state);
 }
 // The state a saga film has now, after the marks made here.
 function sagaState(f) {
@@ -377,17 +482,24 @@ function sagaState(f) {
   if (f.state !== 'seen' && (localSeen.has(f.tmdb_id) || seenSet.has(f.movie_id))) return 'seen';
   return f.state;
 }
+// The card's "why" as the API sends it: the English `reason` plus `reason_key` + `reason_params` (the UI words them).
 // 'New 2026' / 'Recent 2021' in the data: the API names the newest unseen film of that year in the reason and, for
 // filmographies, puts it first (even when it is not in the library).
+const CREASON = { 'In your library': 'library', 'Almost done': 'almost', 'You liked these': 'liked', 'You liked their films': 'liked.people' };
 function recency(g, films) {
   const m = /^(New|Recent) (\d{4})$/.exec(g.reason || '');
   const f = m && films.filter((x) => x.state !== 'seen' && x.year === Number(m[2])).pop();
-  if (!f) return { reason: g.reason ?? null, reason_film: null };
+  if (!f) {
+    const rated = /^You rated (\S+)$/.exec(g.reason || '');
+    return { reason: g.reason ?? null, reason_film: null, reason_key: rated ? 'rated' : CREASON[g.reason] || null,
+      reason_params: rated ? { stars: rated[1] } : {} };
+  }
   if (PEOPLE_KINDS.has(g.kind)) films.unshift(...films.splice(films.indexOf(f), 1));
-  return { reason: `${m[1]} ${m[2]}: ${f.title}`, reason_film: f.tmdb_id };
+  return { reason: `${m[1]} ${m[2]}: ${f.en}`, reason_film: f.tmdb_id, reason_key: m[1].toLowerCase(),
+    reason_params: { year: Number(m[2]), title: f.title, tmdb_id: f.tmdb_id } };
 }
 function completionGroup(g) {
-  let films = g.films.map(({ via, ...f }) => ({ ...f, state: sagaState({ via, ...f }) }));
+  let films = g.films.map(({ via, en, ...f }) => ({ ...f, state: sagaState({ via, ...f }) }));
   if (g.kind === 'list') { // as the API sends unordered groups: library, then missing by appeal, then seen newest first
     const appeal = (f) => Math.log1p(f.vote_count) * f.vote_average;
     films = [...films.filter((f) => f.state === 'available'), ...films.filter((f) => f.state === 'missing').sort((a, b) => appeal(b) - appeal(a)),
@@ -410,7 +522,8 @@ function sagaFilm(id) {
   return {
     tmdb_id: f.tmdb_id, movie_id: f.movie_id || null, title: f.title, original_title: f.title, year: f.year,
     runtime: 96 + (f.tmdb_id % 47), tagline: '', genres: ['Adventure', 'Action'], directors: ['Saga Director'], cast: ['Lead Actor', 'Second Lead'],
-    overview: `Part of ${g.name}. A chapter that picks up where the last one left off, with old friends, new enemies and more at stake.`,
+    overview: ES ? `Parte de ${g.name}. Un capítulo que retoma la historia donde la dejó el anterior, con viejos amigos, nuevos enemigos y más en juego.`
+      : `Part of ${g.name}. A chapter that picks up where the last one left off, with old friends, new enemies and more at stake.`,
     language: 'en', countries: ['US'], poster_url: null, backdrop_url: null, tmdb_rating: f.vote_average, tmdb_votes: f.vote_count,
     letterboxd_url: `https://letterboxd.com/tmdb/${f.tmdb_id}`, in_library: Boolean(f.movie_id), seen: via.length > 0, seen_via: via,
     can_unmark: via[0] === 'here', pushed: false, my_vote: via[0] === 'here' ? localSeen.get(f.tmdb_id) || null : null,
@@ -461,11 +574,12 @@ function sagaNext() {
 function sagaView(m, nexts) {
   const g = nexts?.get(m.id);
   const v = { ...view(m), groups: groupsOf(m.tmdb_id) };
-  return g ? { ...v, saga: g, reasons: [{ kind: 'trophy', text: `Next in ${g.name} · ${g.seen} of ${g.total} seen` }, ...v.reasons.slice(0, 3)] } : v;
+  return g ? { ...v, saga: g, reasons: [reason('trophy', 'saga.next', { name: g.name, seen: g.seen, total: g.total }), ...v.reasons.slice(0, 3)] } : v;
 }
 
 const ok = (body, status = 200) => ({ status, body });
-const err = (status, detail) => ({ status, body: { detail } });
+// errors as the API words them: English `detail`, plus a `code` (+ params) the UI words itself
+const err = (status, detail, code = null, params = {}) => ({ status, body: code ? { detail, code, params } : { detail } });
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export async function handle(method, path, p, body) {
@@ -477,17 +591,20 @@ export async function handle(method, path, p, body) {
   const comp = path.match(/^\/api\/completions\/([a-z0-9-]+)(\/hide)?$/);
   if (comp) {
     const g = COMPLETIONS.find((x) => x.key === comp[1]);
-    if (!g || FRESH) return err(404, 'Group not found');
+    if (!g || FRESH) return err(404, 'Group not found', 'group.notFound');
     if (!comp[2] && method === 'GET') return ok(completionGroup(g));
     if (comp[2] && method === 'POST') { hiddenGroups.add(g.key); return ok({ ok: true }); }
     if (comp[2] && method === 'DELETE') { hiddenGroups.delete(g.key); return ok({ ok: true }); }
   }
   if (route === 'GET /api/completions') return ok(completions(p));
-  if (route === 'GET /api/films/:id') { const f = sagaFilm(id); return f ? ok({ ...f, groups: groupsOf(f.tmdb_id) }) : err(404, 'Film not found'); }
+  if (route === 'GET /api/films/:id') { const f = sagaFilm(id); return f ? ok({ ...f, groups: groupsOf(f.tmdb_id) }) : err(404, 'Film not found', 'film.notFound'); }
   if (route === 'POST /api/films/:id/seen') {
     const f = sagaFilm(id);
-    if (!f) return err(404, 'Film not found');
-    if (!body.seen && f.seen && !f.can_unmark) return err(409, `Seen on ${f.seen_via[0] === 'letterboxd' ? 'Letterboxd' : 'Plex'}: it can only be unmarked there`);
+    if (!f) return err(404, 'Film not found', 'film.notFound');
+    if (!body.seen && f.seen && !f.can_unmark) {
+      const where = f.seen_via[0] === 'letterboxd' ? 'Letterboxd' : 'Plex';
+      return err(409, `Seen on ${where}: it can only be unmarked there`, 'seen.elsewhere', { where });
+    }
     if (body.seen) localSeen.set(id, body.vote ?? localSeen.get(id) ?? 0); else localSeen.delete(id);
     return ok({ ok: true });
   }
@@ -505,7 +622,8 @@ export async function handle(method, path, p, body) {
     return ok({ ok: true });
   }
   if (path.startsWith('/api/seerr/') && !seerrAccount.connected) {
-    return err(409, seerrAccount.expired ? 'Your Seerr session expired. Reconnect Seerr in Setup.' : 'Connect your Seerr account first (Setup)');
+    return seerrAccount.expired ? err(409, 'Your Seerr session expired. Reconnect Seerr in Setup.', 'seerr.expired')
+      : err(409, 'Connect your Seerr account first (Setup)', 'seerr.notConnected');
   }
   if (route === 'GET /api/seerr/statuses') {
     const ids = String(p.tmdb || '').split(',').map(Number).filter((x) => x > 0);
@@ -525,7 +643,7 @@ export async function handle(method, path, p, body) {
           media_server: 'jellyfin',
           letterboxd: { ...lbState, last_sync: lbReady ? new Date(Date.now() - 2 * 3600e3).toISOString() : null },
           plex: { connected: false, account: null, movies: 0, last_sync: null, servers: [], seen_pushed: null },
-          jellyfin: { configured: true, connected: true, account: 'movie-fan', movies: 1696, last_sync: synced ? new Date(Date.now() - 2 * 3600e3).toISOString() : null, seen_pushed: null, problem: null },
+          jellyfin: { configured: true, connected: true, account: L('movie-fan'), movies: 1696, last_sync: synced ? new Date(Date.now() - 2 * 3600e3).toISOString() : null, seen_pushed: null, problem: null },
           tmdb: { configured: true, enriched: 1400, pending: 12 },
           sync: sync.running && sync.stage === 'plex' ? { ...sync, stage: 'jellyfin' } : sync,
           ready: lbReady && synced,
@@ -536,7 +654,7 @@ export async function handle(method, path, p, body) {
         media_server: 'plex',
         letterboxd: { ...lbState, last_sync: lbReady ? new Date(Date.now() - 2 * 3600e3).toISOString() : null },
         plex: plexState.connected
-          ? { connected: true, account: 'movie-fan', movies: 1696, last_sync: synced ? new Date(Date.now() - 2 * 3600e3).toISOString() : null, servers }
+          ? { connected: true, account: L('movie-fan'), movies: 1696, last_sync: synced ? new Date(Date.now() - 2 * 3600e3).toISOString() : null, servers }
           : { connected: false, account: null, movies: 0, last_sync: null, servers: [] },
         tmdb: { configured: !FRESH, enriched: 1400, pending: 12 },
         sync,
@@ -563,7 +681,7 @@ export async function handle(method, path, p, body) {
       const nexts = sagaNext();
       const sagaFilms = filter(p, completionMovies).filter((m) => nexts.has(m.id));
       const list = (p.complete ? sagaFilms : filter(p)).filter((m) => !exclude.includes(m.id)).sort(SORTERS.match);
-      if (!list.length) return err(404, 'No film matches these filters.');
+      if (!list.length) return err(404, 'Nothing matches these filters', 'pick.none');
       const top = list.slice(0, 6);
       const pick = top[Math.floor(Math.random() * top.length)];
       const shown = p.complete ? nexts : null;
@@ -572,7 +690,7 @@ export async function handle(method, path, p, body) {
     }
     case 'GET /api/movies/:id': {
       const m = movies.find((x) => x.id === id) || completionMovies.find((x) => x.id === id);
-      if (!m) return err(404, 'Movie not found.');
+      if (!m) return err(404, 'Movie not found', 'movie.notFound');
       return ok({ ...view(m), keywords: ['neo-noir', 'night', 'los angeles', 'loneliness', 'heist'], because: because(m), groups: groupsOf(m.tmdb_id) });
     }
     case 'POST /api/movies/:id/dismiss':
@@ -586,7 +704,7 @@ export async function handle(method, path, p, body) {
       if (body.vote) votes.set(id, body.vote); else votes.delete(id);
       return ok({ ok: true });
     case 'POST /api/movies/:id/seen':
-      if (![...movies, ...triage, ...completionMovies].some((x) => x.id === id)) return err(404, 'Movie not found.');
+      if (![...movies, ...triage, ...completionMovies].some((x) => x.id === id)) return err(404, 'Movie not found', 'movie.notFound');
       if (body.vote !== undefined && body.vote !== null && ![-1, 0, 1, 2].includes(body.vote)) return err(422, 'Invalid vote');
       if (body.seen) { if (!seenSet.has(id)) seenAt.set(id, Date.now()); seenSet.add(id); } else { seenSet.delete(id); seenAt.delete(id); }
       if (body.vote !== undefined && body.vote !== null) { if (body.vote) votes.set(id, body.vote); else votes.delete(id); }
@@ -602,13 +720,13 @@ export async function handle(method, path, p, body) {
       return ok({ items: list.slice(offset, offset + limit).map(view), total: list.length });
     }
     case 'GET /api/feedback':
-      return FRESH ? err(409, 'Import your Letterboxd history first.') : ok(feedback());
+      return FRESH ? err(409, 'Import your Letterboxd history first.', 'lb.missing') : ok(feedback());
     case 'GET /api/me':
       return ok({ auth: false, name: null });
     case 'GET /api/chat/status':
       return ok({
         enabled: !NOCHAT, provider: FREECHAT ? 'openai' : 'anthropic', model: FREECHAT ? 'openai/gpt-oss-120b' : 'claude-sonnet-5',
-        problem: NOCHAT ? 'No API key is configured (ANTHROPIC_API_KEY).' : null,
+        problem: NOCHAT ? 'No API key is configured (ANTHROPIC_API_KEY).' : null, problem_code: NOCHAT ? 'ai.noKey' : null, problem_params: {},
         usage: params.get('mock') === 'budget'
           ? { month: '2026-11', spent_usd: 2.01, budget_usd: 2, questions: 61, tokens: 912000, model: 'claude-sonnet-5', exhausted: true }
           : FREECHAT
@@ -616,7 +734,7 @@ export async function handle(method, path, p, body) {
             : { month: '2026-11', spent_usd: 0.0123, budget_usd: 2, questions: 14, tokens: 23400, model: 'claude-sonnet-5', exhausted: false },
       });
     case 'GET /api/profile':
-      return lbState.watched ? ok(profile()) : err(409, 'Import your Letterboxd history first.');
+      return lbState.watched ? ok(profile()) : err(409, 'Import your Letterboxd history first.', 'lb.missing');
     case 'POST /api/plex/pin':
       plexState.pinPolls = 0;
       return ok({ id: 555, code: 'MN4K', auth_url: 'about:blank#mock-plex-sign-in' });
@@ -635,11 +753,11 @@ export async function handle(method, path, p, body) {
       return ok({ ok: true });
     }
     case 'GET /api/players':
-      return ok(JELLYFIN ? [] : [{ id: 'tv1', name: 'Living Room TV', product: 'Chromecast' }]);
+      return ok(JELLYFIN ? [] : [{ id: 'tv1', name: L('Living Room TV'), product: 'Chromecast' }]);
     case 'POST /api/play':
       return ok(null, 204);
     case 'POST /api/sync':
-      if (syncInfo().running) return err(409, 'A sync is already running.');
+      if (syncInfo().running) return err(409, 'A sync is already running', 'sync.running');
       syncStarted = Date.now();
       return ok({ started: true }, 202);
     case 'PUT /api/letterboxd/user':
@@ -665,30 +783,35 @@ export async function* chatStream(messages, signal) {
   const ask = (messages[messages.length - 1]?.content || '').toLowerCase();
   await sleep(500, signal);
   if (ask.includes('error')) {
-    yield { event: 'text', data: { delta: 'Let me look' } };
-    yield { event: 'error', data: { detail: 'The assistant stopped unexpectedly. Try again in a moment.' } };
+    yield { event: 'text', data: { delta: ES ? 'Déjame mirar' : 'Let me look' } };
+    yield { event: 'error', data: { detail: 'The AI service had a problem. Try again shortly.', code: 'ai.problem', params: {} } };
     yield { event: 'done', data: {} };
     return;
   }
-  if (!NOCOMPLETE && /saga|series|franchise|finish|continue|complet/.test(ask)) {
+  if (!NOCOMPLETE && /saga|series|serie|franchise|franquicia|finish|continue|contin|complet|termin/.test(ask)) {
     yield* sagaChat(signal);
     return;
   }
-  const mood = ask.includes('tense') ? 'tense' : ask.includes('comfort') ? 'light' : ask.includes('watchlist') ? 'wl' : null;
+  const mood = /tense|tens[oa]/.test(ask) ? 'tense' : /comfort|reconfort/.test(ask) ? 'light' : /watchlist|mi lista/.test(ask) ? 'wl' : null;
   yield { event: 'tool', data: { name: 'search_library', label: 'Searching your library…' } };
   await sleep(1100, signal);
   const pool = movies.filter((m) => !isDismissed(m)
     && (mood === 'wl' ? m.on_watchlist : mood ? MOODS.find((x) => x.id === mood).test(m) : true)
-    && (!ask.includes('under 2 hours') || (m.runtime && m.runtime < 120)));
+    && (!/under 2 hours|menos de 2 horas/.test(ask) || (m.runtime && m.runtime < 120)));
   const picks = (pool.length >= 3 ? pool : movies).slice(0, 3);
   yield { event: 'tool', data: { name: 'check_taste', label: 'Checking it against your taste…' } };
   await sleep(900, signal);
-  const intro = `Here is what I would put on tonight.\n\n**${picks[0].title}** is the safest bet: ${picks[0].genres[0].toLowerCase()} done with real confidence, and it fits the time you have.\n\nTwo more worth a look:\n- **${picks[1].title}** if you want something with a different pace\n- **${picks[2].title}** if you are in the mood to be surprised\n\nTell me if you would like something shorter, older or lighter.`;
+  const intro = ES
+    ? `Esto es lo que pondría esta noche.\n\n**${picks[0].title}** es la apuesta más segura: está muy bien hecha y cabe en el tiempo que tienes.\n\nOtras dos que merecen la pena:\n- **${picks[1].title}** si te apetece otro ritmo\n- **${picks[2].title}** si quieres que te sorprendan\n\nDime si prefieres algo más corto, más antiguo o más ligero.`
+    : `Here is what I would put on tonight.\n\n**${picks[0].title}** is the safest bet: ${picks[0].genres[0].toLowerCase()} done with real confidence, and it fits the time you have.\n\nTwo more worth a look:\n- **${picks[1].title}** if you want something with a different pace\n- **${picks[2].title}** if you are in the mood to be surprised\n\nTell me if you would like something shorter, older or lighter.`;
+  const PITCHES = ES
+    ? ['Una peli limpia y segura que premia tu gusto por las tramas bien atadas.', 'Más lenta y más rara, con un final del que querrás hablar.', 'Un comodín que se sale un poco de tus gustos de siempre.']
+    : ['A clean, confident watch that rewards your love of tight plots.', 'Slower and stranger, with an ending you will want to talk about.', 'A wildcard that sits just outside your usual taste.'];
   for (const word of intro.match(/\S+\s*|\n+/g)) {
     yield { event: 'text', data: { delta: word } };
     await sleep(28, signal);
-    if (word.includes('Two')) {
-      yield { event: 'movies', data: { items: picks.map((m, i) => ({ ...view(m), pitch: ['A clean, confident watch that rewards your love of tight plots.', 'Slower and stranger, with an ending you will want to talk about.', 'A wildcard that sits just outside your usual taste.'][i] })) } };
+    if (word.includes(ES ? 'Otras' : 'Two')) {
+      yield { event: 'movies', data: { items: picks.map((m, i) => ({ ...view(m), pitch: PITCHES[i] })) } };
     }
   }
   yield { event: 'done', data: {} };
@@ -701,16 +824,21 @@ async function* sagaChat(signal) {
   const nexts = sagaNext();
   const picks = [...nexts.keys()].slice(0, 3).map((id) => completionMovies.find((m) => m.id === id)).filter(Boolean);
   if (!picks.length) {
-    yield { event: 'text', data: { delta: 'You have no saga in progress with its next film in your library right now.' } };
+    yield { event: 'text', data: { delta: ES ? 'Ahora mismo no tienes ninguna saga empezada con la siguiente peli en tu biblioteca.' : 'You have no saga in progress with its next film in your library right now.' } };
     yield { event: 'done', data: {} };
     return;
   }
-  const line = (m) => { const g = nexts.get(m.id); return `**${m.title}** continues ${g.name} (${g.seen} of ${g.total} seen)`; };
-  const intro = `You have a few sagas waiting.\n\n${line(picks[0])}, and it is already in your library.${picks.length > 1 ? `\n\nAlso ready to go:\n${picks.slice(1).map((m) => `- ${line(m)}`).join('\n')}` : ''}`;
+  const line = (m) => {
+    const g = nexts.get(m.id);
+    return ES ? `**${m.title}** sigue ${g.name} (${g.seen} de ${g.total} vistas)` : `**${m.title}** continues ${g.name} (${g.seen} of ${g.total} seen)`;
+  };
+  const intro = ES
+    ? `Tienes unas cuantas sagas esperando.\n\n${line(picks[0])}, y ya está en tu biblioteca.${picks.length > 1 ? `\n\nTambién listas para ver:\n${picks.slice(1).map((m) => `- ${line(m)}`).join('\n')}` : ''}`
+    : `You have a few sagas waiting.\n\n${line(picks[0])}, and it is already in your library.${picks.length > 1 ? `\n\nAlso ready to go:\n${picks.slice(1).map((m) => `- ${line(m)}`).join('\n')}` : ''}`;
   for (const word of intro.match(/\S+\s*|\n+/g)) {
     yield { event: 'text', data: { delta: word } };
     await sleep(24, signal);
   }
-  yield { event: 'movies', data: { items: picks.map((m) => ({ ...sagaView(m, nexts), pitch: `The next one in ${nexts.get(m.id).name}, so the story picks up where you left it.` })) } };
+  yield { event: 'movies', data: { items: picks.map((m) => ({ ...sagaView(m, nexts), pitch: ES ? `La siguiente de ${nexts.get(m.id).name}: la historia sigue donde la dejaste.` : `The next one in ${nexts.get(m.id).name}, so the story picks up where you left it.` })) } };
   yield { event: 'done', data: {} };
 }

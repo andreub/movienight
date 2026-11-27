@@ -1,19 +1,21 @@
 // Ask: chat with the configured AI model, which recommends from the media server's library. Text is only ever added as text nodes.
 import { api, getChatStatus } from '../api.js';
-import { h, fill, icon, poster, runtime, matchStub } from '../dom.js';
+import { h, fill, icon, poster, runtime, matchStub, fixed } from '../dom.js';
 import { chat, subscribeChat, sendChat, stopChat, clearChat, retryChat, stripShownNote } from '../chat.js';
 import { playControl } from '../play.js';
 import { endsAt } from '../clock.js';
 import { go } from '../state.js';
 import { serverName } from '../status.js';
+import { t, lang } from '../i18n.js';
+import { errorText } from '../labels.js';
 
-export const title = 'Ask';
+export const title = t('tab.ask');
 
 const STARTERS = [
-  'Something tense under 2 hours',
-  'A comfort rewatch',
-  'Surprise me with a hidden gem',
-  'Best thing on my watchlist',
+  t('ask.starter.tense'),
+  t('ask.starter.comfort'),
+  t('ask.starter.gem'),
+  t('ask.starter.watchlist'),
 ];
 
 // ---- safe rich text: paragraphs, line breaks, simple lists and **bold**, built as DOM nodes ----
@@ -53,20 +55,20 @@ export function mount(root) {
   let stick = true; // follow the stream unless the user scrolled up
   let live = null; // refs for the assistant message currently streaming
 
-  const newChat = h('button', { type: 'button', class: 'btn btn--ghost btn--sm', onclick: () => { clearChat(); input.focus(); } }, icon('plus'), 'New chat');
+  const newChat = h('button', { type: 'button', class: 'btn btn--ghost btn--sm', onclick: () => { clearChat(); input.focus(); } }, icon('plus'), t('ask.new'));
   const usageLine = h('p', { class: 'ask__usage', hidden: true });
   const lede = h('div', { class: 'ask__empty' });
-  const thread = h('div', { class: 'thread', role: 'log', 'aria-label': 'Conversation', 'aria-live': 'polite' });
+  const thread = h('div', { class: 'thread', role: 'log', 'aria-label': t('ask.thread'), 'aria-live': 'polite' });
   const input = h('textarea', {
     id: 'ask-input', class: 'composer__input', rows: '1', maxlength: '4000', enterkeyhint: 'send',
-    placeholder: 'Describe tonight', 'aria-label': 'Message',
+    placeholder: t('ask.placeholder'), 'aria-label': t('ask.message'),
   });
-  const sendBtn = h('button', { type: 'submit', class: 'composer__btn', 'aria-label': 'Send' }, icon('send'));
-  const stopBtn = h('button', { type: 'button', class: 'composer__btn composer__btn--stop', 'aria-label': 'Stop', hidden: true, onclick: stopChat }, icon('stop'));
+  const sendBtn = h('button', { type: 'submit', class: 'composer__btn', 'aria-label': t('ask.send') }, icon('send'));
+  const stopBtn = h('button', { type: 'button', class: 'composer__btn composer__btn--stop', 'aria-label': t('ask.stop'), hidden: true, onclick: stopChat }, icon('stop'));
   const composer = h('form', { class: 'composer', hidden: true },
     h('div', { class: 'composer__inner' }, input, sendBtn, stopBtn));
   const page = h('div', { class: 'ask' },
-    h('div', { class: 'ask__top' }, h('h1', { class: 'page-title', text: 'Ask' }), newChat),
+    h('div', { class: 'ask__top' }, h('h1', { class: 'page-title', text: t('tab.ask') }), newChat),
     usageLine, lede, thread, composer);
   root.append(page);
 
@@ -128,7 +130,7 @@ export function mount(root) {
         poster(m, { cls: 'pickcard__poster' }),
         h('span', { class: 'pickcard__body' },
           h('span', { class: 'pickcard__title', text: m.title }),
-          h('span', { class: 'pickcard__meta' }, meta, m.runtime ? ', ' : '', endsAt(m.runtime, { prefix: 'ends ' })),
+          h('span', { class: 'pickcard__meta' }, meta, m.runtime ? ', ' : '', endsAt(m.runtime, { prefix: t('clock.ends') })),
           m.pitch ? h('span', { class: 'pickcard__pitch', text: m.pitch }) : null),
         matchStub(m.match, { size: 'sm' })),
       h('div', { class: 'pickcard__foot' }, playControl(m, 'pickcard__play')));
@@ -137,17 +139,17 @@ export function mount(root) {
   function bulbs(label) {
     return h('div', { class: 'working' },
       h('span', { class: 'bulbs', 'aria-hidden': 'true' }, h('i'), h('i'), h('i')),
-      h('span', { class: 'working__label', text: label || 'Thinking…' }));
+      h('span', { class: 'working__label', text: label || t('ask.thinking') }));
   }
 
   function botMessage(m, isLast) {
     const text = h('div', { class: 'msg__text' }, richText(stripShownNote(m.text)));
-    const cards = h('ul', { class: 'picks', 'aria-label': 'Recommended films' }, m.movies.map(card));
+    const cards = h('ul', { class: 'picks', 'aria-label': t('ask.picks') }, m.movies.map(card));
     cards.hidden = !m.movies.length;
     const status = h('div', { class: 'msg__status' });
     const error = h('div', { class: 'chat-error', role: 'alert', hidden: !m.error },
       icon('alert'), h('span', { text: m.error || '' }),
-      isLast && !chat.busy ? h('button', { type: 'button', class: 'linkbtn', onclick: retryChat }, 'Try again') : null);
+      isLast && !chat.busy ? h('button', { type: 'button', class: 'linkbtn', onclick: retryChat }, t('common.tryAgain')) : null);
     const el = h('article', { class: 'msg msg--bot' }, text, cards, status, error);
     if (isLast) live = { m, text, cards, status, error };
     return el;
@@ -214,25 +216,25 @@ export function mount(root) {
 
   // ---- empty state ----
   fill(lede,
-    h('p', { class: 'ask__lede', text: 'What kind of night is it?' }),
-    h('p', { class: 'help', text: `Describe the mood, the time you have or who is watching. I will pick from what is on your ${serverName()} ${serverName() === 'Plex' ? 'servers' : 'server'}.` }),
+    h('p', { class: 'ask__lede', text: t('ask.lede') }),
+    h('p', { class: 'help', text: serverName() === 'Plex' ? t('ask.help.servers', { server: serverName() }) : t('ask.help.server', { server: serverName() }) }),
     h('div', { class: 'starters' }, STARTERS.map((s) => h('button', { type: 'button', class: 'chip', onclick: () => send(s) }, s))));
 
   // ---- usage (this month's estimated spend) ----
-  const money = (n) => `$${Number(n).toFixed(2)}`;
-  const count = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n));
+  const money = (n) => new Intl.NumberFormat(lang, { style: 'currency', currency: 'USD' }).format(Number(n));
+  const count = (n) => (n >= 1e6 ? `${fixed(n / 1e6)}M` : n >= 1e3 ? `${fixed(n / 1e3)}K` : String(n));
   let provider = null;
   function paintUsage(u) {
     if (!alive || !u) return;
-    const parts = [`${u.questions} question${u.questions === 1 ? '' : 's'}`];
-    if (u.tokens) parts.push(`${count(u.tokens)} tokens`);
+    const parts = [t('ask.questions', { n: u.questions })];
+    if (u.tokens) parts.push(t('ask.tokens', { n: count(u.tokens) }));
     // a free OpenAI-compatible tier costs nothing: show what it used, not "$0.00 of $2.00"
-    if (!(provider === 'openai' && !u.spent_usd)) parts.unshift(`${money(u.spent_usd)}${u.budget_usd ? ` of ${money(u.budget_usd)}` : ''}`);
+    if (!(provider === 'openai' && !u.spent_usd)) parts.unshift(u.budget_usd ? t('ask.spentOf', { spent: money(u.spent_usd), budget: money(u.budget_usd) }) : money(u.spent_usd));
     usageLine.hidden = false;
     usageLine.classList.toggle('is-exhausted', Boolean(u.exhausted));
     usageLine.textContent = u.exhausted
-      ? `Monthly budget used (${money(u.spent_usd)} of ${money(u.budget_usd)}). Ask comes back on the 1st.`
-      : `This month: ${parts.join(' \u00b7 ')}`;
+      ? t('ask.exhausted', { spent: money(u.spent_usd), budget: money(u.budget_usd) })
+      : t('ask.thisMonth', { parts: parts.join(' \u00b7 ') });
   }
   const refreshUsage = () => api.chatStatus().then((c) => paintUsage(c.usage)).catch(() => {});
 
@@ -244,13 +246,13 @@ export function mount(root) {
     provider = c.provider || null;
     if (!c.enabled) {
       newChat.hidden = true;
-      fill(page, h('h1', { class: 'page-title', text: 'Ask' }),
+      fill(page, h('h1', { class: 'page-title', text: t('tab.ask') }),
         h('div', { class: 'state' },
           icon('info', 'state__icon state__icon--calm'),
-          h('p', { class: 'state__title', text: 'AI chat is off' }),
-          h('p', { class: 'state__text', text: 'The server has no AI provider configured, so Ask is switched off. Everything else works as usual.' }),
-          c.problem ? h('p', { class: 'state__text help', text: c.problem }) : null,
-          h('a', { class: 'btn btn--ghost', href: '#/tonight' }, "See tonight's pick")));
+          h('p', { class: 'state__title', text: t('ask.off') }),
+          h('p', { class: 'state__text', text: t('ask.offText') }),
+          c.problem ? h('p', { class: 'state__text help', text: errorText({ code: c.problem_code, params: c.problem_params, detail: c.problem }) }) : null,
+          h('a', { class: 'btn btn--ghost', href: '#/tonight' }, t('setup.seePick'))));
       return;
     }
     composer.hidden = false;

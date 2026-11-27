@@ -1,6 +1,7 @@
 {
  "key": "oscars-best-picture",
  "name": "Oscars · Best Picture",
+ "names": {"es-ES": "Óscar · Mejor película"},
  "ordered": false,
  "films": [
   {

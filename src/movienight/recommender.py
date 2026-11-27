@@ -198,7 +198,7 @@ def build_profile(history: list[Hist], now: datetime | None = None, signal=None)
                     st.rn += 1
                     st.rsum += h.rating
                 if st.best is None or s > st.best[0]:
-                    st.best = (s, h.title, h.rating, h.liked, h.vote if h.synthetic else 0)
+                    st.best = (s, h.title, h.rating, h.liked, h.vote if h.synthetic else 0, h.tmdb_id)
     for t, table in p.stats.items():
         for st in table.values():
             st.aff = st.ssum / (st.w + SHRINK[t])
@@ -457,34 +457,87 @@ def half_stars(x: float) -> float:
     return max(0.5, min(5.0, round(x * 2) / 2))
 
 
-def _rating_phrase(h: Hist) -> str:
-    if h.rating is not None:
-        return f" (you gave it {stars(h.rating)})"
-    if h.liked:
-        return " (you liked it)"
-    return ""
+# Reasons are {kind, key, params, text}: `key` + `params` let the client word them in its language (the web UI's
+# catalogues hold one `reason.<key>` entry per template below); `text` is the English wording, for the chat
+# assistant and older clients. Titles in `params` come from `title_of(tmdb_id, fallback)` (the UI language's TMDB
+# title, see i18n.py); numbers stay numbers, so the client formats them for its locale.
+REASON_EN = {
+    "tag.near": "Close to {title}, from your {tag} films",
+    "tag.like": "Like the films you tagged {tag}",
+    "watchlist": "On your Letterboxd watchlist",
+    "similar.rated": "Fans of {title} (you gave it {stars}) also love this",
+    "similar.liked": "Fans of {title} (you liked it) also love this",
+    "similar": "Fans of {title} also love this",
+    "director.rated": "You rated {n} films by {name} {stars} on average",
+    "director.watched": "You've watched {n} films by {name}",
+    "director.from.rated": "From {name}, who directed {title} (you gave it {stars})",
+    "director.from.loved": "From {name}, who directed {title} (you loved it)",
+    "director.from.liked": "From {name}, who directed {title} (you liked it)",
+    "director.from": "From {name}, who directed {title}",
+    "cast.enjoyed": "You've enjoyed {n} films with {name}",
+    "cast.loved": "Stars {name}, who you loved in {title}",
+    "cast.liked": "Stars {name}, who you liked in {title}",
+    "genre.top": "{genre} is one of your top genres",
+    "genre.enjoy": "You tend to enjoy {genre} films",
+    "keywords": "Themes you like: {keywords}",
+    "decade": "You tend to enjoy films from the {decade}s",
+    "acclaimed": "Acclaimed: {rating} on TMDB ({votes} votes)",
+    "rated": "Well rated ({rating}/10)",
+    "fresh": "Recently added to {server}",
+    "similar.vote.loved": "Similar to {title}, which you loved",
+    "similar.vote.liked": "Similar to {title}, which you gave a \U0001F44D",
+    "genre.pick": "A {genre} pick from your library",
+    "library": "From your {server} library",
+}
 
 
-def reasons_for(c: Cand, prof: Profile, limit: int = 4, server: str = "Plex") -> list[dict]:
+def _en_param(k: str, v) -> str:
+    if k == "keywords":
+        return ", ".join(v)
+    if k == "rating":
+        return f"{v:.1f}"
+    if k == "votes":
+        return _short_count(v)
+    return str(v)
+
+
+def reason(kind: str, key: str, **params) -> dict:
+    text = REASON_EN[key].format(**{k: _en_param(k, v) for k, v in params.items()})
+    return {"kind": kind, "key": key, "params": params, "text": text}
+
+
+def _plain_title(tmdb_id, fallback):
+    return fallback
+
+
+def reasons_for(c: Cand, prof: Profile, limit: int = 4, server: str = "Plex", title_of=_plain_title) -> list[dict]:
     items: list[tuple[float, dict]] = []
 
-    def add(value, kind, text):
-        items.append((value, {"kind": kind, "text": text}))
+    def add(value, kind, key, **params):
+        items.append((value, reason(kind, key, **params)))
+
+    def title(h):
+        return title_of(h.tmdb_id, h.title)
 
     comps = c.comps
     v, detail = comps.get("tag", (0, None))
     if detail and v > MIN_REASON:      # a tag filter is on: say which tagged film this one is close to
         near = closest_in_group(c, detail["films"])
         if near is not None:
-            add(v + 1.0, "tag", f"Close to {near.title}, from your {detail['tags'].get(near.key, detail['label'])} films")
+            add(v + 1.0, "tag", "tag.near", title=title(near), tag=detail["tags"].get(near.key, detail["label"]))
         else:
-            add(v + 1.0, "tag", f"Like the films you tagged {detail['label']}")
+            add(v + 1.0, "tag", "tag.like", tag=detail["label"])
     if comps.get("watchlist", (0, 0))[0] > 0:
-        add(comps["watchlist"][0] + 0.2, "watchlist", "On your Letterboxd watchlist")
+        add(comps["watchlist"][0] + 0.2, "watchlist", "watchlist")
 
     v, detail = comps.get("similar", (0, None))
     if v > MIN_REASON and detail is not None:
-        add(v, "similar", f"Fans of {detail.title} {_rating_phrase(detail).strip()} also love this".replace("  ", " "))
+        if detail.rating is not None:
+            add(v, "similar", "similar.rated", title=title(detail), stars=stars(detail.rating))
+        elif detail.liked:
+            add(v, "similar", "similar.liked", title=title(detail))
+        else:
+            add(v, "similar", "similar", title=title(detail))
 
     v, detail = comps.get("director", (0, []))
     if v > MIN_REASON and detail:
@@ -492,23 +545,30 @@ def reasons_for(c: Cand, prof: Profile, limit: int = 4, server: str = "Plex") ->
         st = prof.stats["director"][name]
         mean = mean_rating_of(st)
         if st.n >= 2 and mean is not None:
-            add(v, "director", f"You rated {st.n} films by {name} {stars(half_stars(mean))} on average")
+            add(v, "director", "director.rated", n=st.n, name=name, stars=stars(half_stars(mean)))
         elif st.n >= 2:
-            add(v, "director", f"You've watched {st.n} films by {name}")
+            add(v, "director", "director.watched", n=st.n, name=name)
         elif st.best:
-            _, title, rating, liked, vote = st.best
-            tail = (f" (you gave it {stars(rating)})" if rating is not None else " (you loved it)" if vote >= LOVE
-                    else " (you liked it)" if liked or vote > 0 else "")
-            add(v, "director", f"From {name}, who directed {title}{tail}")
+            _, best_title, rating, liked, vote, tid = st.best
+            t = title_of(tid, best_title)
+            if rating is not None:
+                add(v, "director", "director.from.rated", name=name, title=t, stars=stars(rating))
+            elif vote >= LOVE:
+                add(v, "director", "director.from.loved", name=name, title=t)
+            elif liked or vote > 0:
+                add(v, "director", "director.from.liked", name=name, title=t)
+            else:
+                add(v, "director", "director.from", name=name, title=t)
 
     v, detail = comps.get("cast", (0, []))
     if v > MIN_REASON and detail:
         name = detail[0][0]
         st = prof.stats["cast"][name]
         if st.n >= 2:
-            add(v, "cast", f"You've enjoyed {st.n} films with {name}")
+            add(v, "cast", "cast.enjoyed", n=st.n, name=name)
         elif st.best:
-            add(v, "cast", f"Stars {name}, who you {'loved' if st.best[4] >= LOVE else 'liked'} in {st.best[1]}")
+            add(v, "cast", "cast.loved" if st.best[4] >= LOVE else "cast.liked", name=name,
+                title=title_of(st.best[5], st.best[1]))
 
     v, detail = comps.get("genre", (0, []))
     if v > MIN_REASON and detail:
@@ -516,47 +576,47 @@ def reasons_for(c: Cand, prof: Profile, limit: int = 4, server: str = "Plex") ->
         if liked_genres:
             name = max(liked_genres, key=lambda x: x[1])[0]
             if prof.rank["genre"].get(name, 99) < 3:
-                add(v, "genre", f"{name} is one of your top genres")
+                add(v, "genre", "genre.top", genre=name)
             else:
-                add(v, "genre", f"You tend to enjoy {name} films")
+                add(v, "genre", "genre.enjoy", genre=name)
 
     v, detail = comps.get("keyword", (0, []))
     if v > MIN_REASON and detail:
         names = [n for n, a in detail if a > 0][:3]
         if names:
-            add(v, "keyword", "Themes you like: " + ", ".join(names))
+            add(v, "keyword", "keywords", keywords=names)
 
     v, detail = comps.get("decade", (0, []))
     if v > MIN_REASON and detail and detail[0][1] > 0:
-        add(v, "decade", f"You tend to enjoy films from the {detail[0][0]}s")
+        add(v, "decade", "decade", decade=int(detail[0][0]))
 
     v, _ = comps.get("acclaimed", (0, None))
     if v > 0.03:
         r = c.meta.get("vote_average")
         if r and (c.meta.get("vote_count") or 0) >= 200:
-            add(v, "acclaimed", f"Acclaimed: {r:.1f} on TMDB ({_short_count(c.meta['vote_count'])} votes)")
+            add(v, "acclaimed", "acclaimed", rating=float(r), votes=int(c.meta["vote_count"]))
         elif c.meta.get("plex_rating"):
-            add(v, "acclaimed", f"Well rated ({c.meta['plex_rating']:.1f}/10)")
+            add(v, "acclaimed", "rated", rating=float(c.meta["plex_rating"]))
 
     v, _ = comps.get("fresh", (0, None))
     if v > 0.01:
-        add(v, "fresh", f"Recently added to {server}")
+        add(v, "fresh", "fresh", server=server)
 
     if c.vote is None:
         liked_vote = _similar_vote(c, prof)
         if liked_vote and liked_vote.vote >= LOVE:
-            add(0.06, "similar", f"Similar to {liked_vote.title}, which you loved")
+            add(0.06, "similar", "similar.vote.loved", title=title(liked_vote))
         elif liked_vote:
-            add(0.04, "similar", f"Similar to {liked_vote.title}, which you gave a \U0001F44D")
+            add(0.04, "similar", "similar.vote.liked", title=title(liked_vote))
 
     items.sort(key=lambda x: -x[0])
     out = [r for _, r in items[:limit]]
     if not out:
         genres = c.meta.get("genres") or []
         if genres:
-            out = [{"kind": "genre", "text": f"A {genres[0]} pick from your library"}]
+            out = [reason("genre", "genre.pick", genre=genres[0])]
         else:
-            out = [{"kind": "fresh", "text": f"From your {server} library"}]
+            out = [reason("fresh", "library", server=server)]
     return out
 
 
@@ -579,8 +639,17 @@ def _short_count(n: int) -> str:
 
 # --------------------------------------------------------------------------- "because"
 
-def because(c: Cand, history: list[Hist], prof: Profile, limit: int = 6) -> list[dict]:
-    """Films from the user's history (and liked / loved library films) that explain this recommendation."""
+BECAUSE_EN = {
+    "fans": "Fans of this also love it",
+    "director": "Same director ({name})",
+    "cast": "Also stars {name}",
+    "themes": "Similar themes: {keywords}",
+}
+
+
+def because(c: Cand, history: list[Hist], prof: Profile, limit: int = 6, title_of=_plain_title) -> list[dict]:
+    """Films from the user's history (and liked / loved library films) that explain this recommendation.
+    `why` is the English wording; `why_key` + `why_params` let the client word it (catalogue `because.<key>`)."""
     out = []
     cfeat = c.feats or features(c.meta)
     cdirs, ccast, ckw = set(cfeat["director"]), set(cfeat["cast"]), set(cfeat["keyword"])
@@ -595,20 +664,23 @@ def because(c: Cand, history: list[Hist], prof: Profile, limit: int = 6) -> list
         hf = features(h.meta)
         why, strength = None, 0.0
         if c.tmdb_id and c.tmdb_id in h.recs:
-            why, strength = "Fans of this also love it", 1.0
+            why, strength = ("fans", {}), 1.0
         if set(hf["director"]) & cdirs:
             d = sorted(set(hf["director"]) & cdirs)[0]
-            why, strength = (f"Same director ({d})", max(strength, 0.9)) if strength < 0.9 else (why, strength)
+            why, strength = (("director", {"name": d}), max(strength, 0.9)) if strength < 0.9 else (why, strength)
         shared_cast = sorted(set(hf["cast"]) & ccast)
         if shared_cast and strength < 0.7:
-            why, strength = f"Also stars {shared_cast[0]}", 0.7
+            why, strength = ("cast", {"name": shared_cast[0]}), 0.7
         shared_kw = sorted(set(hf["keyword"]) & ckw)
         if len(shared_kw) >= 3 and strength < 0.5:
-            why, strength = "Similar themes: " + ", ".join(shared_kw[:3]), 0.5
+            why, strength = ("themes", {"keywords": shared_kw[:3]}), 0.5
         if why:
+            key, params = why
+            text = BECAUSE_EN[key].format(**{k: ", ".join(v) if isinstance(v, list) else v for k, v in params.items()})
             out.append((strength * sig[h.key], {
-                "title": h.title, "year": h.year, "my_rating": h.rating, "liked": h.liked,
-                "my_vote": h.vote if h.synthetic else None, "poster_url": h.poster, "why": why,
+                "title": title_of(h.tmdb_id, h.title), "year": h.year, "my_rating": h.rating, "liked": h.liked,
+                "my_vote": h.vote if h.synthetic else None, "poster_url": h.poster, "why": text,
+                "why_key": key, "why_params": params,
             }))
     out.sort(key=lambda x: -x[0])
     return [o for _, o in out[:limit]]

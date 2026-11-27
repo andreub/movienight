@@ -1,3 +1,6 @@
+import { t, lang } from './i18n.js';
+import { errorText } from './labels.js';
+
 // HTTP layer. With ?mock=1 (or ?mock=fresh for a first-run setup) requests are
 // answered by /static/mock.js instead of the server.
 
@@ -29,9 +32,9 @@ export function checkVersion(headerValue, announce = announceNewVersion) {
 }
 
 function announceNewVersion() {
-  import('/static/js/dom.js').then(({ toast }) => toast('A new version is available.', {
+  import('/static/js/dom.js').then(({ toast }) => toast(t('version.new'), {
     timeout: 0,
-    action: { label: 'Reload', run: () => location.reload() },
+    action: { label: t('version.reload'), run: () => location.reload() },
   })).catch(() => {});
 }
 
@@ -56,10 +59,11 @@ function query(params = {}) {
 }
 
 function detailOf(data, status) {
+  if (data?.code) return errorText(data);
   const d = data?.detail;
   if (typeof d === 'string') return d;
   if (Array.isArray(d)) return d.map((x) => x.msg || JSON.stringify(x)).join('; ');
-  return `The server answered with an error (${status}).`;
+  return t('error.server', { status });
 }
 
 async function request(method, path, { params, json, form } = {}) {
@@ -73,11 +77,11 @@ async function request(method, path, { params, json, form } = {}) {
   try {
     res = await fetch(path + query(params), {
       method,
-      headers: json ? { 'Content-Type': 'application/json' } : undefined,
+      headers: { ...(json ? { 'Content-Type': 'application/json' } : {}), 'X-MovieNight-Lang': lang },
       body: json ? JSON.stringify(json) : form,
     });
   } catch {
-    throw new ApiError(0, 'Could not reach MovieNight. Check that the server is running and you are online.');
+    throw new ApiError(0, t('error.offline'));
   }
   checkVersion(res.headers.get('X-MovieNight-Version'));
   const data = await res.json().catch(() => null);
@@ -193,12 +197,12 @@ export async function* chatStream(messages, signal) {
   try {
     res = await fetch('/api/chat', {
       method: 'POST', signal,
-      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'X-MovieNight-Lang': lang },
       body: JSON.stringify({ messages }),
     });
   } catch (e) {
     if (e.name === 'AbortError') throw e;
-    throw new ApiError(0, 'Could not reach MovieNight. Check that the server is running and you are online.');
+    throw new ApiError(0, t('error.offline'));
   }
   checkVersion(res.headers.get('X-MovieNight-Version'));
   if (!res.ok) {

@@ -3,6 +3,7 @@
 // Every group for the same film (hero, sheet, card, "Seen these?") stays in step through a window event.
 import { api } from './api.js';
 import { h, icon, toast } from './dom.js';
+import { t } from './i18n.js';
 
 export const LOVE = 2;
 const votes = new Map(); // last known vote per film, so re-rendered groups agree with what the user just did
@@ -20,7 +21,7 @@ export async function setVote(movie, vote) {
     return true;
   } catch (err) {
     announceVote(movie.id, before);
-    toast(err.detail || 'Could not save your vote. Try again.');
+    toast(err.detail || t('error.vote'));
     return false;
   }
 }
@@ -50,10 +51,10 @@ export function voteButtons(movie, { compact = false, love = !compact, onVote = 
       onVote?.(next, done);
     },
   }, icon(iconName));
-  const up = make(1, 'up', 'thumbup', 'More like this');
-  const fav = love ? make(LOVE, 'love', 'heart', 'A favourite') : null;
-  const down = make(-1, 'down', 'thumbdown', 'Less like this');
-  const el = h('div', { class: `votes ${compact ? 'votes--compact' : ''}`.trim(), role: 'group', 'aria-label': `Rate ${movie.title}` }, up, fav, down);
+  const up = make(1, 'up', 'thumbup', t('vote.up'));
+  const fav = love ? make(LOVE, 'love', 'heart', t('vote.love')) : null;
+  const down = make(-1, 'down', 'thumbdown', t('vote.down'));
+  const el = h('div', { class: `votes ${compact ? 'votes--compact' : ''}`.trim(), role: 'group', 'aria-label': t('vote.group', { title: movie.title }) }, up, fav, down);
 
   let upIcon = 'thumbup';
   const paint = () => {
@@ -65,7 +66,7 @@ export function voteButtons(movie, { compact = false, love = !compact, onVote = 
       if (want !== upIcon) {
         upIcon = want;
         up.replaceChildren(icon(want));
-        const label = want === 'heart' ? 'A favourite. Tap to clear' : 'More like this';
+        const label = want === 'heart' ? t('vote.loveClear') : t('vote.up');
         up.title = label;
         up.setAttribute('aria-label', label);
       }

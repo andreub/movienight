@@ -6,26 +6,27 @@ import { api } from '../api.js';
 import { h, fill, icon, poster, num, stars, errorBox, announce } from '../dom.js';
 import { setSeenVote, isSeen, OUTCOMES } from '../seen.js';
 import { voteOf, LOVE } from '../vote.js';
+import { t } from '../i18n.js';
 
-export const title = 'Seen these?';
+export const title = t('seen.title');
 const PAGE = 60;
 
 
 const TABS = {
   check: {
-    label: 'To check',
-    lede: 'Seen one of these? Tap how it went. Seen films stop showing up in your picks, and your verdict teaches it your taste. Most popular first.',
+    label: t('seen.check'),
+    lede: t('seen.check.lede'),
     load: (params) => api.seenCandidates(params),
     // Marked films leave this list on the server, so the next page starts after the ones still unmarked.
     offset: (loaded) => loaded.filter((m) => !isSeen(m)).length,
-    empty: ['Nothing left to check', 'No older, popular films in your library are waiting. Nice work.'],
+    empty: [t('seen.check.empty'), t('seen.check.emptyText')],
   },
   marked: {
-    label: 'Already marked',
-    lede: 'Films you marked as seen, newest first. Rate the ones you remember so they count towards your taste.',
+    label: t('seen.marked'),
+    lede: t('seen.marked.lede'),
     load: (params) => api.seenMarked(params),
     offset: (loaded) => loaded.filter((m) => isSeen(m)).length,
-    empty: ['Nothing marked yet', 'Films you mark as seen show up here, so you can rate them later.'],
+    empty: [t('seen.marked.empty'), t('seen.marked.emptyText')],
   },
 };
 
@@ -39,18 +40,18 @@ export function mount(root) {
   let tab = 'check';
   const grid = h('ul', { class: 'triage__grid' });
   const count = h('p', { class: 'triage__count', 'aria-live': 'polite' });
-  const more = h('button', { type: 'button', class: 'btn btn--ghost', hidden: true, onclick: () => loadPage() }, 'Load more');
+  const more = h('button', { type: 'button', class: 'btn btn--ghost', hidden: true, onclick: () => loadPage() }, t('browse.more'));
   const status = h('div');
   const lede = h('p', { class: 'lede' });
-  const tabBtns = Object.entries(TABS).map(([id, t]) => h('button', {
+  const tabBtns = Object.entries(TABS).map(([id, tb]) => h('button', {
     type: 'button', class: 'chip chip--small', 'aria-pressed': 'false', 'data-tab': id, onclick: () => switchTo(id),
-  }, t.label));
+  }, tb.label));
 
   root.append(h('div', { class: 'triage' },
     h('div', { class: 'triage__top' },
-      h('h1', { class: 'page-title', text: 'Seen these?' }),
+      h('h1', { class: 'page-title', text: t('seen.title') }),
       lede,
-      h('div', { class: 'chips triage__tabs', role: 'group', 'aria-label': 'Which films' }, tabBtns),
+      h('div', { class: 'chips triage__tabs', role: 'group', 'aria-label': t('seen.which') }, tabBtns),
       h('div', { class: 'triage__bar' }, count)),
     status, grid,
     h('div', { class: 'triage__end' }, more)));
@@ -60,7 +61,7 @@ export function mount(root) {
   let loading = 0;        // request token: a tab switch makes older responses stale
   let alive = true;
 
-  const paintCount = () => { count.textContent = `${num(marked)} marked`; };
+  const paintCount = () => { count.textContent = t('seen.count', { n: marked, num: num(marked) }); };
   paintCount();
   api.profile().then((p) => { if (alive) { marked += p?.stats?.seen_here ?? 0; paintCount(); } }).catch(() => {});
 
@@ -69,7 +70,7 @@ export function mount(root) {
       type: 'button', class: `rate__btn rate__btn--${o.key}`, title: o.label, 'aria-label': o.label, 'aria-pressed': 'false',
       onclick: () => choose(m, o),
     }, icon(o.icon)));
-    return h('div', { class: 'rate', role: 'group', 'aria-label': `${m.title}: have you seen it?` }, btns);
+    return h('div', { class: 'rate', role: 'group', 'aria-label': t('seen.ask', { title: m.title }) }, btns);
   }
 
   function tile(m) {
@@ -83,7 +84,7 @@ export function mount(root) {
         h('span', { class: 'tile__title', text: m.title }),
         h('span', { class: 'tile__year' },
           m.year ? String(m.year) : '',
-          m.my_rating != null ? h('span', { class: 'tile__lb', title: 'Your Letterboxd rating counts, not this verdict' }, ' ', stars(m.my_rating)) : null,
+          m.my_rating != null ? h('span', { class: 'tile__lb', title: t('seen.lbCounts') }, ' ', stars(m.my_rating)) : null,
           verdict)));
     paint(li, m);
     return li;
@@ -91,8 +92,8 @@ export function mount(root) {
 
   function paint(li, m) {
     const o = outcomeOf(m);
-    const t = li.querySelector('.tile');
-    t.dataset.outcome = o ? o.key : '';
+    const tileEl = li.querySelector('.tile');
+    tileEl.dataset.outcome = o ? o.key : '';
     for (const b of li.querySelectorAll('.rate__btn')) b.setAttribute('aria-pressed', String(Boolean(o) && b.classList.contains(`rate__btn--${o.key}`)));
     const badge = li.querySelector('.tile__badge');
     if (o) badge.replaceChildren(icon(o.icon)); else badge.replaceChildren();
@@ -107,7 +108,7 @@ export function mount(root) {
     const undo = outcomeOf(m)?.key === o.key;
     try {
       const ok = await setSeenVote(m, !undo, undo ? 0 : o.vote, 'triage');
-      if (ok) announce(undo ? `${m.title} unmarked.` : `${m.title}: ${o.short.toLowerCase()}.`);
+      if (ok) announce(undo ? t('seen.unmarked', { title: m.title }) : `${m.title}: ${o.short.toLowerCase()}.`);
     } finally {
       busy.delete(m.id);
     }
@@ -141,20 +142,20 @@ export function mount(root) {
 
   async function loadPage() {
     const token = ++loading;
-    const t = TABS[tab];
+    const tb = TABS[tab];
     more.disabled = true;
     try {
-      const res = await t.load({ limit: PAGE, offset: t.offset([...loaded.values()]) });
+      const res = await tb.load({ limit: PAGE, offset: tb.offset([...loaded.values()]) });
       if (!alive || token !== loading) return;
       fill(status);
       const fresh = res.items.filter((m) => !loaded.has(m.id));
       for (const m of fresh) loaded.set(m.id, m);
       grid.append(...fresh.map(tile));
       // `total` counts the films still in this list on the server; the ones on screen are part of it.
-      more.hidden = res.items.length === 0 || t.offset([...loaded.values()]) >= res.total;
+      more.hidden = res.items.length === 0 || tb.offset([...loaded.values()]) >= res.total;
       if (!loaded.size) fill(status, h('div', { class: 'state' },
-        h('p', { class: 'state__title', text: t.empty[0] }),
-        h('p', { class: 'state__text', text: t.empty[1] })));
+        h('p', { class: 'state__title', text: tb.empty[0] }),
+        h('p', { class: 'state__text', text: tb.empty[1] })));
     } catch (err) {
       if (alive && token === loading) fill(status, errorBox(err, () => { fill(status); loadPage(); }));
     } finally {
