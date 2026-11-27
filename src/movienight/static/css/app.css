@@ -400,13 +400,6 @@ main > .tonight { max-width: none; }
   .pick__actions { display: flex; flex-wrap: wrap; }
   .pick__play { grid-column: auto; }
 }
-/* phones: Play on its own row, then Shuffle / Seen it / Not tonight as three equal tiles (icon over label) */
-@media (max-width: 599px) {
-  .pick__actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .pick__actions > .btn:not(.pick__play):not(.btn--quiet) {
-    flex-direction: column; gap: 2px; padding: 6px 4px; min-height: 56px; font-size: .875rem;
-  }
-}
 
 @media (min-width: 960px) {
   .tonight { padding-bottom: 64px; }
@@ -715,6 +708,20 @@ button.menu__item { width: 100%; background: none; border: 0; text-align: left; 
 .pick__tail { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .pick__tail .btn--quiet { margin-right: auto; }
 @media (min-width: 600px) { .pick__tail .btn--quiet { margin-right: 0; } }
+/* phones: Play on its own row, then one 3-column grid of equal tiles (icon over label) in a single style:
+   Shuffle / Not tonight / Details, then Seen it next to the votes, which share the last two columns */
+@media (max-width: 599px) {
+  .pick__actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .pick__tail { display: contents; }
+  .pick__actions .btn:not(.pick__play) {
+    flex-direction: column; gap: 2px; padding: 6px 4px; min-height: 56px; font-size: .875rem;
+    white-space: normal; text-align: center; line-height: 1.15; min-width: 0;
+  }
+  .pick__actions .btn--quiet { grid-column: auto; margin: 0; background: rgb(255 255 255 / .06); border-color: var(--line); color: var(--paper); }
+  .pick__actions .btn--quiet:hover { background: rgb(255 255 255 / .12); }
+  .pick__actions .votes { grid-column: span 2; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .pick__actions .votes__btn { width: auto; height: auto; min-height: 56px; }
+}
 .detail__actions > .votes { flex: 0 0 auto; }
 
 .card { position: relative; }
