@@ -3,7 +3,7 @@
 import { api } from './api.js';
 import { h, icon, toast } from './dom.js';
 import { seenMsg, unseenMsg } from './messages.js';
-import { voteOf, announceVote, LOVE } from './vote.js';
+import { voteOf, announceVote, rememberVote, LOVE } from './vote.js';
 
 // The four "seen it" verdicts ("Seen these?", Complete's film panel): value = the vote stored with the mark.
 export const OUTCOMES = [
@@ -24,6 +24,13 @@ export function isSeen(movie) {
 // `vote`/`previousVote` are set only when the vote was saved in the same request, so Undo can restore it.
 function saved(movie, seen, source, was, extra = {}) {
   window.dispatchEvent(new CustomEvent('movienight:seen-saved', { detail: { id: movie.id, movie, seen, was, source, ...extra } }));
+}
+
+// A change saved elsewhere (Complete's TMDB-id panel) for library film `id`: the remembered state and vote follow
+// it, so they do not override the fresh server data the next time a card or sheet for that film is drawn.
+export function rememberSeen(id, seen, vote) {
+  states.set(id, seen);
+  rememberVote(id, vote);
 }
 
 function announce(id, seen, source, was) {

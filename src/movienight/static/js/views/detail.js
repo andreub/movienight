@@ -4,7 +4,7 @@ import { api } from '../api.js';
 import { h, icon, poster, hueOf, runtime, stars, matchStub, reasonList, errorBox, toast, num } from '../dom.js';
 import { playControl } from '../play.js';
 import { voteButtons, setVote, voteOf, LOVE } from '../vote.js';
-import { setSeen, setSeenVote, isSeen, OUTCOMES } from '../seen.js';
+import { setSeen, setSeenVote, isSeen, rememberSeen, OUTCOMES } from '../seen.js';
 import { parse, href, showGroup } from '../state.js';
 import { serverName } from '../status.js';
 import { TV } from '../tvnav.js';
@@ -259,6 +259,7 @@ async function saveFilm(f, seen, vote, focus) {
   } finally {
     filmBusy = false;
   }
+  if (f.movie_id) rememberSeen(f.movie_id, seen, vote); // the library film's cached state follows the mark
   window.dispatchEvent(new CustomEvent('movienight:seen', { detail: { id: `tmdb:${f.tmdb_id}`, tmdb_id: f.tmdb_id, seen, source: 'film' } }));
   const message = !seen ? unseenMsg(f) : !f.seen ? (vote ? seenVoteMsg(f, vote) : seenMsg(f)) : vote ? voteMsg(f, vote) : seenMsg(f);
   const undo = { label: 'Undo', run: () => undoFilm(f) };
@@ -278,6 +279,7 @@ async function undoFilm(f) {
     toast(err.detail || 'Could not undo that. Try again.');
     return;
   }
+  if (f.movie_id) rememberSeen(f.movie_id, seen, vote);
   window.dispatchEvent(new CustomEvent('movienight:seen', { detail: { id: `tmdb:${f.tmdb_id}`, tmdb_id: f.tmdb_id, seen, source: 'film' } }));
   announceMarked({ id: `tmdb:${f.tmdb_id}`, tmdb_id: f.tmdb_id, seen });
 }

@@ -335,11 +335,12 @@ def _tmdb_keyed(conn: sqlite3.Connection, table: str, col: str = "1") -> dict[in
     return out
 
 
-def _available(st) -> dict:
-    """Unwatched library films by TMDB id (the best match when a film is there twice)."""
+def _available(st, dismissed=frozenset()) -> dict:
+    """Unwatched library films by TMDB id (the best match when a film is there twice), leaving out the ones the
+    user dismissed (`dismissed`: library movie ids hidden for now or never to be suggested)."""
     out: dict = {}
     for c in st.cands:
-        if c.tmdb_id and not c.watched and (c.tmdb_id not in out or c.match > out[c.tmdb_id].match):
+        if c.tmdb_id and not c.watched and c.id not in dismissed and (c.tmdb_id not in out or c.match > out[c.tmdb_id].match):
             out[c.tmdb_id] = c
     return out
 
@@ -758,10 +759,14 @@ def build(st, conn: sqlite3.Connection) -> list[dict]:
     """Every started group, ranked by score (best first); cached on the state (rebuilt whenever the state is).
     Sagas (collections, franchises, series) come first, then canonical lists, then filmographies (directors,
     actors), each block by score."""
+    dismissed = frozenset(library.active_dismissals(conn))
+    if st.cache.get("completion_dismissed") != dismissed:   # a film dismissed, shown again or its 30 days over
+        for k in ("completion", "completion_members"):
+            st.cache.pop(k, None)
     if "completion" in st.cache:
         return st.cache["completion"]
     seen = _seen(st) | set(_tmdb_keyed(conn, "seen"))      # + films marked seen here that are not in the library
-    avail = _available(st)
+    avail = _available(st, dismissed)
     aff = genre_affinity(st)
     raw = _raw_groups(conn, seen) + _list_groups(seen) + _people_groups(conn, seen, set(avail), aff)
     need = {f["tmdb_id"] for g in raw for f in g["films"] if not f.get("backdrop_path")}
@@ -784,6 +789,7 @@ def build(st, conn: sqlite3.Connection) -> list[dict]:
         out.append(d)
     out.sort(key=lambda g: (block(g["kind"]), -g["score"], g["name"].lower()))
     st.cache["completion"] = out
+    st.cache["completion_dismissed"] = dismissed
     return out
 
 
@@ -804,11 +810,11 @@ def public(g: dict, hidden: set[str]) -> dict:
 
 def overview(st, conn: sqlite3.Connection, kind: str | None = None, show_hidden: bool = False) -> dict:
     """Groups in progress, finished ones (shown collapsed) and, with `show_hidden`, the hidden ones. `kind=collection`
-    (the Sagas chip) also takes the keyword series; `counts` stays per raw kind."""
+    (the Sagas chip) also takes the keyword series; `counts` (groups in progress, as the chips show) stays per raw kind."""
     groups = build(st, conn)
     hidden = hidden_keys(conn)
     visible = [g for g in groups if g["key"] not in hidden]
-    counts = {k: sum(g["kind"] == k for g in visible) for k in KINDS}
+    counts = {k: sum(g["kind"] == k and not g["complete"] for g in visible) for k in KINDS}  # what `groups` holds
     pick = (lambda g: g["kind"] in (("collection", "series") if kind == "collection" else (kind,))) if kind else (lambda g: True)
     return {
         "groups": [public(g, hidden) for g in visible if pick(g) and not g["complete"]],
@@ -840,9 +846,10 @@ def summary(g: dict) -> dict:
 
 def _membership(st, conn: sqlite3.Connection) -> dict[int, list[dict]]:
     """tmdb id -> the groups holding it, best first (the order of `build`); cached on the state like `build`."""
+    groups = build(st, conn)            # first: it drops the memberships when the dismissals changed
     if "completion_members" not in st.cache:
         out: dict[int, list[dict]] = {}
-        for g in build(st, conn):
+        for g in groups:
             for f in g["films"]:
                 held = out.setdefault(f["tmdb_id"], [])
                 if not held or held[-1] is not g:
