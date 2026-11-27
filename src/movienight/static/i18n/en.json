@@ -421,6 +421,7 @@
  "setup.jf.set": "Set ",
  "setup.jf.summary": "{films}. Last read {ago}.",
  "setup.language": "Language",
+ "setup.language_system": "System",
  "setup.lastUpdated": "Last updated {ago}.",
  "setup.lb.choose": "or choose a file",
  "setup.lb.desc": "Your ratings, likes and watchlist teach MovieNight what you enjoy.",

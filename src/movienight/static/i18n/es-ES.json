@@ -421,6 +421,7 @@
  "setup.jf.set": "Define ",
  "setup.jf.summary": "{films}. Última lectura: {ago}.",
  "setup.language": "Idioma",
+ "setup.language_system": "Sistema",
  "setup.lastUpdated": "Última actualización: {ago}.",
  "setup.lb.choose": "o elige un archivo",
  "setup.lb.desc": "Tus notas, tus «me gusta» y tu lista le enseñan a MovieNight lo que disfrutas.",

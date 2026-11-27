@@ -17,6 +17,9 @@ function stored() {
   try { const v = localStorage.getItem(KEY); return LANGS.some(([id]) => id === v) ? v : null; } catch { return null; }
 }
 
+// Whether the language was chosen explicitly (false = "System": follow the device's languages).
+export const explicit = stored() !== null;
+
 export const lang = stored() || pickLang(navigator.languages?.length ? [...navigator.languages] : [navigator.language]);
 
 // The server words TMDB data (titles, overviews) and its own pages in this language too: API calls send it as the
@@ -59,8 +62,9 @@ export function t(key, vars) {
 }
 
 // Remember the choice on this device and reload, so every view (and the strings built at load) switch at once.
+// `null` = System: forget the choice so navigator.languages decides again.
 export function setLang(id) {
-  try { localStorage.setItem(KEY, id); } catch { /* storage unavailable */ }
+  try { if (id == null) localStorage.removeItem(KEY); else localStorage.setItem(KEY, id); } catch { /* storage unavailable */ }
   location.reload();
 }
 

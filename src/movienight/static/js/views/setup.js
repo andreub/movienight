@@ -2,7 +2,7 @@ import { api, getChatStatus } from '../api.js';
 import { h, fill, icon, num, ago, toast, errorBox } from '../dom.js';
 import { subscribe, refreshStatus, STAGES, syncPercent, serverName, serverStatus } from '../status.js';
 import { seerrAccountLine } from '../seerr.js';
-import { t, lang, LANGS, setLang } from '../i18n.js';
+import { t, lang, explicit, LANGS, setLang } from '../i18n.js';
 import { errorText } from '../labels.js';
 
 export const title = t('tab.setup');
@@ -80,12 +80,19 @@ export function mount(root) {
   };
 }
 
-// English / Español, beside the page title (the existing small segmented control). Remembered on this device.
+// System / English / Español, beside the page title (the existing small segmented control). System (nothing stored)
+// follows the device's languages; its tooltip names the language it resolves to now, in that language's own name.
 function langSwitch() {
+  const current = LANGS.find(([id]) => id === lang)?.[1] ?? lang;
+  const system = t('setup.language_system');
+  const options = [
+    [null, system, `${system} (${current})`],
+    ...LANGS.map(([id, name]) => [id, name, name]),
+  ];
   return h('fieldset', { class: 'seg seg--small setup__lang' }, h('legend', { class: 'sr-only', text: t('setup.language') }),
-    LANGS.map(([id, name]) => h('label', { class: 'seg__item' },
-      h('input', { type: 'radio', name: 'lang', value: id, class: 'seg__input', checked: id === lang, lang: id, onchange: () => setLang(id) }),
-      h('span', { lang: id, text: name }))));
+    options.map(([id, name, title]) => h('label', { class: 'seg__item', title },
+      h('input', { type: 'radio', name: 'lang', value: id ?? 'system', class: 'seg__input', checked: id === null ? !explicit : explicit && id === lang, onchange: () => setLang(id) }),
+      h('span', { lang: id ? id : undefined, text: name }))));
 }
 
 function step(n, title, desc) {
