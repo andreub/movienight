@@ -5,8 +5,11 @@ test and does not touch the database or the network.
 
 Model in short
 --------------
-* Every film the user logged yields a signal in [-1, 1]: the rating centred on the user's own
-  mean (scaled), plus a bonus for likes, with mild recency weighting.
+* Every film the user logged yields a signal in [-1, 1], with mild recency weighting. A rating is
+  read on an absolute scale (`RATING_SIGNAL`): below `RATING_OK` (3.5 stars) is negative (3.0 is
+  clearly bad), 3.5 is about neutral and `RATING_GOOD` (4 stars) and up is positive. A like adds
+  `LIKE_BONUS` but never turns a rating under 3.5 positive. Only films rated 4+ stars, liked
+  unrated films and thumbs up / loves (`citable`) are cited in reasons or seed "similar".
 * Each feature (genre, director, cast member, keyword, decade, language, country) gets an
   affinity: the weighted mean signal of the films that have it, shrunk towards 0 with a prior
   so that a feature seen once cannot dominate.
@@ -28,6 +31,7 @@ import math
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from itertools import pairwise
 
 from .util import stars
 
@@ -44,11 +48,18 @@ W_WATCHLIST = 0.30
 W_FRESH = 0.06
 # effective default weight of every component that can be backtested and tuned
 DEFAULT_WEIGHTS = {**{t: WEIGHT[t] * GAIN[t] for t in FEATURE_TYPES}, "similar": W_COLLAB, "acclaimed": W_QUALITY}
-VOTE_SIGNAL = 0.6        # |signal| of a thumb for the profile (a 5-star film is ~0.8, a liked unrated one 0.65)
+# Absolute reading of a Letterboxd rating: (stars, signal) anchors, linearly interpolated (clamped outside).
+RATING_OK = 3.5          # acceptable: about neutral, never cited as a reference
+RATING_GOOD = 4.0        # good: positive, and the lowest rating a reason may cite or "similar" may seed from
+RATING_SIGNAL = ((1.0, -1.0), (3.0, -0.4), (RATING_OK, 0.05), (RATING_GOOD, 0.3), (5.0, 0.8))
+LIKE_BONUS = 0.2         # a like on a rating >= RATING_GOOD (a liked 5-star film is 1.0)
+LIKED_OK_MAX = 0.15      # a liked RATING_OK..RATING_GOOD film stays at most slightly positive
+LIKED_BAD_MAX = 0.0      # ...and a liked film rated under RATING_OK is never positive
+VOTE_SIGNAL = 0.6        # |signal| of a thumb for the profile (a 5-star film is 0.8, a liked unrated one 0.65)
 VOTE_UP_BOOST = 0.25     # direct raw-score boost of a thumbs-up film
 VOTE_DOWN_PENALTY = 0.7  # direct raw-score penalty of a thumbs-down film
 LOVE = 2                 # vote value of a "love" (a favourite): stronger than a thumb up
-LOVE_SIGNAL = 0.95       # |signal| of a love (a liked 5-star film at a 3.6 mean is ~1.0)
+LOVE_SIGNAL = 0.95       # |signal| of a love (a liked 5-star film is 1.0)
 VOTE_LOVE_BOOST = 0.4    # direct raw-score boost of a loved film
 FRESH_DAYS = 45
 CAST_TOP = 8
@@ -118,7 +129,7 @@ class FeatStat:
     n: int = 0
     rn: int = 0             # rated films
     rsum: float = 0.0
-    best: tuple | None = None   # (signal, title, rating, liked, vote)
+    best: tuple | None = None   # (signal, title, rating, liked, vote, tmdb id) of the best `citable` film
     aff: float = 0.0
 
 
@@ -152,14 +163,42 @@ def features(meta: dict | None) -> dict:
 
 # --------------------------------------------------------------------------- user signal
 
+def rating_signal(rating: float, liked: bool = False) -> float:
+    """Signal in [-1, 1] of a Letterboxd rating on the absolute scale `RATING_SIGNAL`, plus the like bonus."""
+    pts = RATING_SIGNAL
+    if rating <= pts[0][0]:
+        s = pts[0][1]
+    elif rating >= pts[-1][0]:
+        s = pts[-1][1]
+    else:
+        s = pts[-1][1]
+        for (r0, s0), (r1, s1) in pairwise(pts):
+            if r0 <= rating <= r1:
+                s = s0 + (s1 - s0) * (rating - r0) / (r1 - r0)
+                break
+    if liked:
+        cap = 1.0 if rating >= RATING_GOOD else LIKED_OK_MAX if rating >= RATING_OK else LIKED_BAD_MAX
+        s = max(s, min(cap, s + LIKE_BONUS))
+    return max(-1.0, min(1.0, s))
+
+
+def citable(h: Hist) -> bool:
+    """Whether a film may be cited in a reason ("because you liked X") or seed the "similar" component:
+    rated `RATING_GOOD`+ stars, liked on Letterboxd without a rating, or a thumb up / love."""
+    if h.synthetic:
+        return h.vote > 0
+    if h.rating is not None:
+        return h.rating >= RATING_GOOD
+    return h.liked
+
+
 def film_signal(h: Hist, mean: float, now: datetime) -> tuple[float, float]:
-    """Return (signal in [-1, 1], recency weight in [0.7, 1])."""
+    """Return (signal in [-1, 1], recency weight in [0.7, 1]). Ratings are read on an absolute scale
+    (`rating_signal`); `mean` is kept for custom signal functions with the same signature."""
     if h.synthetic:
         s = LOVE_SIGNAL if h.vote >= LOVE else VOTE_SIGNAL * (1 if h.vote > 0 else -1)
     elif h.rating is not None:
-        s = max(-1.0, min(1.0, (h.rating - mean) / 2.0))
-        if h.liked:
-            s = min(1.0, s + 0.4)
+        s = rating_signal(h.rating, h.liked)
     elif h.liked:
         s = 0.65
     else:
@@ -197,7 +236,7 @@ def build_profile(history: list[Hist], now: datetime | None = None, signal=None)
                 if h.rating is not None:
                     st.rn += 1
                     st.rsum += h.rating
-                if st.best is None or s > st.best[0]:
+                if citable(h) and (st.best is None or s > st.best[0]):
                     st.best = (s, h.title, h.rating, h.liked, h.vote if h.synthetic else 0, h.tmdb_id)
     for t, table in p.stats.items():
         for st in table.values():
@@ -275,11 +314,12 @@ def _feature_value(t: str, names: list[str], table, idf: dict):
     return value, [(n, a) for n, a, _ in best]
 
 
-def collab_index(history: list[Hist], prof: Profile) -> dict:
-    """tmdb id -> list of (signal, Hist) of loved films whose TMDB recommendations include it."""
+def collab_index(history: list[Hist], prof: Profile, seeds=citable) -> dict:
+    """tmdb id -> list of (signal, Hist) of loved films whose TMDB recommendations include it. Only films
+    passing `seeds` (default `citable`: 4+ stars, liked unrated, or a positive vote) are seeds."""
     idx: dict[int, list] = {}
     for h, s, w in prof.signals:
-        if s >= LOVED and h.recs:
+        if s >= LOVED and h.recs and (seeds is None or seeds(h)):
             for rid in h.recs:
                 idx.setdefault(rid, []).append((s * w, h))
     return idx
@@ -426,7 +466,7 @@ def group_similarity(group: list[Hist], cands: list[Cand], idf: dict, user_mean:
     """Candidate id -> similarity (>= 0) to a reference group of history films. `cands` need `feats`."""
     w = {**DEFAULT_WEIGHTS, **(weights or {})}
     prof = build_profile(group, signal=group_signal_fn(user_mean))
-    cidx = collab_index(group, prof)
+    cidx = collab_index(group, prof, seeds=None)       # a tag group is a kind of film, not a taste verdict
     out = {}
     for c in cands:
         vals = component_values(c.feats, c.meta, c.tmdb_id, lambda t: prof.stats[t], idf,
@@ -659,7 +699,7 @@ def because(c: Cand, history: list[Hist], prof: Profile, limit: int = 6, title_o
     for h in voted:
         sig[h.key] = film_signal(h, prof.mean_rating, datetime.now(timezone.utc))[0]
     for h in list(history) + voted:
-        if not h.watched or h.key not in sig or sig[h.key] <= 0.1:
+        if not h.watched or h.key not in sig or sig[h.key] <= 0.1 or not citable(h):
             continue
         hf = features(h.meta)
         why, strength = None, 0.0

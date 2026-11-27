@@ -255,3 +255,69 @@ def test_just_arrived_mood(monkeypatch):
     assert ids(mood="just-arrived") == {a.id, n.id}   # 40 days old and no added_at are out
     assert a.id in ids(mood="just-arrived", era="2010s") and b.id not in ids(mood="just-arrived", era="2010s")
     assert a.id not in ids(mood="just-arrived", era="1990s")
+
+
+# --------------------------------------------------------------------------- absolute rating thresholds (#85)
+
+def test_rating_signal_absolute_thresholds():
+    def sig(r, liked=False, mean=3.6):
+        return rec.film_signal(rec.Hist(1, "x", rating=r, liked=liked), mean, NOW)[0]
+
+    for mean in (2.8, 3.6, 4.2):                            # independent of the user's mean
+        assert sig(3.0, mean=mean) < -0.2                   # bad: pushes similar films down
+        assert 0 <= sig(3.5, mean=mean) <= 0.15             # acceptable: about neutral
+        assert sig(4.0, mean=mean) > 0                      # good
+    assert sig(4.0) < sig(4.5) < sig(5.0) <= 1.0 and sig(0.5) == -1.0
+    assert sig(3.0, liked=True) <= 0 and sig(2.0, liked=True) <= 0     # a like never makes a low rating positive
+    assert 0 <= sig(3.5, liked=True) <= 0.15
+    assert sig(4.0, liked=True) > sig(4.0) and sig(5.0, liked=True) == 1.0
+    assert all(-1 <= sig(r / 2, lk) <= 1 for r in range(1, 11) for lk in (False, True))
+
+
+def _mediocre_world():
+    """Films rated 3.0-3.5 (some liked) sharing a director, cast and recommendations with the candidates."""
+    def m(d, c, k):
+        return meta(["Thriller"], [d], [c], k)
+
+    hist = [
+        rec.Hist(1, "Meh One", 2010, 1, 3.5, True, True, NOW, m("Dir A", "Actor A", ["k1", "k2", "k3"]), recs=[31, 32]),
+        rec.Hist(2, "Meh Two", 2011, 2, 3.0, True, True, NOW, m("Dir B", "Actor B", ["k1", "k2", "k3"]), recs=[31, 32]),
+        rec.Hist(3, "Good One", 2012, 3, 4.0, False, True, NOW, m("Dir C", "Actor C", ["k4"]), recs=[33]),
+        rec.Hist(4, "Okay", 2013, 4, 3.5, False, True, NOW, m("Dir C", "Actor D", ["k4"]), recs=[33]),
+    ]
+    cands = [
+        rec.Cand(31, "Cand A", 2020, 31, m("Dir A", "Actor A", ["k1", "k2", "k3"])),
+        rec.Cand(32, "Cand B", 2020, 32, m("Dir B", "Actor B", ["k1", "k2", "k3"])),
+        rec.Cand(33, "Cand C", 2020, 33, m("Dir C", "Actor D", ["k4"])),
+        rec.Cand(34, "Voted", 2020, 34, m("Dir B", "Actor B", ["k1", "k2", "k3"]), vote=1),
+    ]
+    return hist, cands
+
+
+def test_reasons_cite_only_good_or_voted_films():
+    hist, cands = _mediocre_world()
+    p = rec.score_candidates(hist, cands, now=NOW)
+    low = {"Meh One", "Meh Two", "Okay"}
+    for c in cands:
+        for r in rec.reasons_for(c, p, limit=10):
+            assert r["params"].get("title") not in low, r
+        for b in rec.because(c, hist, p):
+            assert b["title"] not in low, b
+            assert (b["my_rating"] or 0) >= rec.RATING_GOOD or (b["my_vote"] or 0) > 0 or b["liked"], b
+    by = {c.id: c for c in cands}
+    # the 4-star film is the director's reference, never the 3.5 one
+    assert p.stats["director"]["Dir C"].best[1] == "Good One"
+    assert p.stats["director"]["Dir A"].best is None
+    assert by[33].comps["similar"][1].title == "Good One"
+    # a thumbs-up film may be cited
+    assert any(b["title"] == "Voted" for b in rec.because(by[32], hist, p))
+
+
+def test_similar_seeds_exclude_films_below_four_stars():
+    hist, _ = _mediocre_world()
+    hist.append(rec.Hist(5, "Loved Unrated", 2014, 5, None, True, True, NOW, meta(["Drama"]), recs=[32]))
+    p = rec.build_profile(hist, NOW)
+    idx = rec.collab_index(hist, p)
+    seeds = {h.title for lst in idx.values() for _, h in lst}
+    assert seeds == {"Good One", "Loved Unrated"}
+    assert 31 not in idx and idx[32][0][1].title == "Loved Unrated"
