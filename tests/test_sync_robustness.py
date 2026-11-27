@@ -1,3 +1,6 @@
+import sqlite3
+
+import pytest
 import httpx
 
 from movienight import db, library, plex, tmdb
@@ -72,3 +75,39 @@ def test_unpush_404_counts_as_done(push_client):
     mark(c, "Crime Two", False)
     out = run_sync_push(c)
     assert out["failed"] == 0 and pushes(c) == []
+
+
+def test_migration_failure_is_atomic_and_retry_applies_once(tmp_path, monkeypatch):
+    """A migration that fails after some of its statements ran leaves nothing behind and the version unchanged;
+    once the cause is fixed it applies exactly once (no 'duplicate column')."""
+    p = tmp_path / "m.db"
+    db.migrate(p)
+    base = list(db.MIGRATIONS)
+    n = len(base)
+    bad = "ALTER TABLE meta ADD COLUMN extra TEXT; INSERT INTO meta(key,value) VALUES('mig','1'); SELECT * FROM nope;"
+    good = "ALTER TABLE meta ADD COLUMN extra TEXT; INSERT INTO meta(key,value) VALUES('mig','1');"
+
+    def cols():
+        c = db.connect(p)
+        try:
+            return [r[1] for r in c.execute("PRAGMA table_info(meta)")]
+        finally:
+            c.close()
+
+    monkeypatch.setattr(db, "MIGRATIONS", base + [bad])
+    with pytest.raises(sqlite3.OperationalError):
+        db.migrate(p)
+    c = db.connect(p)
+    assert c.execute("PRAGMA user_version").fetchone()[0] == n                      # (b)
+    assert "extra" not in cols()                                                     # (a)
+    assert c.execute("SELECT COUNT(*) FROM meta WHERE key='mig'").fetchone()[0] == 0
+    c.close()
+
+    monkeypatch.setattr(db, "MIGRATIONS", base + [good])
+    db.migrate(p)                                                                    # (c)
+    db.migrate(p)
+    c = db.connect(p)
+    assert c.execute("PRAGMA user_version").fetchone()[0] == n + 1
+    assert cols().count("extra") == 1
+    assert c.execute("SELECT COUNT(*) FROM meta WHERE key='mig'").fetchone()[0] == 1
+    c.close()
