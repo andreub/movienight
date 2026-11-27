@@ -41,24 +41,26 @@ _MEDIA = {2: REQUESTED, 3: REQUESTED, 4: AVAILABLE, 5: AVAILABLE}
 class SeerrError(RuntimeError):
     """A clean, user-facing message (never the URL or the cookie)."""
 
-    def __init__(self, message: str, status: int = 502):
+    def __init__(self, message: str, status: int = 502, code: str = "seerr.failed", **params):
         super().__init__(message)
         self.status = status
+        self.code = code            # the web UI words the message itself (catalogue `apiError.<code>`)
+        self.params = params
 
 
 class SessionExpired(SeerrError):
     def __init__(self):
-        super().__init__("Your Seerr session expired. Reconnect Seerr in Setup.", 409)
+        super().__init__("Your Seerr session expired. Reconnect Seerr in Setup.", 409, "seerr.expired")
 
 
 class CannotRequest(SeerrError):
     def __init__(self):
-        super().__init__("Your Seerr account can't request movies", 403)
+        super().__init__("Your Seerr account can't request movies", 403, "seerr.cannotRequest")
 
 
 class NotConnected(SeerrError):
     def __init__(self):
-        super().__init__("Connect your Seerr account first (Setup)", 409)
+        super().__init__("Connect your Seerr account first (Setup)", 409, "seerr.notConnected")
 
 
 class _NoCookies(http.cookiejar.CookieJar):
@@ -143,9 +145,9 @@ class Accounts:
         try:
             return await self.client.request(method, self.url + path, headers=headers, **kw)
         except httpx.TimeoutException:
-            raise SeerrError("Seerr did not answer in time", 504) from None
+            raise SeerrError("Seerr did not answer in time", 504, "seerr.timeout") from None
         except httpx.HTTPError:
-            raise SeerrError("Could not reach Seerr", 502) from None
+            raise SeerrError("Could not reach Seerr", 502, "seerr.unreachable") from None
 
     # ---- connect (Plex PIN -> Seerr session)
     def _prune(self) -> None:
@@ -164,7 +166,7 @@ class Accounts:
             pin = r.json()
             pin_id, code = int(pin["id"]), str(pin["code"])
         except (httpx.HTTPError, ValueError, KeyError, TypeError):
-            raise SeerrError("plex.tv could not be reached. Try again in a moment.", 502) from None
+            raise SeerrError("plex.tv could not be reached. Try again in a moment.", 502, "plex.unreachable") from None
         self.pins[pin_id] = (user, client_id, self.clock())
         forward = f"{origin.rstrip('/')}/api/seerr/callback?pin={pin_id}"
         return plex.auth_url(client_id, code, forward)
@@ -174,26 +176,26 @@ class Accounts:
         name. Raises SeerrError on any failure."""
         pending = self.pins.get(pin_id)
         if not pending or pending[0] != user:          # unknown, or someone else's: left alone
-            raise SeerrError("Unknown or foreign connect attempt", 400)
+            raise SeerrError("Unknown or foreign connect attempt", 400, "seerr.badAttempt")
         self.pins.pop(pin_id, None)
         _, client_id, created = pending
         if self.clock() - created > self.pin_ttl:
-            raise SeerrError("The connect attempt expired", 400)
+            raise SeerrError("The connect attempt expired", 400, "seerr.attemptExpired")
         try:
             r = await self.client.get(f"{PLEX_BASE}/api/v2/pins/{int(pin_id)}", headers=_plex_headers(client_id))
             r.raise_for_status()
             token = r.json().get("authToken")
         except (httpx.HTTPError, ValueError, AttributeError):
-            raise SeerrError("plex.tv could not be reached", 502) from None
+            raise SeerrError("plex.tv could not be reached", 502, "plex.unreachable") from None
         if not token:
-            raise SeerrError("Plex did not confirm the sign-in", 400)
+            raise SeerrError("Plex did not confirm the sign-in", 400, "seerr.plexUnconfirmed")
         r = await self._seerr("POST", "/auth/plex", json={"authToken": token})
         del token
         if r.status_code >= 400:
-            raise SeerrError(f"Seerr refused the Plex sign-in ({r.status_code})", 502)
+            raise SeerrError(f"Seerr refused the Plex sign-in ({r.status_code})", 502, "seerr.refused", http=r.status_code)
         cookie = r.cookies.get(COOKIE)
         if not cookie:
-            raise SeerrError("Seerr did not start a session", 502)
+            raise SeerrError("Seerr did not start a session", 502, "seerr.noSession")
         try:
             data = r.json()
         except ValueError:
@@ -238,13 +240,13 @@ class Accounts:
                     self._expire(user)
                     raise SessionExpired()
                 if r.status_code >= 400:
-                    raise SeerrError(f"Seerr answered with an error ({r.status_code})", 502)
+                    raise SeerrError(f"Seerr answered with an error ({r.status_code})", 502, "seerr.error", http=r.status_code)
                 try:
                     data = r.json()
                     results = data.get("results") or []
                     total = int((data.get("pageInfo") or {}).get("results") or 0)
                 except (ValueError, AttributeError, TypeError):
-                    raise SeerrError("Seerr sent an unreadable answer", 502) from None
+                    raise SeerrError("Seerr sent an unreadable answer", 502, "seerr.unreadable") from None
                 for m in results:
                     if not isinstance(m, dict) or m.get("mediaType") != "movie":
                         continue
@@ -271,7 +273,7 @@ class Accounts:
         if r.status_code == 403:
             raise CannotRequest()
         if r.status_code >= 400 and r.status_code != 409:
-            raise SeerrError(f"Seerr answered with an error ({r.status_code})", 502)
+            raise SeerrError(f"Seerr answered with an error ({r.status_code})", 502, "seerr.error", http=r.status_code)
         self.invalidate(user)
         state = REQUESTED
         if r.status_code != 409:

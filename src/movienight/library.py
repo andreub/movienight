@@ -8,7 +8,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from . import plex, recommender as rec, servers, tags as lbtags, tmdb
+from . import i18n, plex, recommender as rec, servers, tags as lbtags, tmdb
 from .db import get_meta, set_meta
 from .util import norm_title, now_iso, parse_iso
 
@@ -406,7 +406,7 @@ def verdict(predicted: int, rating: float | None, user_mean: float | None) -> st
     return "ok"
 
 
-def feedback_json(conn: sqlite3.Connection) -> dict:
+def feedback_json(conn: sqlite3.Connection, texts=i18n.ENGLISH) -> dict:
     mean_row = conn.execute("SELECT AVG(rating) FROM lb_films WHERE watched=1 AND rating IS NOT NULL").fetchone()[0]
     user_mean = float(mean_row) if mean_row is not None else None
     posters = {}
@@ -418,7 +418,7 @@ def feedback_json(conn: sqlite3.Connection) -> dict:
                 d = conn.execute("SELECT json FROM tmdb_details WHERE tmdb_id=?", (r["tmdb_id"],)).fetchone()
                 posters[r["tmdb_id"]] = tmdb.poster_url((json.loads(d[0]) if d else {}).get("poster_path"))
             poster = posters[r["tmdb_id"]]
-        outcomes.append({"title": r["title"], "year": r["year"], "poster_url": poster, "predicted": r["predicted"],
+        outcomes.append({"title": texts.title(r["tmdb_id"], r["title"]), "year": r["year"], "poster_url": poster, "predicted": r["predicted"],
                          "my_rating": r["rating"], "liked": bool(r["liked"]), "watched_date": r["watched_date"],
                          "verdict": verdict(r["predicted"], r["rating"], user_mean)})
     rated = [o["my_rating"] for o in outcomes if o["my_rating"] is not None]
@@ -473,16 +473,18 @@ def backdrop_of(c: rec.Cand) -> str | None:
     return f"/api/image/{c.id}/art" if c.meta.get("has_art") else None
 
 
-def movie_json(c: rec.Cand, st: State, dismissed: dict, with_reasons: bool = True) -> dict:
+def movie_json(c: rec.Cand, st: State, dismissed: dict, with_reasons: bool = True, texts=i18n.ENGLISH) -> dict:
+    """A library film. `texts` (i18n.Texts): TMDB's title, tagline and overview in the UI language, where it has
+    them (also for the titles the reasons name)."""
     m = c.meta
     return {
         "id": c.id,
-        "title": c.title,
+        "title": texts.title(c.tmdb_id, c.title),
         "original_title": m.get("original_title") or c.title,
         "year": c.year,
         "runtime": m.get("runtime"),
-        "tagline": m.get("tagline") or "",
-        "overview": m.get("overview") or "",
+        "tagline": texts.detail(c.tmdb_id, "tagline", m.get("tagline") or ""),
+        "overview": texts.detail(c.tmdb_id, "overview", m.get("overview") or ""),
         "genres": m.get("genres") or [],
         "directors": m.get("directors") or [],
         "cast": (m.get("cast") or [])[:12],
@@ -495,7 +497,7 @@ def movie_json(c: rec.Cand, st: State, dismissed: dict, with_reasons: bool = Tru
         "tmdb_id": c.tmdb_id,
         "letterboxd_url": f"https://letterboxd.com/tmdb/{c.tmdb_id}" if c.tmdb_id else None,
         "match": c.match,
-        "reasons": rec.reasons_for(c, st.profile, server=st.server_label) if with_reasons else [],
+        "reasons": rec.reasons_for(c, st.profile, server=st.server_label, title_of=texts.title) if with_reasons else [],
         "on_watchlist": c.on_watchlist,
         "watched": c.watched,
         "seen_here": c.seen_here,
@@ -508,14 +510,15 @@ def movie_json(c: rec.Cand, st: State, dismissed: dict, with_reasons: bool = Tru
     }
 
 
-def movie_detail_json(c: rec.Cand, st: State, dismissed: dict) -> dict:
-    d = movie_json(c, st, dismissed)
+def movie_detail_json(c: rec.Cand, st: State, dismissed: dict, texts=i18n.ENGLISH) -> dict:
+    d = movie_json(c, st, dismissed, texts=texts)
     d["keywords"] = c.meta.get("keywords") or []
-    d["because"] = rec.because(c, st.history, st.profile)
+    d["because"] = rec.because(c, st.history, st.profile, title_of=texts.title)
     return d
 
 
-def film_json(conn: sqlite3.Connection, st: State, tmdb_id: int, base: dict | None = None) -> dict | None:
+def film_json(conn: sqlite3.Connection, st: State, tmdb_id: int, base: dict | None = None,
+              texts=i18n.ENGLISH) -> dict | None:
     """A film by TMDB id, in the library or not (Complete: seen and missing saga films), with how it was seen.
 
     Info comes from the library entry, else the cached TMDB details, else `base` (the film as a group lists it:
@@ -542,15 +545,17 @@ def film_json(conn: sqlite3.Connection, st: State, tmdb_id: int, base: dict | No
     server = bool(c is not None and c.plex_watched)
     via = [name for name, on in (("letterboxd", lb_watched), ("server", server), ("here", here)) if on]
     year = (c.year if c is not None else None) or m.get("year") or base.get("year")
+    # details fetched on demand are newer than the cached `texts`: their own translation first
+    loc = ((det.get("i18n") or {}).get(texts.lang) or {}) if texts.localized else {}
     return {
         "tmdb_id": tmdb_id,
         "movie_id": c.id if c is not None else None,
-        "title": (c.title if c is not None else None) or m.get("title") or base.get("title") or "",
+        "title": loc.get("title") or texts.title(tmdb_id, (c.title if c is not None else None) or m.get("title") or base.get("title") or ""),
         "original_title": m.get("original_title") or None,
         "year": year,
         "runtime": m.get("runtime"),
-        "tagline": m.get("tagline") or "",
-        "overview": m.get("overview") or "",
+        "tagline": loc.get("tagline") or texts.detail(tmdb_id, "tagline", m.get("tagline") or ""),
+        "overview": loc.get("overview") or texts.detail(tmdb_id, "overview", m.get("overview") or ""),
         "genres": m.get("genres") or [],
         "directors": m.get("directors") or [],
         "cast": (m.get("cast") or [])[:12],
@@ -595,7 +600,7 @@ def seen_marked(conn: sqlite3.Connection, st: State, limit: int, offset: int) ->
     return pool[offset:offset + limit], len(pool)
 
 
-def profile_json(st: State, model: dict | None = None) -> dict:
+def profile_json(st: State, model: dict | None = None, texts=i18n.ENGLISH) -> dict:
     p = st.profile
     watched = [h for h, _, _ in p.signals]
     hours = sum((h.runtime or 0) for h in watched) / 60.0
@@ -638,7 +643,7 @@ def profile_json(st: State, model: dict | None = None) -> dict:
         "keywords": table("keyword", 2, 24, with_mean=False),
         "model": model if model is not None else {k: v for k, v in empty_backtest().items()
                                                   if k in ("films", "spearman", "top_quintile_hit_rate", "base_rate", "tuned")},
-        "top_rated": [{"title": h.title, "year": h.year, "my_rating": h.rating, "liked": h.liked,
+        "top_rated": [{"title": texts.title(h.tmdb_id, h.title), "year": h.year, "my_rating": h.rating, "liked": h.liked,
                        "poster_url": h.poster} for h, _, _ in top],
         "tags": lbtags.stats(st),
     }

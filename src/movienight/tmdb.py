@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 
 import httpx
 
+from . import i18n
 from .util import norm_title
 
 log = logging.getLogger("movienight.tmdb")
@@ -110,7 +112,8 @@ class Tmdb:
         return None
 
     async def details(self, tmdb_id: int) -> dict | None:
-        raw = await self.get(f"/movie/{int(tmdb_id)}", {"append_to_response": "credits,keywords"})
+        # translations: the title, overview and tagline in the UI's other languages, stored as `i18n` (i18n.py)
+        raw = await self.get(f"/movie/{int(tmdb_id)}", {"append_to_response": "credits,keywords,translations"})
         return compact_details(raw) if raw else None
 
     async def recommendations(self, tmdb_id: int) -> list[int]:
@@ -120,7 +123,18 @@ class Tmdb:
     async def collection(self, cid: int, today: str | None = None) -> dict | None:
         """A TMDB collection (saga): name and released parts, oldest first. None when TMDB has no such id."""
         raw = await self.get(f"/collection/{int(cid)}")
-        return compact_collection(raw, today) if raw else None
+        if not raw:
+            return None
+        out = compact_collection(raw, today)
+        # the same collection in each other UI language: its name and the parts' titles (TMDB falls back to the
+        # default title where it has no translation), stored as `i18n` (i18n.py)
+        out["i18n"] = {}
+        for lang in i18n.EXTRA:
+            loc = await self.get(f"/collection/{int(cid)}", {"language": lang}) or {}
+            out["i18n"][lang] = {"name": _clean_collection_name(loc.get("name") or ""),
+                                 "titles": {str(p["id"]): p.get("title") for p in loc.get("parts") or []
+                                            if p.get("id") and p.get("title")}}
+        return out
 
     async def search_collections(self, query: str) -> list[dict]:
         """Collections whose name matches `query` (first page): [{id, name}]."""
@@ -149,7 +163,17 @@ class Tmdb:
     async def person_credits(self, pid: int) -> dict | None:
         """A person's name, profile photo and film credits (directed, and billed in the top 5). None on 404."""
         raw = await self.get(f"/person/{int(pid)}", {"append_to_response": "movie_credits"})
-        return compact_person(raw) if raw else None
+        if not raw:
+            return None
+        out = compact_person(raw)
+        # credit titles in each other UI language, stored as `i18n` (i18n.py)
+        out["i18n"] = {}
+        ids = {c["id"] for c in out["directed"] + out["acted"]}
+        for lang in i18n.EXTRA:
+            loc = await self.get(f"/person/{int(pid)}/movie_credits", {"language": lang}) or {}
+            out["i18n"][lang] = {"titles": {str(c["id"]): c.get("title") for c in (loc.get("cast") or []) + (loc.get("crew") or [])
+                                            if c.get("id") in ids and c.get("title")}}
+        return out
 
 
 def pick_search_result(data: dict | None, want_norm: str, fuzzy: bool = True) -> int | None:
@@ -241,4 +265,13 @@ def compact_details(raw: dict) -> dict:
         "poster_path": raw.get("poster_path"),
         "backdrop_path": raw.get("backdrop_path"),
         "imdb_id": raw.get("imdb_id"),
+        # always present: details stored before it existed are refetched once (sync._details)
+        "i18n": i18n.details_i18n(raw),
     }
+
+
+def _clean_collection_name(name: str) -> str:
+    """TMDB's localized collection names end in " - Colección" / " (Colección)": the saga's name is enough."""
+    out = re.sub(r"\s*[-–:(]?\s*Colecci[oó]n\)?\s*$", "", name, flags=re.I)
+    out = re.sub(r"^Colecci[oó]n\s*(de\s+|:\s*|-\s*)?", "", out, flags=re.I).strip()
+    return out or name

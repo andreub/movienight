@@ -211,7 +211,8 @@ def test_full_sync(jf, caplog):
     assert s["media_server"] == "jellyfin"
     j = s["jellyfin"]
     assert j == {"configured": True, "connected": True, "account": "Viewer", "movies": 5,
-                 "last_sync": j["last_sync"], "seen_pushed": None, "problem": None} and j["last_sync"]
+                 "last_sync": j["last_sync"], "seen_pushed": None, "problem": None,
+                 "problem_code": None, "problem_params": {}} and j["last_sync"]
     assert s["plex"]["connected"] is False and s["plex"]["servers"] == [] and s["ready"]
     assert all(r.url.host == "jf.example.test" for r in c.fake.calls)        # nothing to plex.tv
     assert c.fake.logins == 1

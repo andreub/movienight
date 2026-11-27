@@ -5,11 +5,19 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from movienight import db, library
+from movienight import db, i18n, library
 from movienight.app import create_app
 from movienight.config import Config
 
 FIX = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _english_only_tmdb(monkeypatch, request):
+    """TMDB fetches only the default (English) text unless a test asks for the other UI languages
+    (`@pytest.mark.i18n`): the call-counting sync tests stay about what they test."""
+    if "i18n" not in request.keywords:
+        monkeypatch.setattr(i18n, "EXTRA", ())
 
 
 def det(tid, title, year, genres, directors=(), cast=(), keywords=(), runtime=100, va=7.0, vc=2000, lang="en"):

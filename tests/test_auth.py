@@ -69,7 +69,7 @@ def test_everything_needs_a_session_except_health(tmp_path):
     with client:
         assert client.get("/healthz").status_code == 200
         r = client.get("/api/status")
-        assert r.status_code == 401 and r.json() == {"detail": "Not signed in"}
+        assert r.status_code == 401 and r.json() == {"detail": "Not signed in", "code": "auth.signedOut", "params": {}}
         r = client.get("/?x=1")
         assert r.status_code == 303 and r.headers["location"] == "/login?next=%2F%3Fx%3D1"
         assert client.get("/static/js/main.js").status_code == 303

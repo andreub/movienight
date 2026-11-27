@@ -11,6 +11,7 @@ import secrets
 import sys
 import time
 from contextlib import asynccontextmanager
+from functools import partial
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Literal
@@ -24,7 +25,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
-from . import auth, cast, chat, completion, db, letterboxd as lb, library, plex, queries, seenpush, seerr, servers, tags as lbtags, version
+from . import auth, cast, chat, completion, db, i18n, letterboxd as lb, library, plex, queries, seenpush, seerr, servers, tags as lbtags, version
 from .config import Config
 from .sync import SyncManager, history_token, plex_token, tmdb_counts
 from .util import now_iso, safe_error
@@ -41,6 +42,16 @@ def _app_version() -> str:
         _APP_VERSION = version.compute_version(_PKG_DIR)
     return _APP_VERSION
 MAX_UPLOAD = lb.MAX_ZIP_BYTES
+
+
+class Problem(HTTPException):
+    """An API error the web UI words in its own language: `code` (catalogue `apiError.<code>`) and `params`.
+    `detail` stays the English text, for other clients and for pages loaded before the catalogue knew the code."""
+
+    def __init__(self, status: int, code: str, detail: str, **params):
+        super().__init__(status, detail)
+        self.code = code
+        self.params = params
 
 
 class SyncBody(BaseModel):
@@ -182,13 +193,25 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
     def conn():
         return db.connect(cfg.db_path)
 
+    def texts(request: Request | None, st=None):
+        """TMDB text in the request's UI language (i18n.py), for the JSON views."""
+        lang = i18n.request_lang(request)
+        if lang == i18n.DEFAULT:
+            return i18n.ENGLISH
+        return i18n.texts(st or engine().get(), conn, lang)
+
     def engine() -> library.Engine:
         return app.state.engine
 
     def sync_mgr() -> SyncManager:
         return app.state.sync
 
-    # ---- error shape: always {"detail": "..."}
+    # ---- error shape: always {"detail": "..."}, plus {"code", "params"} for the errors the web UI words itself
+    @app.exception_handler(Problem)
+    async def _problem(_: Request, exc: Problem):
+        return JSONResponse({"detail": exc.detail, "code": exc.code, "params": exc.params}, status_code=exc.status_code,
+                            headers=exc.headers)
+
     @app.exception_handler(RequestValidationError)
     async def _validation(_: Request, exc: RequestValidationError):
         first = exc.errors()[0] if exc.errors() else {}
@@ -198,17 +221,17 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
     @app.exception_handler(Exception)
     async def _unhandled(_: Request, exc: Exception):
         log.error("unhandled error: %s", safe_error(exc))
-        return JSONResponse({"detail": "Internal server error"}, status_code=500)
+        return JSONResponse({"detail": "Internal server error", "code": "server.internal", "params": {}}, status_code=500)
 
     # ---- login (see auth.py): Plex account and/or OIDC; nothing here runs when login is off
     def _page(title: str, body: str, status: int = 200, links: list[tuple[str, str]] | None = None,
-              script: str = "") -> HTMLResponse:
+              script: str = "", lang: str = i18n.DEFAULT) -> HTMLResponse:
         buttons = "".join(
             f"<p><a style='display:inline-block;min-width:240px;padding:14px 22px;border-radius:12px;"
             f"background:#f5b942;color:#14122b;font-weight:700;text-decoration:none' href='{html.escape(href)}'>"
-            f"{html.escape(label)}</a></p>" for label, href in (links if links is not None else [("Sign in", "/login")]))
+            f"{html.escape(label)}</a></p>" for label, href in (links if links is not None else [(i18n.page_text(lang, "signin"), "/login")]))
         return HTMLResponse(
-            "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+            f"<!doctype html><html lang={lang}><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
             f"<title>{html.escape(title)} · MovieNight</title><link rel=icon href='/static/favicon.svg'>"
             "<body style='font:18px system-ui;background:#14122b;color:#f3efe6;display:grid;place-items:center;"
             "min-height:90vh;text-align:center;padding:24px;margin:0'>"
@@ -222,42 +245,48 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                  "const first=document.querySelector('main p a');"
                  "if(a&&first){first.parentElement.before(a.parentElement);a.focus();}}")
 
-    def _code_page(next_path: str) -> HTMLResponse:
+    def _code_page(next_path: str, lang: str = i18n.DEFAULT) -> HTMLResponse:
         """Sign in with a 4-character code typed at plex.tv/link (no typing on the TV itself)."""
+        def js(key):
+            return json.dumps(i18n.page_text(lang, key)).replace("<", "\\u003c")
+
+        def tx(key):
+            return html.escape(i18n.page_text(lang, key))
+
         nxt = json.dumps(next_path).replace("<", "\\u003c")
         script = (
             f"const NEXT={nxt};const codeEl=document.getElementById('code'),msg=document.getElementById('msg'),"
             "again=document.getElementById('again');let timer=null;"
             "function fail(t){msg.textContent=t;again.hidden=false;again.focus();}"
             "async function start(){clearTimeout(timer);again.hidden=true;codeEl.textContent='····';"
-            "msg.textContent='Getting a code…';"
+            f"msg.textContent={js('code.getting')};"
             "try{const r=await fetch('/login/plex/code?next='+encodeURIComponent(NEXT),{method:'POST',credentials:'same-origin'});"
-            "const d=await r.json();if(!r.ok)return fail(d.detail||'Could not get a code.');"
-            "codeEl.textContent=d.code;msg.textContent='Waiting for the code to be entered…';poll(d.id);}"
-            "catch(e){fail('Could not reach MovieNight.');}}"
+            f"const d=await r.json();if(!r.ok)return fail(d.detail||{js('code.cantGet')});"
+            f"codeEl.textContent=d.code;msg.textContent={js('code.waiting')};poll(d.id);}}"
+            f"catch(e){{fail({js('code.unreachable')});}}}}"
             "function poll(id){timer=setTimeout(async()=>{try{"
             "const r=await fetch('/login/plex/code/'+encodeURIComponent(id),{credentials:'same-origin'});const d=await r.json();"
-            "if(d.status==='ok'){msg.textContent='Signed in.';location.replace(d.next||'/');return;}"
+            f"if(d.status==='ok'){{msg.textContent={js('code.signedIn')};location.replace(d.next||'/');return;}}"
             "if(d.status==='pending'){poll(id);return;}"
             "codeEl.textContent='····';"
-            "fail(d.status==='expired'?'This code expired.':(d.detail||'Could not sign you in.'));"
+            f"fail(d.status==='expired'?{js('code.expired')}:(d.detail||{js('code.failed')}));"
             "}catch(e){poll(id);}},2000);}"
             "again.onclick=start;start();")
+        link = "<a href='https://plex.tv/link' target=_blank rel=noopener>plex.tv/link</a>"
         return HTMLResponse(
-            "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
-            "<title>Sign in with a code · MovieNight</title><link rel=icon href='/static/favicon.svg'>"
+            f"<!doctype html><html lang={lang}><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+            f"<title>{tx('code.title')} · MovieNight</title><link rel=icon href='/static/favicon.svg'>"
             "<body style='font:20px system-ui;background:#14122b;color:#f3efe6;display:grid;place-items:center;"
             "min-height:90vh;text-align:center;padding:24px;margin:0'>"
             "<style>a{color:#f5b942}a:focus-visible,button:focus-visible{outline:4px solid #f3efe6;outline-offset:4px}"
             "#code{font:700 clamp(64px,16vw,168px)/1.1 ui-monospace,Menlo,monospace;letter-spacing:.18em;"
             "color:#f5b942;margin:16px 0}</style><main>"
-            "<h1>Sign in with a code</h1>"
-            "<p>Go to <a href='https://plex.tv/link' target=_blank rel=noopener>plex.tv/link</a>"
-            " on your phone and enter this code</p>"
+            f"<h1>{tx('code.title')}</h1>"
+            f"<p>{html.escape(i18n.page_text(lang, 'code.go', link='{link}')).replace('{link}', link)}</p>"
             "<p id=code aria-live=polite>····</p><p id=msg role=status></p>"
             "<p><button id=again type=button hidden style='min-width:240px;padding:14px 22px;border:0;border-radius:12px;"
-            "background:#f5b942;color:#14122b;font:700 18px system-ui;cursor:pointer'>Get a new code</button></p>"
-            f"<p><a href='/login?next={html.escape(quote(next_path, safe=''))}'>Other ways to sign in</a></p></main>"
+            f"background:#f5b942;color:#14122b;font:700 18px system-ui;cursor:pointer'>{tx('code.again')}</button></p>"
+            f"<p><a href='/login?next={html.escape(quote(next_path, safe=''))}'>{tx('code.other')}</a></p></main>"
             f"<script>{script}</script>",
             headers={"Cache-Control": "no-store"})
 
@@ -294,7 +323,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         session = sessions.check(request.cookies.get(auth.SESSION_COOKIE))
         if not _session_ok(st, session):
             if path.startswith("/api/"):
-                return JSONResponse({"detail": "Not signed in"}, status_code=401)
+                return JSONResponse({"detail": "Not signed in", "code": "auth.signedOut", "params": {}}, status_code=401)
             target = path + ("?" + request.url.query if request.url.query else "")
             return RedirectResponse("/login?next=" + quote(target, safe=""), status_code=303)
         request.state.session = session
@@ -309,21 +338,22 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
     @app.get("/login", include_in_schema=False)
     def login(request: Request, next: str = "/"):
         st = request.app.state
+        lang = i18n.request_lang(request)
+        tx = partial(i18n.page_text, lang)
         if st.sessions is None:
             return RedirectResponse("/", status_code=303)
         q = "?next=" + quote(auth.safe_next(next), safe="")
         links = []
         if st.plex_login is not None:
-            links.append(("Sign in with Plex", "/login/plex" + q))
-            links.append(("Sign in with a code (TV)", "/login/plex/tv" + q))
+            links.append((tx("signin.plex"), "/login/plex" + q))
+            links.append((tx("signin.tv"), "/login/plex/tv" + q))
         if _oidc_ready(st):
-            links.append((f"Sign in with {cfg.oidc_name}", "/login/oidc" + q))
+            links.append((tx("signin.with", name=cfg.oidc_name), "/login/oidc" + q))
         if not links:
             if cfg.media_server != "plex" and not cfg.oidc_issuer:
-                return _page("Login not configured", "Set MOVIENIGHT_OIDC_ISSUER and MOVIENIGHT_OIDC_CLIENT_ID"
-                             " (or MOVIENIGHT_LOGIN=none) and restart.", 503, [])
-            return _page("Login not configured", "Set MOVIENIGHT_OIDC_CLIENT_ID and restart.", 503, [])
-        return _page("MovieNight", "Sign in to pick tonight's film.", links=links, script=_TV_FIRST)
+                return _page(tx("notConfigured"), tx("notConfigured.oidc"), 503, [], lang=lang)
+            return _page(tx("notConfigured"), tx("notConfigured.client"), 503, [], lang=lang)
+        return _page("MovieNight", tx("signin.text"), links=links, script=_TV_FIRST, lang=lang)
 
     @app.get("/login/oidc", include_in_schema=False)
     async def login_oidc(request: Request, next: str = "/"):
@@ -334,7 +364,9 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             return RedirectResponse(await st.oidc.login_url(next), status_code=303)
         except Exception as e:  # noqa: BLE001
             log.error("login start failed: %s", safe_error(e))
-            return _page("Sign-in unavailable", "The login provider could not be reached. Try again in a moment.", 502)
+            lang = i18n.request_lang(request)
+            return _page(i18n.page_text(lang, "unavailable"), i18n.page_text(lang, "unavailable.provider"), 502,
+                         lang=lang)
 
     @app.get("/login/callback", include_in_schema=False)
     async def login_callback(request: Request, state: str = "", code: str = ""):
@@ -344,10 +376,12 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         try:
             session, next_path = await st.oidc.finish(state, code)
         except auth.LoginError as e:
-            return _page("Could not sign you in", str(e), 403)
+            lang = i18n.request_lang(request)
+            return _page(i18n.page_text(lang, "failed"), i18n.login_error(lang, str(e)), 403, lang=lang)
         except Exception as e:  # noqa: BLE001
             log.error("login failed: %s", safe_error(e))
-            return _page("Could not sign you in", "Something went wrong talking to the login provider.", 502)
+            lang = i18n.request_lang(request)
+            return _page(i18n.page_text(lang, "failed"), i18n.page_text(lang, "failed.provider"), 502, lang=lang)
         return _signed_in(st, session, next_path)
 
     @app.get("/login/plex", include_in_schema=False)
@@ -359,7 +393,8 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             return RedirectResponse(await st.plex_login.login_url(next), status_code=303)
         except Exception as e:  # noqa: BLE001
             log.error("plex login start failed: %s", safe_error(e))
-            return _page("Sign-in unavailable", "plex.tv could not be reached. Try again in a moment.", 502)
+            lang = i18n.request_lang(request)
+            return _page(i18n.page_text(lang, "unavailable"), i18n.page_text(lang, "unavailable.plex"), 502, lang=lang)
 
     @app.get("/login/plex/callback", include_in_schema=False)
     async def login_plex_callback(request: Request, state: str = ""):
@@ -370,10 +405,12 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             account, token, next_path = await st.plex_login.finish(state)
             await _plex_admit(st, account, token)
         except auth.LoginError as e:
-            return _page("Could not sign you in", str(e), 403)
+            lang = i18n.request_lang(request)
+            return _page(i18n.page_text(lang, "failed"), i18n.login_error(lang, str(e)), 403, lang=lang)
         except Exception as e:  # noqa: BLE001
             log.error("plex login failed: %s", safe_error(e))
-            return _page("Could not sign you in", "Something went wrong talking to plex.tv.", 502)
+            lang = i18n.request_lang(request)
+            return _page(i18n.page_text(lang, "failed"), i18n.page_text(lang, "failed.plex"), 502, lang=lang)
         return _signed_in(st, auth.Session("plex:" + account["id"], account["name"]), next_path)
 
     async def _plex_admit(st, account: dict, token: str) -> None:
@@ -406,21 +443,22 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
     def login_plex_tv(request: Request, next: str = "/"):
         if request.app.state.plex_login is None:
             return RedirectResponse("/login", status_code=303)
-        return _code_page(auth.safe_next(next))
+        return _code_page(auth.safe_next(next), i18n.request_lang(request))
 
     @app.post("/login/plex/code", include_in_schema=False)
     async def login_plex_code(request: Request, next: str = "/"):
         """TV-style sign-in: a short code to type at plex.tv/link on a phone that is signed in to Plex."""
         st = request.app.state
+        lang = i18n.request_lang(request)
         if st.plex_login is None:
-            return JSONResponse({"detail": "Plex sign-in is off"}, status_code=404)
+            return JSONResponse({"detail": i18n.page_text(lang, "plexOff")}, status_code=404)
         try:
             started = await st.plex_login.start_code(next, request.client.host if request.client else "")
         except auth.TooManyCodes as e:
-            return JSONResponse({"detail": str(e)}, status_code=429)
+            return JSONResponse({"detail": i18n.login_error(lang, str(e))}, status_code=429)
         except Exception as e:  # noqa: BLE001
             log.error("plex code start failed: %s", safe_error(e))
-            return JSONResponse({"detail": "plex.tv could not be reached. Try again in a moment."}, status_code=502)
+            return JSONResponse({"detail": i18n.page_text(lang, "unavailable.plex")}, status_code=502)
         nonce = started.pop("nonce")
         res = JSONResponse(started, headers={"Cache-Control": "no-store"})
         res.set_cookie(auth.CODE_COOKIE, nonce, max_age=auth.CODE_SECONDS,
@@ -431,8 +469,9 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
     async def login_plex_code_poll(request: Request, handle: str):
         """{"status": "pending" | "ok" | "expired"}; "ok" also sets the session cookie, like the callback."""
         st = request.app.state
+        lang = i18n.request_lang(request)
         if st.plex_login is None:
-            return JSONResponse({"detail": "Plex sign-in is off"}, status_code=404)
+            return JSONResponse({"detail": i18n.page_text(lang, "plexOff")}, status_code=404)
         headers = {"Cache-Control": "no-store"}
         try:
             done = await st.plex_login.poll_code(handle, request.cookies.get(auth.CODE_COOKIE))
@@ -441,12 +480,14 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             account, token, next_path = done
             await _plex_admit(st, account, token)
         except auth.CodeExpired as e:
-            return JSONResponse({"status": "expired", "detail": str(e)}, status_code=410, headers=headers)
+            return JSONResponse({"status": "expired", "detail": i18n.login_error(lang, str(e))}, status_code=410,
+                                headers=headers)
         except auth.LoginError as e:
-            return JSONResponse({"status": "denied", "detail": str(e)}, status_code=403, headers=headers)
+            return JSONResponse({"status": "denied", "detail": i18n.login_error(lang, str(e))}, status_code=403,
+                                headers=headers)
         except Exception as e:  # noqa: BLE001
             log.error("plex code login failed: %s", safe_error(e))
-            return JSONResponse({"detail": "Something went wrong talking to plex.tv."}, status_code=502, headers=headers)
+            return JSONResponse({"detail": i18n.page_text(lang, "failed.plex")}, status_code=502, headers=headers)
         res = JSONResponse({"status": "ok", "next": next_path}, headers=headers)
         res.set_cookie(auth.SESSION_COOKIE, st.sessions.sign("plex:" + account["id"], account["name"]),
                        max_age=auth.SESSION_DAYS * 86400, **st.sessions.cookie_kwargs())
@@ -469,8 +510,9 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         return res
 
     @app.get("/logged-out", include_in_schema=False)
-    def logged_out():
-        return _page("Signed out", "See you at the next movie night.")
+    def logged_out(request: Request):
+        lang = i18n.request_lang(request)
+        return _page(i18n.page_text(lang, "signedout"), i18n.page_text(lang, "signedout.text"), lang=lang)
 
     @app.get("/api/me")
     def me(request: Request):
@@ -514,15 +556,18 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                 jf = c.execute("SELECT reachable, access_token FROM media_servers WHERE id LIKE 'jf:%'"
                                " ORDER BY id LIMIT 1").fetchone()
                 problem = sync_mgr().jellyfin_problem
+                code, code_params = sync_mgr().jellyfin_problem_code or (None, {})
                 if not cfg.jellyfin_configured:
                     problem = ("Jellyfin is selected but MOVIENIGHT_JELLYFIN_URL, MOVIENIGHT_JELLYFIN_USER"
                                " or MOVIENIGHT_JELLYFIN_PASSWORD is not set")
+                    code, code_params = "jellyfin.unset", {}
                 res["jellyfin"] = {
                     "configured": cfg.jellyfin_configured,
                     "connected": bool(cfg.jellyfin_configured and jf and jf["access_token"] and jf["reachable"]),
                     "account": db.get_meta(c, "jellyfin_account") or None,
                     "movies": movies, "last_sync": db.get_meta(c, "jellyfin_last_sync"),
                     "seen_pushed": pushed, "problem": problem,
+                    "problem_code": code if problem else None, "problem_params": code_params if problem else {},
                 }
             return res
         finally:
@@ -537,7 +582,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             try:
                 return await plex.create_pin(app.state.http, cid)
             except (httpx.HTTPError, KeyError, ValueError) as e:
-                raise HTTPException(502, f"Could not reach plex.tv ({safe_error(e)})") from None
+                raise Problem(502, "plex.unreachable", f"Could not reach plex.tv ({safe_error(e)})") from None
 
         @app.get("/api/plex/pin/{pin_id}")
         async def plex_pin_check(pin_id: Id):
@@ -547,10 +592,10 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                 token = await plex.check_pin(app.state.http, cid, pin_id)
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 404:
-                    raise HTTPException(404, "PIN expired, start again") from None
-                raise HTTPException(502, f"Could not reach plex.tv ({safe_error(e)})") from None
+                    raise Problem(404, "plex.pinExpired", "PIN expired, start again") from None
+                raise Problem(502, "plex.unreachable", f"Could not reach plex.tv ({safe_error(e)})") from None
             except (httpx.HTTPError, KeyError, ValueError) as e:
-                raise HTTPException(502, f"Could not reach plex.tv ({safe_error(e)})") from None
+                raise Problem(502, "plex.unreachable", f"Could not reach plex.tv ({safe_error(e)})") from None
             if not token:
                 return {"authorized": False}
             account = await plex.account_name(app.state.http, cid, token)
@@ -576,7 +621,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             with db.session(cfg.db_path) as c:
                 cur = c.execute("UPDATE media_servers SET enabled=? WHERE id=?", (int(body.enabled), server_id))
                 if cur.rowcount == 0:
-                    raise HTTPException(404, "Unknown server")
+                    raise Problem(404, "server.unknown", "Unknown server")
             engine().invalidate()
             return {"ok": True}
 
@@ -585,14 +630,14 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
     async def sync_now(body: SyncBody | None = None):
         what = body.what if body else "all"
         if not sync_mgr().start(what):
-            raise HTTPException(409, "A sync is already running")
+            raise Problem(409, "sync.running", "A sync is already running")
         return {"started": True}
 
     @app.post("/api/letterboxd/import")
     async def lb_import(file: UploadFile = File(...)):
         data = await file.read(MAX_UPLOAD + 1)
         if len(data) > MAX_UPLOAD:
-            raise HTTPException(413, "File too large")
+            raise Problem(413, "upload.tooLarge", "File too large")
 
         def run() -> dict:          # parsing up to 20 MB: off the event loop
             with db.session(cfg.db_path) as c:
@@ -603,7 +648,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         try:
             counts = await asyncio.to_thread(run)
         except lb.ExportError as e:
-            raise HTTPException(400, str(e)) from None
+            raise Problem(400, e.code, str(e)) from None
         engine().invalidate()
         sync_mgr().start("tmdb")
         return counts
@@ -682,10 +727,10 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
     @app.post("/api/play", status_code=204)
     async def play(body: PlayBody):
         if cfg.media_server != "plex":
-            raise HTTPException(400, "Playing on a player is only available with Plex")
+            raise Problem(400, "play.plexOnly", "Playing on a player is only available with Plex")
         player = next((p for p in await cast_players() if p["id"] == body.player_id), None)
         if player is None:
-            raise HTTPException(404, "Player not found")
+            raise Problem(404, "play.noPlayer", "Player not found")
         c = conn()
         try:
             row = c.execute(
@@ -696,7 +741,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         finally:
             c.close()
         if row is None:
-            raise HTTPException(404, "Movie not found on that server")
+            raise Problem(404, "play.notOnServer", "Movie not found on that server")
         server_token = row["access_token"] or token
         # Send the TV a connection that actually answers from here (local first, then remote, relay last):
         # a shared server's "local" address belongs to its own network and may be unreachable.
@@ -712,7 +757,8 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             server_token = srv["access_token"] or server_token
         ok = await cast.play(player, server_url, server_token, body.rating_key)
         if not ok:
-            raise HTTPException(502, f"Could not reach {player['name']}. Is it on and on the same network?")
+            raise Problem(502, "play.unreachable", f"Could not reach {player['name']}. Is it on and on the same network?",
+                          name=player["name"])
         return Response(status_code=204)
 
     @app.get("/api/moods")
@@ -744,39 +790,39 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         """Letterboxd diary tags that can steer picks (tag / tag_family on /api/recommendations and /api/pick)."""
         return {"min_films": lbtags.MIN_GROUP_FILMS, "families": lbtags.usable(engine().get())}
 
-    def saga_next(st) -> dict[int, dict]:
+    def saga_next(st, tx=None) -> dict[int, dict]:
         """movie id -> the started saga it continues (Tonight's "Complete a saga"); {} with the completionist off."""
         if not cfg.completionist:
             return {}
         c = conn()
         try:
-            return completion.saga_next(st, c)
+            return completion.saga_next(st, c, tx)
         finally:
             c.close()
 
-    def film_groups(st, tmdb_id: int | None) -> list[dict]:
+    def film_groups(st, tmdb_id: int | None, tx=None) -> list[dict]:
         """The groups a film is part of, for its detail; [] with the completionist off."""
         if not cfg.completionist or not tmdb_id:
             return []
         c = conn()
         try:
-            return completion.groups_of(st, c, tmdb_id)
+            return completion.groups_of(st, c, tmdb_id, tx)
         finally:
             c.close()
 
-    def saga_items(cands: list, st, dismissed: dict, nexts: dict[int, dict] | None) -> list[dict]:
+    def saga_items(cands: list, st, dismissed: dict, nexts: dict[int, dict] | None, tx=i18n.ENGLISH) -> list[dict]:
         """movie_json of each film; with `nexts` (the Complete a saga filter), its saga named first in the reasons.
         With the completionist on, each also carries `groups` ("Part of X · n of N", from the completion cache)."""
         out = []
         c = conn() if cfg.completionist else None
         try:
             for cand in cands:
-                m = library.movie_json(cand, st, dismissed)
+                m = library.movie_json(cand, st, dismissed, texts=tx)
                 if nexts and cand.id in nexts:
                     m["reasons"] = [completion.saga_reason(nexts[cand.id])] + m["reasons"][:3]
                     m["saga"] = nexts[cand.id]
                 if c is not None:
-                    m["groups"] = completion.groups_of(st, c, cand.tmdb_id)
+                    m["groups"] = completion.groups_of(st, c, cand.tmdb_id, tx)
                 out.append(m)
         finally:
             if c is not None:
@@ -787,24 +833,26 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
     # (MOVIENIGHT_COMPLETIONIST=0: not mounted, so every /api/completions* answers 404)
     if cfg.completionist:
         @app.get("/api/completions")
-        def completions(kind: Literal["collection", "franchise", "series", "list", "director", "actor"] | None = None, hidden: bool = False):
+        def completions(request: Request, kind: Literal["collection", "franchise", "series", "list", "director", "actor"] | None = None, hidden: bool = False):
             st = engine().get()
+            tx = texts(request, st)
             c = conn()
             try:
-                return completion.overview(st, c, kind=kind, show_hidden=hidden)
+                return completion.overview(st, c, kind=kind, show_hidden=hidden, texts=tx)
             finally:
                 c.close()
 
         @app.get("/api/completions/{key}")
-        def completion_group(key: str):
+        def completion_group(request: Request, key: str):
             st = engine().get()
+            tx = texts(request, st)
             c = conn()
             try:
-                g = completion.group(st, c, key)
+                g = completion.group(st, c, key, tx)
             finally:
                 c.close()
             if g is None:
-                raise HTTPException(404, "Group not found")
+                raise Problem(404, "group.notFound", "Group not found")
             return g
 
         @app.post("/api/completions/{key}/hide")
@@ -812,7 +860,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             st = engine().get()
             with db.session(cfg.db_path) as c:
                 if not any(g["key"] == key for g in completion.build(st, c)):
-                    raise HTTPException(404, "Group not found")
+                    raise Problem(404, "group.notFound", "Group not found")
                 c.execute("INSERT OR REPLACE INTO completion_hidden(group_key, created_at) VALUES(?,?)", (key, now_iso()))
             return {"ok": True}
 
@@ -831,13 +879,13 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         if session is not None:
             return session.sub
         if request.app.state.sessions is not None:
-            raise HTTPException(401, "Not signed in")
+            raise Problem(401, "auth.signedOut", "Not signed in")
         return "local"
 
     def _seerr_failed(e: seerr.SeerrError) -> HTTPException:
         if e.status >= 500:
             log.warning("Seerr: %s", e)
-        return HTTPException(e.status, str(e))
+        return Problem(e.status, e.code, str(e), **e.params)
 
     @app.get("/api/seerr/status")
     def seerr_account(request: Request):
@@ -899,7 +947,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             """Request a film as this user's Seerr account: {"status": "requested" | "available"}. Already
             requested counts as requested; 403 when the account may not request, 409 when it must reconnect."""
             if tmdb_id < 1:
-                raise HTTPException(404, "Film not found")
+                raise Problem(404, "film.notFound", "Film not found")
             try:
                 state = await app.state.seerr.request(_seerr_user(request), tmdb_id)
             except seerr.SeerrError as e:
@@ -908,6 +956,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
 
     @app.get("/api/recommendations")
     def recommendations(
+        request: Request,
         limit: int = Query(24, ge=1, le=200), offset: int = Query(0, ge=0),
         sort: Literal["match", "rating", "recent", "year", "runtime"] = "match",
         mood: str | None = None, era: str | None = None, genre: list[str] = Query(default=[]),
@@ -919,19 +968,21 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         f = filters(mood, genre, max_runtime, min_year, max_year, watchlist_only, include_watched,
                     include_dismissed, server, q, era)
         st, dismissed = engine().get(), dismissed_now()
+        tx = texts(request, st)
         cands = base_cands(st, tag, tag_family)
-        nexts = saga_next(st) if complete else None
+        nexts = saga_next(st, tx) if complete else None
         if nexts is not None:           # "Complete a saga": the next film of each started saga, in the library
             cands = [c for c in cands if c.id in nexts]
         matched = queries.sort_cands(queries.apply_filters(cands, f, dismissed), sort)
         return {
-            "items": saga_items(matched[offset:offset + limit], st, dismissed, nexts),
+            "items": saga_items(matched[offset:offset + limit], st, dismissed, nexts, tx),
             "total": len(matched),
             "facets": queries.facets(cands, f, dismissed),
         }
 
     @app.get("/api/pick")
     def pick(
+        request: Request,
         exclude: list[int] = Query(default=[]),
         mood: str | None = None, era: str | None = None, genre: list[str] = Query(default=[]),
         max_runtime: int | None = Query(None, ge=1), min_year: int | None = None, max_year: int | None = None,
@@ -945,30 +996,32 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         f = filters(mood, genre, max_runtime, min_year, max_year, watchlist_only, include_watched,
                     include_dismissed, server, q, era)
         st, dismissed = engine().get(), dismissed_now()
+        tx = texts(request, st)
         matched = queries.apply_filters(base_cands(st, tag, tag_family), f, dismissed)
-        nexts = saga_next(st)
+        nexts = saga_next(st, tx)
         if complete:
             matched = [c for c in matched if c.id in nexts]
         result = queries.pick(matched, set(exclude), random.Random())
         if result is None:
-            raise HTTPException(404, "Nothing matches these filters")
+            raise Problem(404, "pick.none", "Nothing matches these filters")
         chosen, alts = result
         shown = nexts if complete else None
-        out = {"pick": saga_items([chosen], st, dismissed, shown)[0],
-               "alternatives": saga_items(alts, st, dismissed, shown)}
+        out = {"pick": saga_items([chosen], st, dismissed, shown, tx)[0],
+               "alternatives": saga_items(alts, st, dismissed, shown, tx)}
         if cfg.completionist:
             out["saga_count"] = len(matched) if complete else sum(c.id in nexts for c in matched)
         return out
 
     @app.get("/api/movies/{movie_id}")
-    def movie(movie_id: Id):
+    def movie(request: Request, movie_id: Id):
         st, dismissed = engine().get(), dismissed_now()
         c = st.by_id.get(movie_id)
         if c is None:
-            raise HTTPException(404, "Movie not found")
-        out = library.movie_detail_json(c, st, dismissed)
+            raise Problem(404, "movie.notFound", "Movie not found")
+        tx = texts(request, st)
+        out = library.movie_detail_json(c, st, dismissed, tx)
         if cfg.completionist:
-            out["groups"] = film_groups(st, c.tmdb_id)    # "Part of X · n of N", best first
+            out["groups"] = film_groups(st, c.tmdb_id, tx)    # "Part of X · n of N", best first
         return out
 
     @app.post("/api/movies/{movie_id}/dismiss")
@@ -977,7 +1030,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         until = None if days == 0 else (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
         with db.session(cfg.db_path) as c:
             if not c.execute("SELECT 1 FROM movies WHERE id=?", (movie_id,)).fetchone():
-                raise HTTPException(404, "Movie not found")
+                raise Problem(404, "movie.notFound", "Movie not found")
             c.execute("INSERT OR REPLACE INTO dismissals(movie_id, until, created_at) VALUES(?,?,?)",
                       (movie_id, until, now_iso()))
         return {"ok": True}
@@ -993,7 +1046,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         with db.session(cfg.db_path) as c:
             row = c.execute("SELECT tmdb_id, dkey FROM movies WHERE id=?", (movie_id,)).fetchone()
             if row is None:
-                raise HTTPException(404, "Movie not found")
+                raise Problem(404, "movie.notFound", "Movie not found")
             _store_vote(c, library.feedback_key(row["tmdb_id"], row["dkey"]), body.vote)
         engine().invalidate()
         return {"ok": True}
@@ -1014,7 +1067,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         with db.session(cfg.db_path) as c:
             row = c.execute("SELECT tmdb_id, dkey FROM movies WHERE id=?", (movie_id,)).fetchone()
             if row is None:
-                raise HTTPException(404, "Movie not found")
+                raise Problem(404, "movie.notFound", "Movie not found")
             key = library.feedback_key(row["tmdb_id"], row["dkey"])
             if not body.seen and c.execute("SELECT 1 FROM seen WHERE key=?", (key,)).fetchone() is None:
                 # nothing marked here to undo: refuse when the watch comes from Letterboxd or the media server
@@ -1030,7 +1083,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         """409 when the film was seen on Letterboxd or played on the media server: it can only be unmarked there."""
         if "letterboxd" in seen_via or "server" in seen_via:
             where = "Letterboxd" if "letterboxd" in seen_via else media.label
-            raise HTTPException(409, f"Seen on {where}: it can only be unmarked there")
+            raise Problem(409, "seen.elsewhere", f"Seen on {where}: it can only be unmarked there", where=where)
 
     async def _set_seen(key: str, body: SeenBody) -> dict:
         """Store (or remove) the "seen it" mark of `key` and, when given, its vote in one transaction, then push
@@ -1079,10 +1132,11 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             " UNION ALL SELECT 1 FROM seen WHERE key=? UNION ALL SELECT 1 FROM votes WHERE key=? LIMIT 1",
             (tmdb_id, tmdb_id, key, key)).fetchone() is not None
 
-    def _film_view(tmdb_id: int, det: dict | None = None) -> tuple:
+    def _film_view(tmdb_id: int, det: dict | None = None, request: Request | None = None) -> tuple:
         """(film_json or None, whether to fetch its TMDB details). Blocking: the engine may rebuild and the
         completion groups be built. `det` (TMDB details just fetched) is cached first."""
         st = engine().get()
+        tx = texts(request, st)
         c = conn()
         try:
             if det:
@@ -1090,22 +1144,22 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                           (tmdb_id, json.dumps(det), now_iso()))
                 c.commit()
             base = _listed_film(st, c, tmdb_id)
-            out = library.film_json(c, st, tmdb_id, base)
+            out = library.film_json(c, st, tmdb_id, base, tx)
             fetch = not det and (out is None or not out["details"]) and _film_known(c, tmdb_id, base)
         finally:
             c.close()
         if out is not None:
             out.pop("details", None)
             if cfg.completionist:
-                out["groups"] = film_groups(st, tmdb_id)
+                out["groups"] = film_groups(st, tmdb_id, tx)
         return out, fetch
 
     @app.get("/api/films/{tmdb_id}")
-    async def film(tmdb_id: Id):
+    async def film(request: Request, tmdb_id: Id):
         """A light detail view: library info, else the cached TMDB details (fetched once on demand, only for a film
         the app knows of: see _film_known), else what a group knows; plus how the film was seen and whether that
         mark can be undone here."""
-        out, fetch = await asyncio.to_thread(_film_view, tmdb_id)
+        out, fetch = await asyncio.to_thread(_film_view, tmdb_id, None, request)
         if fetch and sync_mgr().tmdb.configured:
             try:
                 det = await sync_mgr().tmdb.details(tmdb_id)
@@ -1113,9 +1167,9 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
                 log.warning("TMDB details for a film outside the library failed: %s", safe_error(e))
                 det = None
             if det:
-                out, _ = await asyncio.to_thread(_film_view, tmdb_id, det)
+                out, _ = await asyncio.to_thread(_film_view, tmdb_id, det, request)
         if out is None:
-            raise HTTPException(404, "Film not found")
+            raise Problem(404, "film.notFound", "Film not found")
         return out
 
     @app.post("/api/films/{tmdb_id}/seen")
@@ -1133,7 +1187,7 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         c = conn()
         try:
             if not _film_known(c, tmdb_id, _listed_film(st, c, tmdb_id)):
-                raise HTTPException(404, "Film not found")
+                raise Problem(404, "film.notFound", "Film not found")
             if not body.seen:
                 f = library.film_json(c, st, tmdb_id, {"title": "?"})
                 if f:
@@ -1142,40 +1196,46 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
             c.close()
 
     @app.get("/api/seen-candidates")
-    def seen_candidates(limit: int = Query(60, ge=1, le=200), offset: int = Query(0, ge=0)):
+    def seen_candidates(request: Request, limit: int = Query(60, ge=1, le=200), offset: int = Query(0, ge=0)):
         st, dismissed = engine().get(), dismissed_now()
+        tx = texts(request, st)
         items, total = library.seen_candidates(st, dismissed, limit, offset)
-        return {"items": [library.movie_json(c, st, dismissed, with_reasons=False) for c in items], "total": total}
+        return {"items": [library.movie_json(c, st, dismissed, with_reasons=False, texts=tx) for c in items],
+                "total": total}
 
     @app.get("/api/seen-marked")
-    def seen_marked(limit: int = Query(60, ge=1, le=200), offset: int = Query(0, ge=0)):
+    def seen_marked(request: Request, limit: int = Query(60, ge=1, le=200), offset: int = Query(0, ge=0)):
         """Films marked "seen it" here, newest mark first, with their current vote (`my_vote`)."""
         st, dismissed = engine().get(), dismissed_now()
+        tx = texts(request, st)
         c = conn()
         try:
             items, total = library.seen_marked(c, st, limit, offset)
         finally:
             c.close()
-        return {"items": [library.movie_json(m, st, dismissed, with_reasons=False) for m in items], "total": total}
+        return {"items": [library.movie_json(m, st, dismissed, with_reasons=False, texts=tx) for m in items],
+                "total": total}
 
     @app.get("/api/feedback")
-    def feedback_overview():
+    def feedback_overview(request: Request):
+        tx = texts(request)
         c = conn()
         try:
             library.record_outcomes(c)
-            return library.feedback_json(c)
+            return library.feedback_json(c, tx)
         finally:
             c.close()
 
     @app.get("/api/profile")
-    def profile():
+    def profile(request: Request):
         st = engine().get()
+        tx = texts(request, st)
         c = conn()
         try:
             model = library.model_summary(c)
         finally:
             c.close()
-        return library.profile_json(st, model)
+        return library.profile_json(st, model, tx)
 
     # ---- images
     @app.get("/api/image/{movie_id}/{kind}")

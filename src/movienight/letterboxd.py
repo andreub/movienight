@@ -32,7 +32,11 @@ NS = {"lb": "https://letterboxd.com", "tmdb": "https://themoviedb.org"}
 
 
 class ExportError(ValueError):
-    pass
+    """A user-facing problem with an upload or a username; `code`: the web UI words it (catalogue `apiError.<code>`)."""
+
+    def __init__(self, message: str, code: str = "lb.invalid"):
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass
@@ -274,20 +278,20 @@ def import_dir(conn: sqlite3.Connection, root: Path, force: bool = False) -> dic
 def read_zip(data: bytes) -> dict[str, bytes]:
     """Safely read the known CSVs out of an export ZIP, entirely in memory."""
     if len(data) > MAX_ZIP_BYTES:
-        raise ExportError("File too large")
+        raise ExportError("File too large", "upload.tooLarge")
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile as e:
-        raise ExportError("Not a valid ZIP file") from e
+        raise ExportError("Not a valid ZIP file", "lb.notZip") from e
     infos = zf.infolist()
     if len(infos) > 500:
-        raise ExportError("Too many entries in ZIP")
+        raise ExportError("Too many entries in ZIP", "lb.badZip")
     wanted: dict[str, zipfile.ZipInfo] = {}
     for info in infos:
         name = info.filename.replace("\\", "/")
         pp = PurePosixPath(name)
         if pp.is_absolute() or ".." in pp.parts:
-            raise ExportError("Unsafe path in ZIP")
+            raise ExportError("Unsafe path in ZIP", "lb.badZip")
         if info.is_dir():
             continue
         parts = [p.lower() for p in pp.parts]
@@ -300,17 +304,17 @@ def read_zip(data: bytes) -> dict[str, bytes]:
     total = 0
     for rel, info in wanted.items():
         if info.file_size > MAX_MEMBER_BYTES:
-            raise ExportError("ZIP member too large")
+            raise ExportError("ZIP member too large", "lb.badZip")
         with zf.open(info) as fh:
             chunk = fh.read(MAX_MEMBER_BYTES + 1)
         if len(chunk) > MAX_MEMBER_BYTES:
-            raise ExportError("ZIP member too large")
+            raise ExportError("ZIP member too large", "lb.badZip")
         total += len(chunk)
         if total > MAX_TOTAL_BYTES:
-            raise ExportError("ZIP content too large")
+            raise ExportError("ZIP content too large", "lb.badZip")
         files[rel] = chunk
     if not ({"watched.csv", "ratings.csv"} & set(files)):
-        raise ExportError("This does not look like a Letterboxd export (watched.csv / ratings.csv missing)")
+        raise ExportError("This does not look like a Letterboxd export (watched.csv / ratings.csv missing)", "lb.notExport")
     return files
 
 
@@ -324,7 +328,7 @@ def parse_rss(xml: bytes) -> list[dict]:
     try:
         root = ET.fromstring(xml)
     except Exception as e:  # defusedxml raises several types
-        raise ExportError("Invalid RSS feed") from e
+        raise ExportError("Invalid RSS feed", "lb.badRss") from e
     out = []
     for item in root.iter("item"):
         def t(tag):
@@ -385,7 +389,7 @@ def apply_rss(conn: sqlite3.Connection, entries: list[dict]) -> int:
 
 async def fetch_rss(client: httpx.AsyncClient, user: str) -> bytes:
     if not user or not all(c.isalnum() or c in "_-" for c in user):
-        raise ExportError("Invalid Letterboxd username")
+        raise ExportError("Invalid Letterboxd username", "lb.badUser")
     r = await client.get(
         f"https://letterboxd.com/{user}/rss/",
         headers={"User-Agent": BROWSER_UA, "Accept": "application/rss+xml,text/xml,*/*"},
