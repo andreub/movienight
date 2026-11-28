@@ -527,7 +527,7 @@ network (VPN or a reverse proxy with access control).
 
 Every push to `main` publishes a new version: a `vX.Y.Z` git tag, a GitHub Release and a Docker
 image (linux/amd64 and linux/arm64) at `ghcr.io/andreub/movienight`, tagged `X.Y.Z`, `X.Y`, `X`,
-`latest` and `sha-<short>`. The GHCR package is private, like the repo.
+`latest` and `sha-<short>`. The GHCR package is public, like the repo: `docker pull ghcr.io/andreub/movienight` needs no login.
 
 The version comes from the title of the merged PR, which must follow Conventional Commits
 (`type(scope): subject`; a PR check enforces it). If the push has no PR, the commit subject is used.
