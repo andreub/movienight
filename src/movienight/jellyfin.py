@@ -1,5 +1,5 @@
 """Jellyfin: sign in with a user name and password, read the movie library, mark items played, fetch
-images. Mirrors plex.py and returns the same normalised item dict. Tokens and passwords are never
+images, and start a movie on another Jellyfin client (remote control). Mirrors plex.py and returns the same normalised item dict. Tokens and passwords are never
 logged and never put in a URL (they travel in the Authorization header only).
 
 Endpoints (Jellyfin 12.4 API, also present in 10.8-10.11 unless noted):
@@ -9,17 +9,25 @@ Endpoints (Jellyfin 12.4 API, also present in 10.8-10.11 unless noted):
   POST   /UserPlayedItems/{itemId}?userId=...     mark played (10.9+); DELETE = unplayed
   POST   /Users/{userId}/PlayedItems/{itemId}     same on 10.8 (kept, obsolete, on newer servers)
   GET    /Items/{itemId}/Images/{Primary|Backdrop}?maxWidth=&maxHeight=&quality=
+  GET    /Sessions?controllableByUserId=...       open clients this user may remote-control
+  POST   /Sessions/{sessionId}/Playing?playCommand=PlayNow&itemIds=...   start a movie there (204 = queued)
   web:   <base>/web/#/details?id=<itemId>&serverId=<serverId>
 """
 from __future__ import annotations
 
+import asyncio
 import re
+import time
+from dataclasses import dataclass
 from urllib.parse import quote
 
 import httpx
 
 API_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
 PLAYED_TIMEOUT = httpx.Timeout(10.0, connect=4.0)
+SESSION_TIMEOUT = httpx.Timeout(8.0, connect=4.0)
+PLAY_CONFIRM_SECONDS = 15.0     # how long to wait for the client to report it is playing
+PLAY_POLL_SECONDS = 1.0
 PAGE_SIZE = 200
 SERVER_PREFIX = "jf:"          # media_servers.id = "jf:<ServerId>"
 FIELDS = ",".join(["ProviderIds", "OriginalTitle", "Overview", "Taglines", "Genres", "People",
@@ -207,3 +215,63 @@ async def fetch_image(client: httpx.AsyncClient, base: str, token: str, device_i
     if r.status_code == 200 and ctype.startswith("image/") and r.content:
         return r.content, ctype.split(";")[0]
     return None
+
+
+# --------------------------------------------------------------------------- remote play
+
+@dataclass(frozen=True, slots=True)
+class Session:
+    """An open Jellyfin client that can be told to play a movie. `device_id` is stable across reconnects
+    (the session `id` is not), so it is the id the web UI sees."""
+    id: str
+    device_id: str
+    name: str
+    product: str
+
+
+def parse_session(s: dict, own_device_id: str) -> Session | None:
+    """A SessionInfoDto -> Session when the client accepts remote commands and plays video, else None.
+    A suspended client (e.g. the Tizen app left in the background) stays listed without those capabilities."""
+    sid, device_id = str(s.get("Id") or ""), str(s.get("DeviceId") or "")
+    if not sid or not device_id or device_id == own_device_id:
+        return None
+    if not s.get("SupportsRemoteControl") or "Video" not in (s.get("PlayableMediaTypes") or []):
+        return None
+    product = str(s.get("Client") or "Jellyfin")
+    return Session(id=sid, device_id=device_id, name=str(s.get("DeviceName") or product), product=product)
+
+
+async def _sessions_raw(client: httpx.AsyncClient, base: str, device_id: str, token: str, user_id: str) -> list[dict]:
+    r = await client.get(base + "/Sessions", params={"controllableByUserId": user_id},
+                         headers=auth_header(device_id, token), timeout=SESSION_TIMEOUT)
+    r.raise_for_status()
+    body = r.json()
+    return body if isinstance(body, list) else []
+
+
+async def get_sessions(client: httpx.AsyncClient, base: str, device_id: str, token: str,
+                       user_id: str) -> list[Session]:
+    """Clients the user can start a movie on, sorted by name. Raises httpx errors (401 = token gone)."""
+    found = (parse_session(s, device_id) for s in await _sessions_raw(client, base, device_id, token, user_id))
+    return sorted((s for s in found if s), key=lambda s: s.name.lower())
+
+
+async def play_now(client: httpx.AsyncClient, base: str, device_id: str, token: str, user_id: str,
+                   session: Session, item_id: str) -> bool:
+    """Tell the client to play the movie, then wait until it reports something playing (a server with
+    cinema intros plays a preroll first, so any item counts). False when it never starts. Raises httpx
+    errors from the PlayNow call (404 = session gone)."""
+    r = await client.post(f"{base}/Sessions/{quote(session.id, safe='')}/Playing",
+                          params={"playCommand": "PlayNow", "itemIds": item_id},
+                          headers=auth_header(device_id, token), timeout=SESSION_TIMEOUT)
+    r.raise_for_status()
+    deadline = time.monotonic() + PLAY_CONFIRM_SECONDS
+    while time.monotonic() < deadline:
+        await asyncio.sleep(PLAY_POLL_SECONDS)
+        try:
+            sessions = await _sessions_raw(client, base, device_id, token, user_id)
+        except httpx.HTTPError:
+            continue
+        if any(s.get("Id") == session.id and s.get("NowPlayingItem") for s in sessions):
+            return True
+    return False

@@ -40,7 +40,7 @@ network.
 - 👍 **Votes and "seen it" marks**: teach the recommender about films you never rated; optionally pushed back as played on the media server.
 - 🧩 **Completionist**: sagas, franchises, series, canonical lists (Oscars Best Picture, Sight and Sound 2022), directors and actors, with what is left to watch.
 - 🙋 **Seerr requests** (optional): request missing films through Overseerr or Jellyseerr with your own account.
-- 📺 **Play on your TV**: Google Cast to Chromecasts and Android TVs (Plex).
+- 📺 **Play on your TV**: Google Cast to Chromecasts and Android TVs (Plex), or any open Jellyfin app (Jellyfin).
 - 🤖 **Android TV app**: a separate app loads this UI; D-pad navigation built in.
 - 💬 **AI chat** (optional): ask for "something like..." and get films from your library (Anthropic or any OpenAI-compatible endpoint).
 - 🔐 **Login options**: Plex, OpenID Connect (PKCE) or none.
@@ -95,6 +95,7 @@ flowchart LR
     SEERR["Seerr (optional)"]
     LLM["AI provider (optional)"]
     CAST["Chromecast / Android TV"]
+    JFAPP["Jellyfin app on a TV"]
 
     WEB --> UI
     TV --> UI
@@ -109,6 +110,7 @@ flowchart LR
     SYNC --> TMDB
     API --> SEERR
     API -->|"Google Cast"| CAST
+    MS -->|"remote control"| JFAPP
     CHAT --> LLM
     CHAT --> REC
 ```
@@ -403,6 +405,18 @@ MovieNight uses Google Cast, the same way the Plex phone app casts, because Plex
   players) or the `MOVIENIGHT_CAST_HOSTS` variable (comma-separated IPs or hostnames).
 - The device name shown is the one the TV reports. Plex only.
 
+With Jellyfin, the menu lists the Jellyfin apps that are open right now and accept remote control (the
+Samsung/LG TV apps, Android TV, Jellyfin Web, Jellyfin Media Player, Kodi with the Jellyfin add-on), and
+"Play on <name>" asks the Jellyfin server to start the film there (`POST /Sessions/{id}/Playing`). No
+network discovery or extra ports are needed: the app talks to Jellyfin only.
+
+- The Jellyfin app must be open on the TV and signed in as `MOVIENIGHT_JELLYFIN_USER` (another user's
+  apps are only listed if that user may remote-control others). MovieNight cannot switch the TV on or
+  start the app, as Cast does.
+- An app left in the background can stay connected but stop accepting commands (seen on Samsung TVs):
+  it then disappears from the menu until it is reopened.
+- A server with a cinema-intros plugin plays its preroll first, then the film.
+
 Android TV: a separate app (repo movienight-androidtv) loads this UI; the UI detects the `MovieNightTV` user
 agent and enables D-pad navigation (arrow keys move focus to the nearest control, Enter opens it, a larger focus
 ring) and opens Plex links in the Plex app, as on phones.
@@ -420,7 +434,8 @@ any problem, "Sync now"); there is no connection form. MovieNight signs in once
 (`POST /Users/AuthenticateByName`), keeps the access token in its database and signs in again only if
 the server rejects it. The password is read from the environment and never stored, logged or returned
 by the API. What the account played in Jellyfin counts as watched (`MOVIENIGHT_JELLYFIN_WATCHED=0`
-turns that off), "Play on Jellyfin" opens the film in the Jellyfin web app, and with
+turns that off), "Open in Jellyfin Web" opens the film in the Jellyfin web app (and "Play on <device>" starts it
+on an open Jellyfin app, see Play on your TV), and with
 `MOVIENIGHT_PUSH_SEEN` on, "seen it" marks are set as played there. If the account is shared with
 other people, set `MOVIENIGHT_JELLYFIN_WATCHED=0` and leave `MOVIENIGHT_PUSH_SEEN` off: its played
 state is not only yours. Written against the Jellyfin 12.4 API documentation (the endpoints also exist
@@ -628,7 +643,7 @@ src/movienight/            FastAPI app (app.py), sync jobs (sync.py), SQLite sto
   recommender.py           Taste scoring and recommendations
   completion.py            Completionist groups (sagas, lists, people)
   letterboxd.py, tmdb.py   Letterboxd import/RSS and TMDB client
-  plex.py, jellyfin.py     Media server clients (servers.py picks one)
+  plex.py, jellyfin.py     Media server clients (servers.py picks one); Jellyfin remote play
   seerr.py, cast.py        Seerr requests, Google Cast playback
   auth.py, chat.py         Login (Plex / OIDC) and the optional AI chat
   static/                  Vanilla JS/CSS frontend (no build step)

@@ -50,6 +50,9 @@ class FakeJellyfin:
         self.logins = 0
         self.legacy_played = False      # True: /UserPlayedItems is missing (Jellyfin 10.8)
         self.played_status = 200
+        self.sessions: list[dict] = []  # GET /Sessions
+        self.play_status = 204          # POST /Sessions/{id}/Playing
+        self.play_starts = True         # after PlayNow the session reports something playing
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
@@ -84,6 +87,16 @@ class FakeJellyfin:
             return httpx.Response(self.played_status, json={"Played": request.method == "POST"})
         if path.startswith(f"/Users/{USER_ID}/PlayedItems/"):
             return httpx.Response(self.played_status, json={})
+        if path == "/Sessions" and request.method == "GET":
+            assert dict(request.url.params) == {"controllableByUserId": USER_ID}
+            return httpx.Response(200, json=self.sessions)
+        if path.startswith("/Sessions/") and path.endswith("/Playing") and request.method == "POST":
+            session = next((x for x in self.sessions if path == f"/Sessions/{x['Id']}/Playing"), None)
+            if session is None:
+                return httpx.Response(404)
+            if self.play_status == 204 and self.play_starts:
+                session["NowPlayingItem"] = {"Id": "preroll", "Name": "Cinema intro"}   # intros plugin: preroll first
+            return httpx.Response(self.play_status)
         if path.startswith("/Items/") and "/Images/" in path:
             return httpx.Response(200, content=b"\xff\xd8\xff\xe0JPEGDATA", headers={"content-type": "image/jpeg"})
         return httpx.Response(404)
@@ -538,3 +551,84 @@ def test_reasons_use_server_label(jf):
     c = next(x for x in st.cands if x.title == "No Ids Movie")
     texts = [r["text"] for r in rec.reasons_for(c, st.profile, server=st.server_label)]
     assert not any("Plex" in t for t in texts)
+
+
+# --------------------------------------------------------------------------- play on a Jellyfin client (remote control)
+
+def jf_session(sid, device_id, name="Samsung Smart TV", client="Jellyfin for Tizen", controllable=True):
+    return {"Id": sid, "DeviceId": device_id, "DeviceName": name, "Client": client, "UserId": USER_ID,
+            "ApplicationVersion": "0.1.0", "SupportsRemoteControl": controllable,
+            "PlayableMediaTypes": ["Audio", "Video"] if controllable else [], "IsActive": True}
+
+
+def test_parse_session_keeps_only_controllable_video_clients():
+    tv = jellyfin.parse_session(jf_session("s1", "dev-tv"), own_device_id="me")
+    assert tv == jellyfin.Session(id="s1", device_id="dev-tv", name="Samsung Smart TV", product="Jellyfin for Tizen")
+    assert jellyfin.parse_session(jf_session("s2", "dev-old", controllable=False), "me") is None   # suspended app
+    assert jellyfin.parse_session(jf_session("s3", "me", name="MovieNight", client="MovieNight"), "me") is None
+    audio_only = {**jf_session("s4", "dev-speaker"), "PlayableMediaTypes": ["Audio"]}
+    assert jellyfin.parse_session(audio_only, "me") is None
+    assert jellyfin.parse_session({**jf_session("s5", "dev-x"), "DeviceName": None}, "me").name == "Jellyfin for Tizen"
+
+
+@pytest.fixture
+def jf_play(jf, monkeypatch):
+    monkeypatch.setattr(jellyfin, "PLAY_POLL_SECONDS", 0.0)
+    monkeypatch.setattr(jellyfin, "PLAY_CONFIRM_SECONDS", 0.2)
+    run_sync(jf, "jellyfin")
+    with db.session(jf.cfg.db_path) as conn:
+        own = db.client_id(conn)
+    jf.fake.sessions = [jf_session("s-tv", "dev-tv"), jf_session("s-old", "dev-old", "Bedroom TV", controllable=False),
+                        jf_session("s-me", own, "MovieNight", "MovieNight"),
+                        jf_session("s-web", "dev-web", "Firefox", "Jellyfin Web")]
+    jf.fake.calls.clear()
+    return jf
+
+
+def play_body(player="dev-tv", item="a1"):
+    return {"player_id": player, "server_id": jellyfin.server_key(SERVER_ID), "rating_key": item}
+
+
+def test_players_lists_open_jellyfin_apps(jf_play):
+    c = jf_play
+    assert c.get("/api/players").json() == [
+        {"id": "dev-web", "name": "Firefox", "product": "Jellyfin Web"},
+        {"id": "dev-tv", "name": "Samsung Smart TV", "product": "Jellyfin for Tizen"}]
+    [req] = c.fake.calls
+    assert FakeJellyfin.token_of(req) == "TOKEN-1" and "TOKEN" not in str(req.url)
+
+
+def test_play_now_on_a_jellyfin_app(jf_play):
+    c = jf_play
+    assert c.post("/api/play", json=play_body()).status_code == 204
+    [play] = [r for r in c.fake.calls if r.method == "POST"]
+    assert play.url.path == "/Sessions/s-tv/Playing"
+    assert dict(play.url.params) == {"playCommand": "PlayNow", "itemIds": "a1"}
+    assert FakeJellyfin.token_of(play) == "TOKEN-1" and "TOKEN" not in str(play.url)
+
+
+def test_play_follows_the_device_to_its_new_session(jf_play):
+    c = jf_play
+    c.get("/api/players")                                   # cached with the old session id
+    c.fake.sessions[0]["Id"] = "s-tv-2"                     # the TV app reconnected
+    assert c.post("/api/play", json=play_body()).status_code == 204
+    assert [r.url.path for r in c.fake.calls if r.method == "POST"] == ["/Sessions/s-tv-2/Playing"]
+
+
+def test_play_refuses_unknown_films_and_players(jf_play):
+    c = jf_play
+    r = c.post("/api/play", json=play_body(item="not-in-library"))
+    assert r.status_code == 404 and r.json()["code"] == "play.notOnServer"
+    assert c.post("/api/play", json=play_body(player="dev-old")).status_code == 404    # not controllable
+    assert c.post("/api/play", json=play_body(player="nope")).status_code == 404
+    assert not [r for r in c.fake.calls if r.method == "POST"]                        # not an open proxy
+
+
+def test_play_reports_502_when_the_app_does_not_start(jf_play):
+    c = jf_play
+    c.fake.play_starts = False
+    r = c.post("/api/play", json=play_body())
+    assert r.status_code == 502 and r.json()["code"] == "play.unreachable"
+    assert r.json()["params"] == {"name": "Samsung Smart TV"}
+    c.fake.play_status, c.fake.play_starts = 500, True
+    assert c.post("/api/play", json=play_body()).status_code == 502

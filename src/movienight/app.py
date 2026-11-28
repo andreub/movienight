@@ -25,7 +25,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
-from . import auth, cast, chat, completion, db, i18n, letterboxd as lb, library, plex, queries, seenpush, seerr, servers, tags as lbtags, version
+from . import auth, cast, chat, completion, db, i18n, jellyfin, letterboxd as lb, library, plex, queries, seenpush, seerr, servers, tags as lbtags, version
 from .config import Config
 from .sync import SyncManager, history_token, plex_token, tmdb_counts
 from .util import now_iso, safe_error
@@ -720,14 +720,77 @@ def create_app(cfg: Config | None = None, transport: httpx.AsyncBaseTransport | 
         players_cache.update(at=now, items=items)
         return items
 
+    # ---- play on a Jellyfin client: the server's session remote control (any open Jellyfin app that accepts it).
+    # Sessions come and go (an app put in the background stops being controllable): short cache.
+    sessions_cache: dict = {"at": 0.0, "items": []}
+
+    def jellyfin_login() -> tuple[str, str, str, str] | None:
+        """(base_url, token, our device id, user id) of the signed-in Jellyfin server, or None."""
+        c = conn()
+        try:
+            row = c.execute("SELECT base_url, access_token FROM media_servers WHERE id LIKE 'jf:%'"
+                            " AND base_url IS NOT NULL ORDER BY id LIMIT 1").fetchone()
+            user_id, cid = db.get_meta(c, "jellyfin_user_id") or "", db.client_id(c)
+        finally:
+            c.close()
+        if row is None or not row["access_token"] or not user_id:
+            return None
+        return row["base_url"], row["access_token"], cid, user_id
+
+    async def jellyfin_sessions(fresh: bool = False) -> list[jellyfin.Session]:
+        now = time.monotonic()
+        if not fresh and sessions_cache["at"] and now - sessions_cache["at"] < 10:
+            return sessions_cache["items"]
+        login = jellyfin_login()
+        if login is None:
+            return []
+        base, token, cid, user_id = login
+        try:
+            items = await jellyfin.get_sessions(app.state.http, base, cid, token, user_id)
+        except (httpx.HTTPError, ValueError) as e:
+            log.warning("jellyfin sessions lookup failed: %s", safe_error(e))
+            items = []
+        sessions_cache.update(at=now, items=items)
+        return items
+
+    async def jellyfin_players() -> list[dict]:
+        return [{"id": s.device_id, "name": s.name, "product": s.product} for s in await jellyfin_sessions()]
+
+    async def jellyfin_play(body: PlayBody) -> None:
+        c = conn()
+        try:
+            known = c.execute("SELECT 1 FROM media_items WHERE server_id=? AND rating_key=?",
+                              (body.server_id, body.rating_key)).fetchone()
+        finally:
+            c.close()
+        if known is None:     # only films in our library: not an open proxy
+            raise Problem(404, "play.notOnServer", "Movie not found on that server")
+        # Always a fresh list: the session id behind a device changes when the app reconnects.
+        session = next((s for s in await jellyfin_sessions(fresh=True) if s.device_id == body.player_id), None)
+        login = jellyfin_login()
+        if session is None or login is None:
+            raise Problem(404, "play.noPlayer", "Player not found")
+        base, token, cid, user_id = login
+        try:
+            ok = await jellyfin.play_now(app.state.http, base, cid, token, user_id, session, body.rating_key)
+        except (httpx.HTTPError, ValueError) as e:
+            log.warning("jellyfin play on %s failed: %s", session.name, safe_error(e))
+            ok = False
+        if not ok:
+            raise Problem(502, "play.unreachable", f"Could not reach {session.name}. Is it on and on the same network?",
+                          name=session.name)
+
     @app.get("/api/players")
     async def players():
+        if cfg.media_server == "jellyfin":
+            return await jellyfin_players()
         return [{"id": p["id"], "name": p["name"], "product": p["product"]} for p in await cast_players()]
 
     @app.post("/api/play", status_code=204)
     async def play(body: PlayBody):
-        if cfg.media_server != "plex":
-            raise Problem(400, "play.plexOnly", "Playing on a player is only available with Plex")
+        if cfg.media_server == "jellyfin":
+            await jellyfin_play(body)
+            return Response(status_code=204)
         player = next((p for p in await cast_players() if p["id"] == body.player_id), None)
         if player is None:
             raise Problem(404, "play.noPlayer", "Player not found")

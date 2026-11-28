@@ -157,7 +157,7 @@ export function getTags() {
   return tagsPromise;
 }
 
-// Plex players that can be remote-controlled, fetched once per page load. Any failure means "none".
+// Players the media server can start a film on (Cast TVs for Plex, open Jellyfin apps), fetched once per page load. Any failure means "none".
 let playersPromise = null;
 export function getPlayers() {
   playersPromise ??= api.players().then((r) => (Array.isArray(r) ? r : [])).catch(() => []);

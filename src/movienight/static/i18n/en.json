@@ -46,7 +46,6 @@
  "apiError.pick.none": "Nothing matches these filters",
  "apiError.play.noPlayer": "Player not found",
  "apiError.play.notOnServer": "Movie not found on that server",
- "apiError.play.plexOnly": "Playing on a player is only available with Plex",
  "apiError.play.unreachable": "Could not reach {name}. Is it on and on the same network?",
  "apiError.plex.pinExpired": "PIN expired, start again",
  "apiError.plex.unreachable": "Could not reach plex.tv. Try again in a moment.",
