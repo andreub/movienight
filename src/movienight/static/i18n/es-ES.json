@@ -46,7 +46,6 @@
  "apiError.pick.none": "No hay nada que encaje con estos filtros",
  "apiError.play.noPlayer": "No se encuentra el reproductor",
  "apiError.play.notOnServer": "La peli no está en ese servidor",
- "apiError.play.plexOnly": "Reproducir en un dispositivo solo funciona con Plex",
  "apiError.play.unreachable": "No se ha podido contactar con {name}. ¿Está encendido y en la misma red?",
  "apiError.plex.pinExpired": "El PIN ha caducado; empieza de nuevo",
  "apiError.plex.unreachable": "No se ha podido contactar con plex.tv. Prueba de nuevo en un momento.",

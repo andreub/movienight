@@ -118,11 +118,12 @@ def test_play_reports_502_when_cast_fails(tmp_path, monkeypatch):
         assert r.status_code == 502 and "Living Room TV" in r.json()["detail"]
 
 
-def test_players_empty_and_play_400_for_jellyfin(tmp_path, monkeypatch):
+def test_jellyfin_never_uses_cast(tmp_path, monkeypatch):
+    """With Jellyfin the players are its own sessions (tests/test_jellyfin.py): no Cast discovery, no plex.tv."""
     client, cfg, calls, plays, discovered = make_client(tmp_path, monkeypatch, media_server="jellyfin")
     with client:
-        assert client.get("/api/players").json() == []
-        assert client.post("/api/play", json={"player_id": TV_UUID, "server_id": "m1", "rating_key": "11"}).status_code == 400
+        assert client.get("/api/players").json() == []          # not signed in to Jellyfin yet
+        assert client.post("/api/play", json={"player_id": TV_UUID, "server_id": "m1", "rating_key": "11"}).status_code == 404
         assert not calls and not discovered and not plays
 
 
